@@ -2,18 +2,21 @@
 """
 Acompanhamento de vendas — metas vs realizado (Direcional).
 Planilha: BD Vendas Completa + Metas.
-Dependências: streamlit, streamlit-gsheets, pandas, plotly
-Secrets: [connections.gsheets] ou equivalente para GSheetsConnection.
+Dependências: streamlit, pandas, plotly, gspread, google-auth
+
+Secrets: `.streamlit/secrets.toml` com seções `[connections.gsheets]` (JSON da service account:
+type, project_id, private_key_id, private_key em bloco multilinha TOML, client_email, URIs, etc.)
+e opcional `spreadsheet_id`. Seção `[email]` para SMTP (smtp_server, smtp_port, sender_email,
+sender_password) — lida pelo app mas não usada na leitura da planilha.
 """
 from __future__ import annotations
 
 import re
-from typing import Any, List
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
-from streamlit_gsheets import GSheetsConnection
 
 # -----------------------------------------------------------------------------
 # Identificação da planilha (ID extraído da URL)
@@ -45,6 +48,174 @@ MESES_COL_MAP = {
     "nov./1": 11,
     "dez./1": 12,
 }
+
+
+def _secrets_connections_gsheets() -> Dict[str, Any]:
+    """Lê `[connections.gsheets]` do secrets.toml → dict."""
+    try:
+        sec = st.secrets
+        if hasattr(sec, "get") and sec.get("connections"):
+            g = sec["connections"].get("gsheets")
+            if g is not None:
+                return dict(g)
+    except Exception:
+        pass
+    return {}
+
+
+def _normalizar_private_key_toml(pk: str) -> str:
+    """Chave PEM colada no TOML com \\n literais vira quebras reais."""
+    s = (pk or "").strip()
+    if not s:
+        return s
+    if "\\n" in s and "\n" not in s:
+        s = s.replace("\\n", "\n")
+    return s
+
+
+def montar_service_account_info(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """
+    Monta o dict esperado por `google.oauth2.service_account.Credentials.from_service_account_info`.
+    Aceita `type` vazio nos secrets — assume service_account se houver private_key + client_email.
+    """
+    if not raw:
+        return None
+    chaves = (
+        "type",
+        "project_id",
+        "private_key_id",
+        "private_key",
+        "client_email",
+        "client_id",
+        "auth_uri",
+        "token_uri",
+        "auth_provider_x509_cert_url",
+        "client_x509_cert_url",
+    )
+    out: Dict[str, Any] = {}
+    for k in chaves:
+        v = raw.get(k)
+        if v is None:
+            continue
+        if isinstance(v, str):
+            v = v.strip()
+        if v == "":
+            continue
+        out[k] = v
+    if "private_key" in out:
+        out["private_key"] = _normalizar_private_key_toml(str(out["private_key"]))
+    if "private_key" not in out or "client_email" not in out:
+        return None
+    typ = str(out.get("type") or "").strip()
+    if not typ:
+        out["type"] = "service_account"
+    if "token_uri" not in out:
+        out["token_uri"] = "https://oauth2.googleapis.com/token"
+    if "auth_uri" not in out:
+        out["auth_uri"] = "https://accounts.google.com/o/oauth2/auth"
+    return out
+
+
+def spreadsheet_id_de_secrets(cfg: Dict[str, Any]) -> str:
+    for k in ("spreadsheet_id", "SPREADSHEET_ID", "spreadsheet", "planilha_id"):
+        v = str(cfg.get(k) or "").strip()
+        if v:
+            return v
+    return SPREADSHEET_ID
+
+
+def email_config_de_secrets() -> Dict[str, Any]:
+    """Lê `[email]` — SMTP (reservado para alertas futuros; não usado no fluxo atual)."""
+    try:
+        e = st.secrets.get("email", {})
+        if not isinstance(e, dict):
+            return {}
+        port_raw = e.get("smtp_port", 587)
+        try:
+            port = int(port_raw) if port_raw not in (None, "") else 587
+        except (TypeError, ValueError):
+            port = 587
+        return {
+            "smtp_server": str(e.get("smtp_server") or "").strip(),
+            "smtp_port": port,
+            "sender_email": str(e.get("sender_email") or "").strip(),
+            "sender_password": str(e.get("sender_password") or "").strip(),
+        }
+    except Exception:
+        return {}
+
+
+def valores_para_dataframe(rows: List[List[str]]) -> pd.DataFrame:
+    """Primeira linha = cabeçalho; alinha largura das linhas."""
+    if not rows:
+        return pd.DataFrame()
+    header = [str(c).strip() for c in rows[0]]
+    w = len(header)
+    if w == 0:
+        return pd.DataFrame()
+    body = rows[1:]
+    if not body:
+        return pd.DataFrame(columns=header)
+    norm: List[List[str]] = []
+    for r in body:
+        cells = [str(c) for c in r]
+        if len(cells) < w:
+            cells = cells + [""] * (w - len(cells))
+        else:
+            cells = cells[:w]
+        norm.append(cells)
+    return pd.DataFrame(norm, columns=header)
+
+
+def ler_aba_gsheets(
+    service_account_info: Dict[str, Any],
+    spreadsheet_id: str,
+    worksheet: str,
+) -> pd.DataFrame:
+    import gspread
+    from google.oauth2.service_account import Credentials
+
+    scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+    creds = Credentials.from_service_account_info(service_account_info, scopes=scopes)
+    gc = gspread.authorize(creds)
+    sh = gc.open_by_key(spreadsheet_id.strip())
+    nome = worksheet.strip()
+
+    def _abrir() -> Any:
+        try:
+            return sh.worksheet(nome)
+        except gspread.WorksheetNotFound:
+            for w in sh.worksheets():
+                if w.title.strip() == nome:
+                    return w
+            for w in sh.worksheets():
+                if w.title.strip().lower() == nome.lower():
+                    return w
+            titulos = [w.title for w in sh.worksheets()]
+            raise gspread.WorksheetNotFound(
+                f"Aba {nome!r} não encontrada. Abas: {titulos}"
+            ) from None
+
+    ws = _abrir()
+    return valores_para_dataframe(ws.get_all_values())
+
+
+def _fingerprint_credenciais(info: Dict[str, Any]) -> str:
+    pk = str(info.get("private_key") or "")
+    return str(hash(pk))[-12:] if pk else "0"
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def ler_planilha_aba_df(spreadsheet_id: str, worksheet: str, _cred_fp: str) -> pd.DataFrame:
+    """
+    Lê uma aba via gspread. `_cred_fp` deve ser o fingerprint da private_key nos secrets
+    para invalidar o cache quando a chave mudar.
+    """
+    raw = _secrets_connections_gsheets()
+    info = montar_service_account_info(raw)
+    if not info:
+        raise ValueError("Credenciais [connections.gsheets] ausentes ou incompletas.")
+    return ler_aba_gsheets(info, spreadsheet_id, worksheet)
 
 
 def _hex_rgb(hex_color: str) -> str:
@@ -321,24 +492,61 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
-    try:
-        conn = st.connection("gsheets", type=GSheetsConnection)
-    except Exception as e:
+    raw_gs = _secrets_connections_gsheets()
+    info = montar_service_account_info(raw_gs)
+    if not info:
         st.error(
-            "Não foi possível iniciar a conexão Google Sheets. "
-            "Configure `secrets.toml` com `[connections.gsheets]` (tipo service_account) conforme a documentação do streamlit-gsheets."
+            "Credenciais Google em **[connections.gsheets]** incompletas. "
+            "Preencha pelo menos **private_key** e **client_email** (JSON da conta de serviço). "
+            "O campo **type** pode ser `service_account` ou ficar vazio."
         )
-        st.caption(str(e))
+        with st.expander("Estrutura esperada no secrets.toml"):
+            st.markdown(
+                "Use a seção **`[connections.gsheets]`** com os mesmos campos do JSON baixado no Google Cloud "
+                "(Service Account). Opcional: **`spreadsheet_id`** para sobrescrever o ID fixo no código."
+            )
+            st.code(
+                "[connections.gsheets]\n"
+                'type = "service_account"\n'
+                "private_key = \"\"\"-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n\"\"\"\n"
+                'client_email = "nome@projeto.iam.gserviceaccount.com"\n'
+                "token_uri = \"https://oauth2.googleapis.com/token\"\n"
+                "auth_uri = \"https://accounts.google.com/o/oauth2/auth\"\n"
+                "# ... demais campos do JSON ...\n"
+                'spreadsheet_id = "1wpuNQvksot9CLhGgQRe7JlyDeRISEh_sc3-6VRDyQYk"\n\n'
+                "[email]\n"
+                "smtp_server = \"smtp.gmail.com\"\n"
+                "smtp_port = 587\n"
+                "sender_email = \"...\"\n"
+                "sender_password = \"...\"",
+                language="toml",
+            )
         return
 
+    sid = spreadsheet_id_de_secrets(raw_gs)
+    cred_fp = _fingerprint_credenciais(info)
+
     try:
-        df_vendas = conn.read(spreadsheet=SPREADSHEET_ID, worksheet=WS_VENDAS, ttl=600)
-        df_metas_raw = conn.read(spreadsheet=SPREADSHEET_ID, worksheet=WS_METAS, ttl=600)
+        df_vendas = ler_planilha_aba_df(sid, WS_VENDAS, cred_fp)
+        df_metas_raw = ler_planilha_aba_df(sid, WS_METAS, cred_fp)
     except Exception as e:
-        st.error(f"Erro ao ler a planilha (verifique ID, nomes das abas e permissões da conta de serviço): {e}")
+        err = str(e)
+        st.error(f"Erro ao ler a planilha: {err}")
         st.info(
-            f"**ID:** `{SPREADSHEET_ID}`  \n**Abas:** `{WS_VENDAS}`, `{WS_METAS}`"
+            f"**ID:** `{sid}`  \n"
+            f"**Abas:** `{WS_VENDAS}`, `{WS_METAS}`  \n"
+            f"**Service account:** `{info.get('client_email', '')}`"
         )
+        st.warning(
+            "Mesmo com HTTP 200, a API pode devolver erro no corpo da resposta — o gspread acima mostra a causa real. "
+            "Checklist: planilha **compartilhada** com o e-mail da service account (Leitor ou Editor); "
+            "**spreadsheet_id** correto; nomes das abas idênticos (espaços contam). "
+            "No Streamlit Cloud, use **Secrets** com a mesma estrutura `[connections.gsheets]`."
+        )
+        # SMTP (opcional): só confirma que [email] foi lido
+        _smtp = email_config_de_secrets()
+        if _smtp.get("smtp_server"):
+            st.caption("Seção **[email]** detectada (SMTP não é usada nesta tela de métricas).")
         return
 
     df_vendas = normalizar_colunas(df_vendas)
