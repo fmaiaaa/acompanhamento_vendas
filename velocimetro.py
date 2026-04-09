@@ -1,20 +1,35 @@
 import streamlit as st
+from streamlit_gsheets import GSheetsConnection
 import pandas as pd
 import plotly.graph_objects as go
 
 # Configuração da página
-st.set_page_config(layout="wide", page_title="Dashboard de Metas de Vendas")
+st.set_page_config(layout="wide", page_title="Dashboard Direcional - Metas")
 
+# Título do Dashboard
 st.title("📊 Acompanhamento de Metas de Vendas")
 
-# Sidebar para Upload
-st.sidebar.header("Configurações")
-uploaded_file = st.sidebar.file_uploader("Suba sua planilha de Vendas/Metas", type=["xlsx"])
+# 1. Conexão com o Google Sheets
+# O Streamlit buscará automaticamente as credenciais em [connections.gsheets] nas secrets
+conn = st.connection("gsheets", type=GSheetsConnection)
 
-if uploaded_file:
-    # 1. Carregamento dos Dados
-    df_vendas = pd.read_excel(uploaded_file, sheet_name="BD Vendas Completa")
-    df_metas_raw = pd.read_excel(uploaded_file, sheet_name="Metas")
+# ID da planilha fornecido
+spreadsheet_url = "https://docs.google.com/spreadsheets/d/1wpuNQvksot9CLhGgQRe7JlyDeRISEh_sc3-6VRDyQYk"
+
+try:
+    # Lendo a aba de Vendas
+    df_vendas = conn.read(
+        spreadsheet=spreadsheet_url,
+        worksheet="BD Vendas Completa",
+        ttl="10m" # Cache de 10 minutos
+    )
+
+    # Lendo a aba de Metas
+    df_metas_raw = conn.read(
+        spreadsheet=spreadsheet_url,
+        worksheet="Metas",
+        ttl="10m"
+    )
 
     # 2. Tratamento da Tabela de Metas (Transformar meses de colunas para linhas)
     meses_colunas = {
@@ -26,17 +41,23 @@ if uploaded_file:
     # Derreter a tabela de metas
     df_metas = df_metas_raw.melt(
         id_vars=['Empreendimento', 'Região'], 
-        value_vars=list(meses_colunas.keys()),
+        value_vars=[col for col in df_metas_raw.columns if col in meses_colunas.keys()],
         var_name='Mes_Texto', 
         value_name='Meta_Qtd'
     )
     df_metas['Mes_Num'] = df_metas['Mes_Texto'].map(meses_colunas)
 
     # 3. Filtros no Sidebar
-    anos_disponiveis = sorted(df_vendas['Ano da Venda'].unique().tolist())
+    st.sidebar.header("Filtros")
+    
+    # Garantir que os anos e meses sejam tratados como números/texto corretamente
+    df_vendas['Ano da Venda'] = pd.to_numeric(df_vendas['Ano da Venda'], errors='coerce')
+    df_vendas['Mês Venda'] = pd.to_numeric(df_vendas['Mês Venda'], errors='coerce')
+    
+    anos_disponiveis = sorted(df_vendas['Ano da Venda'].dropna().unique().astype(int).tolist())
     ano_sel = st.sidebar.selectbox("Selecione o Ano", anos_disponiveis, index=len(anos_disponiveis)-1)
     
-    meses_disponiveis = sorted(df_vendas[df_vendas['Ano da Venda'] == ano_sel]['Mês Venda'].unique().tolist())
+    meses_disponiveis = sorted(df_vendas[df_vendas['Ano da Venda'] == ano_sel]['Mês Venda'].dropna().unique().astype(int).tolist())
     mes_sel = st.sidebar.selectbox("Selecione o Mês", meses_disponiveis)
 
     # 4. Filtragem dos Dados
@@ -45,16 +66,16 @@ if uploaded_file:
 
     # Função para criar o Medidor (Gauge Chart)
     def criar_medidor(titulo, realizado, meta, vgv, vendas_qtd):
-        percentual = (realizado / meta * 100) if meta > 0 else 0
+        percentual = (realizado / meta * 100) if (meta and meta > 0) else 0
         
         fig = go.Figure(go.Indicator(
             mode = "gauge+number",
             value = percentual,
-            number = {'suffix': "%", 'font': {'size': 20}},
-            title = {'text': titulo, 'font': {'size': 18}},
+            number = {'suffix': "%", 'font': {'size': 24}, 'valueformat': '.1f'},
+            title = {'text': titulo, 'font': {'size': 20}},
             gauge = {
                 'axis': {'range': [0, 100], 'tickwidth': 1},
-                'bar': {'color': "#1f77b4"}, # Cor do ponteiro/barra
+                'bar': {'color': "#2c3e50"}, 
                 'bgcolor': "white",
                 'borderwidth': 2,
                 'bordercolor': "gray",
@@ -71,33 +92,38 @@ if uploaded_file:
             }
         ))
         
-        fig.update_layout(height=250, margin=dict(l=20, r=20, t=50, b=20))
-        
+        fig.update_layout(height=280, margin=dict(l=30, r=30, t=50, b=20))
         st.plotly_chart(fig, use_container_width=True)
         
-        # Texto auxiliar ao lado/abaixo como na imagem
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Vendas", f"{int(vendas_qtd)}")
-        c2.metric("VGV", f"R$ {vgv/1e6:.1f} mi" if vgv >= 1e6 else f"R$ {vgv/1e3:.1f} mil")
-        c3.metric("Meta", f"{int(meta)}")
+        # Formatação de VGV
+        vgv_formatado = f"R$ {vgv/1e6:.2f} mi" if vgv >= 1e6 else f"R$ {vgv/1e3:.1f} mil"
+        
+        # Informações complementares abaixo do gráfico
+        st.markdown(f"""
+        <div style="text-align: center;">
+            <small>Vendas:</small> <b>{int(vendas_qtd)}</b> | 
+            <small>VGV:</small> <b>{vgv_formatado}</b> | 
+            <small>Meta:</small> <b>{int(meta) if meta else 0}</b>
+        </div>
+        """, unsafe_allow_html=True)
         st.markdown("---")
 
     # 5. Dashboard - Visão Geral
-    st.subheader(f"Resultado Geral - {mes_sel}/{ano_sel}")
+    st.subheader(f"Resultado Geral - Mês {mes_sel} / {ano_sel}")
     
-    total_realizado = vendas_filtradas.shape[0] # Quantidade de vendas (IDs)
+    total_realizado = vendas_filtradas.shape[0] 
     total_meta = metas_filtradas['Meta_Qtd'].sum()
     total_vgv = vendas_filtradas['Valor Real de Venda'].sum()
     
-    col_geral, col_vazia = st.columns([1, 2])
-    with col_geral:
+    # Layout do Indicador Geral
+    col_geral_1, col_geral_2, col_geral_3 = st.columns([1, 2, 1])
+    with col_geral_2:
         criar_medidor("Geral", total_realizado, total_meta, total_vgv, total_realizado)
 
     # 6. Dashboard - Quebra por Região
     st.subheader("Indicadores por Região")
     regioes = sorted(df_vendas['Região'].dropna().unique())
     
-    # Criar colunas para as regiões (3 por linha)
     cols = st.columns(3)
     for i, regiao in enumerate(regioes):
         with cols[i % 3]:
@@ -108,5 +134,9 @@ if uploaded_file:
             
             criar_medidor(regiao, realizado_reg, meta_reg, vgv_reg, realizado_reg)
 
-else:
-    st.info("Por favor, suba o arquivo Excel na barra lateral para visualizar os indicadores.")
+except Exception as e:
+    st.error(f"Erro ao conectar com a planilha: {e}")
+    st.info("Verifique se as secrets estão configuradas corretamente no Streamlit Cloud e se o e-mail da conta de serviço tem acesso à planilha.")
+
+# Nota sobre as Secrets (Email)
+# As configurações de [email] que você enviou podem ser acessadas via st.secrets["email"]["smtp_server"], etc.
