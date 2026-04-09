@@ -1,117 +1,503 @@
-import streamlit as st
-from streamlit_gsheets import GSheetsConnection
+# -*- coding: utf-8 -*-
+"""
+Acompanhamento de vendas — metas vs realizado (Direcional).
+Planilha: BD Vendas Completa + Metas.
+Dependências: streamlit, streamlit-gsheets, pandas, plotly
+Secrets: [connections.gsheets] ou equivalente para GSheetsConnection.
+"""
+from __future__ import annotations
+
+import re
+from typing import Any, List
+
 import pandas as pd
 import plotly.graph_objects as go
+import streamlit as st
+from streamlit_gsheets import GSheetsConnection
 
-def criar_medidor(titulo, realizado, meta, vgv, vendas_qtd):
-    """Gera o gráfico de medidor estilo sinaleiro."""
-    percentual = (realizado / meta * 100) if (meta and meta > 0) else 0
-    
-    fig = go.Figure(go.Indicator(
-        mode = "gauge+number",
-        value = percentual,
-        number = {'suffix': "%", 'font': {'size': 24}, 'valueformat': '.1f'},
-        title = {'text': titulo, 'font': {'size': 20}},
-        gauge = {
-            'axis': {'range': [0, 100], 'tickwidth': 1},
-            'bar': {'color': "#2c3e50"}, 
-            'bgcolor': "white",
-            'borderwidth': 2,
-            'bordercolor': "gray",
-            'steps': [
-                {'range': [0, 40], 'color': "#e74c3c"}, # Vermelho
-                {'range': [40, 80], 'color': "#f39c12"}, # Laranja
-                {'range': [80, 100], 'color': "#27ae60"} # Verde
-            ],
-            'threshold': {
-                'line': {'color': "black", 'width': 4},
-                'thickness': 0.75,
-                'value': 100
-            }
-        }
-    ))
-    
-    fig.update_layout(height=280, margin=dict(l=30, r=30, t=50, b=20))
-    st.plotly_chart(fig, use_container_width=True)
-    
-    vgv_formatado = f"R$ {vgv/1e6:.2f} mi" if vgv >= 1e6 else f"R$ {vgv/1e3:.1f} mil"
-    
-    st.markdown(f"""
-    <div style="text-align: center;">
-        <small>Vendas:</small> <b>{int(vendas_qtd)}</b> | 
-        <small>VGV:</small> <b>{vgv_formatado}</b> | 
-        <small>Meta:</small> <b>{int(meta) if meta else 0}</b>
-    </div>
-    """, unsafe_allow_html=True)
-    st.markdown("---")
+# -----------------------------------------------------------------------------
+# Identificação da planilha (ID extraído da URL)
+# -----------------------------------------------------------------------------
+SPREADSHEET_ID = "1wpuNQvksot9CLhGgQRe7JlyDeRISEh_sc3-6VRDyQYk"
+WS_VENDAS = "BD Vendas Completa"
+WS_METAS = "Metas"
 
-def main():
-    # Configuração da página
-    st.set_page_config(layout="wide", page_title="Dashboard Direcional - Metas")
-    st.title("📊 Acompanhamento de Metas de Vendas")
+# Paleta alinhada à Ficha Credenciamento / Vendas RJ
+COR_AZUL_ESC = "#04428f"
+COR_VERMELHO = "#cb0935"
+COR_VERMELHO_ESCURO = "#9e0828"
+COR_FUNDO_CARD = "rgba(255, 255, 255, 0.78)"
+COR_BORDA = "#eef2f6"
+COR_TEXTO_MUTED = "#64748b"
+COR_TEXTO_LABEL = "#1e293b"
 
-    # 1. Conexão com o Google Sheets
-    conn = st.connection("gsheets", type=GSheetsConnection)
-    spreadsheet_url = "https://docs.google.com/spreadsheets/d/1wpuNQvksot9CLhGgQRe7JlyDeRISEh_sc3-6VRDyQYk"
+MESES_COL_MAP = {
+    "jan./1": 1,
+    "fev./1": 2,
+    "mar./1": 3,
+    "abr./1": 4,
+    "mai./1": 5,
+    "jun./1": 6,
+    "jul./1": 7,
+    "ago./1": 8,
+    "set./1": 9,
+    "out./1": 10,
+    "nov./1": 11,
+    "dez./1": 12,
+}
+
+
+def _hex_rgb(hex_color: str) -> str:
+    x = (hex_color or "").strip().lstrip("#")
+    if len(x) != 6:
+        return "4, 66, 143"
+    return f"{int(x[0:2], 16)}, {int(x[2:4], 16)}, {int(x[4:6], 16)}"
+
+
+RGB_AZUL = _hex_rgb(COR_AZUL_ESC)
+RGB_VERM = _hex_rgb(COR_VERMELHO)
+
+
+def parse_valor_br(val: Any) -> float:
+    """Converte valores como 215.625,50 ou 247072,61 para float."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return 0.0
+    if isinstance(val, (int, float)):
+        return float(val)
+    s = str(val).strip().replace("R$", "").replace(" ", "")
+    if not s or s.lower() == "nan":
+        return 0.0
+    # Emoji / texto colado no ranking (ex.: Ouro🥇) — ignora sufixo
+    s = re.sub(r"[^\d.,\-]", "", s)
+    if not s:
+        return 0.0
+    if "," in s and "." in s:
+        # BR: milhar com ponto, decimal com vírgula
+        if s.rfind(",") > s.rfind("."):
+            s = s.replace(".", "").replace(",", ".")
+        else:
+            s = s.replace(",", "")
+    elif "," in s:
+        s = s.replace(",", ".")
+    try:
+        return float(s)
+    except ValueError:
+        return 0.0
+
+
+def normalizar_colunas(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+    return df
+
+
+def coluna_existe(df: pd.DataFrame, nome: str) -> bool:
+    return nome in df.columns
+
+
+def melt_metas(df_metas_raw: pd.DataFrame) -> pd.DataFrame:
+    """Transforma Metas largas em longas (mês numérico + meta quantidade)."""
+    df = normalizar_colunas(df_metas_raw)
+    cols_mes = [c for c in df.columns if c in MESES_COL_MAP]
+    if not cols_mes:
+        # tenta casar variações com espaço
+        alt = {}
+        for c in df.columns:
+            c0 = c.strip().lower().replace(" ", "")
+            for k, v in MESES_COL_MAP.items():
+                if k.replace("/", "").replace(".", "") in c0 or k in c:
+                    alt[c] = v
+                    break
+        cols_mes = [c for c in df.columns if c in alt]
+        if not cols_mes:
+            return pd.DataFrame(columns=["Empreendimento", "Região", "Mes_Num", "Meta_Qtd"])
+
+    id_vars = [c for c in ("Empreendimento", "Região") if c in df.columns]
+    if not id_vars:
+        return pd.DataFrame(columns=["Empreendimento", "Região", "Mes_Num", "Meta_Qtd"])
+
+    out = df.melt(
+        id_vars=id_vars,
+        value_vars=cols_mes,
+        var_name="Mes_Texto",
+        value_name="Meta_Qtd",
+    )
+    out["Mes_Num"] = out["Mes_Texto"].map(lambda x: MESES_COL_MAP.get(x, MESES_COL_MAP.get(str(x).strip(), None)))
+    out = out.dropna(subset=["Mes_Num"])
+    out["Mes_Num"] = out["Mes_Num"].astype(int)
+    out["Meta_Qtd"] = pd.to_numeric(out["Meta_Qtd"], errors="coerce").fillna(0)
+    return out
+
+
+def aplicar_estilo() -> None:
+    st.markdown(
+        f"""
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800;900&family=Inter:wght@400;500;600;700&display=swap');
+        html, body, [data-testid="stAppViewContainer"] {{
+            font-family: 'Inter', sans-serif;
+            color: {COR_TEXTO_LABEL};
+        }}
+        .stApp {{
+            background: linear-gradient(135deg, rgba({RGB_AZUL}, 0.88) 0%, rgba(30, 58, 95, 0.55) 45%,
+                rgba({RGB_VERM}, 0.18) 72%, rgba(15, 23, 42, 0.42) 100%) !important;
+        }}
+        [data-testid="stAppViewContainer"] {{ background: transparent !important; }}
+        [data-testid="stHeader"] {{
+            background: transparent !important;
+            background-color: transparent !important;
+        }}
+        [data-testid="stSidebar"] {{
+            background: rgba(255, 255, 255, 0.92) !important;
+            border-right: 1px solid {COR_BORDA} !important;
+        }}
+        .block-container {{
+            max-width: 1200px !important;
+            padding: 1.5rem 2rem 2rem 2rem !important;
+            background: {COR_FUNDO_CARD} !important;
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border-radius: 24px !important;
+            border: 1px solid rgba(255, 255, 255, 0.45) !important;
+            box-shadow: 0 24px 48px -12px rgba({RGB_AZUL}, 0.2) !important;
+        }}
+        h1, h2, h3 {{
+            font-family: 'Montserrat', sans-serif !important;
+            color: {COR_AZUL_ESC} !important;
+            font-weight: 800 !important;
+        }}
+        .vel-hero-bar {{
+            height: 4px;
+            width: 100%;
+            border-radius: 999px;
+            margin: 0.75rem 0 1.25rem 0;
+            background: linear-gradient(90deg, {COR_AZUL_ESC}, {COR_VERMELHO}, {COR_AZUL_ESC});
+            background-size: 200% 100%;
+        }}
+        .vel-kpi-row {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-bottom: 1.25rem;
+        }}
+        .vel-kpi {{
+            flex: 1 1 160px;
+            background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,251,252,0.9) 100%);
+            border: 1px solid rgba(226, 232, 240, 0.9);
+            border-radius: 14px;
+            padding: 14px 16px;
+            text-align: center;
+            box-shadow: 0 2px 8px rgba({RGB_AZUL}, 0.06);
+        }}
+        .vel-kpi .lbl {{
+            font-size: 0.72rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: {COR_AZUL_ESC};
+            opacity: 0.85;
+        }}
+        .vel-kpi .val {{
+            font-family: 'Montserrat', sans-serif;
+            font-size: 1.35rem;
+            font-weight: 800;
+            color: {COR_AZUL_ESC};
+            margin-top: 6px;
+        }}
+        .vel-kpi .val--red {{ color: {COR_VERMELHO} !important; }}
+        div[data-testid="stMetric"] {{
+            background: rgba(255,255,255,0.6);
+            padding: 12px;
+            border-radius: 12px;
+            border: 1px solid {COR_BORDA};
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def fmt_br_milhoes(v: float) -> str:
+    if v >= 1e6:
+        return f"R$ {v / 1e6:.2f} mi"
+    if v >= 1e3:
+        return f"R$ {v / 1e3:.1f} mil"
+    return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+
+
+def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, vendas_qtd: int) -> None:
+    """Gauge estilo velocímetro com cores da marca."""
+    meta_f = float(meta) if meta and meta > 0 else 0.0
+    perc = min(150.0, (realizado / meta_f * 100.0)) if meta_f > 0 else 0.0
+    # Eixo até 100% para leitura; valores >100% ainda aparecem no número
+    axis_max = 100
+    val_display = min(perc, axis_max) if perc <= axis_max else axis_max
+
+    fig = go.Figure(
+        go.Indicator(
+            mode="gauge+number",
+            value=val_display,
+            number={
+                "suffix": "%",
+                "font": {"size": 26, "family": "Montserrat", "color": COR_AZUL_ESC},
+                "valueformat": ".1f",
+            },
+            title={
+                "text": titulo,
+                "font": {"size": 16, "family": "Montserrat", "color": COR_AZUL_ESC},
+            },
+            gauge={
+                "axis": {"range": [0, axis_max], "tickwidth": 1, "tickcolor": COR_TEXTO_MUTED},
+                "bar": {"color": COR_AZUL_ESC},
+                "bgcolor": "white",
+                "borderwidth": 2,
+                "bordercolor": COR_BORDA,
+                "steps": [
+                    {"range": [0, 40], "color": "rgba(203, 9, 53, 0.25)"},
+                    {"range": [40, 80], "color": "rgba(4, 66, 143, 0.12)"},
+                    {"range": [80, 100], "color": "rgba(22, 163, 74, 0.28)"},
+                ],
+                "threshold": {
+                    "line": {"color": COR_VERMELHO, "width": 3},
+                    "thickness": 0.8,
+                    "value": 100,
+                },
+            },
+        )
+    )
+    if perc > 100:
+        fig.update_layout(
+            annotations=[
+                dict(
+                    text=f"Real: {perc:.1f}% da meta",
+                    x=0.5,
+                    y=0.15,
+                    xref="paper",
+                    yref="paper",
+                    showarrow=False,
+                    font=dict(size=12, color=COR_VERMELHO, family="Inter"),
+                )
+            ]
+        )
+
+    fig.update_layout(
+        height=300,
+        margin=dict(l=24, r=24, t=56, b=24),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    st.markdown(
+        f"""
+        <div style="text-align:center;font-size:0.9rem;color:{COR_TEXTO_LABEL};margin-top:-8px;">
+            <strong>{int(vendas_qtd)}</strong> vendas · VGV <strong>{fmt_br_milhoes(float(vgv))}</strong> ·
+            Meta <strong>{int(meta_f)}</strong> un.
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
+
+
+def main() -> None:
+    st.set_page_config(
+        page_title="Acompanhamento de Vendas | Direcional",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
+    aplicar_estilo()
+
+    st.markdown(
+        f"""
+        <div style="text-align:center;padding:0.25rem 0 0 0;">
+            <h1 style="margin:0;font-size:clamp(1.35rem,3vw,1.85rem);">Acompanhamento de metas de vendas</h1>
+            <p style="color:{COR_TEXTO_MUTED};margin:0.5rem 0 0 0;font-size:0.95rem;">
+                Realizado vs metas por período — BD Vendas Completa e aba Metas
+            </p>
+            <div class="vel-hero-bar"></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
 
     try:
-        # Lendo abas
-        df_vendas = conn.read(spreadsheet=spreadsheet_url, worksheet="BD Vendas Completa", ttl="10m")
-        df_metas_raw = conn.read(spreadsheet=spreadsheet_url, worksheet="Metas", ttl="10m")
-
-        # 2. Tratamento da Tabela de Metas
-        meses_colunas = {
-            'jan./1': 1, 'fev./1': 2, 'mar./1': 3, 'abr./1': 4, 
-            'mai./1': 5, 'jun./1': 6, 'jul./1': 7, 'ago./1': 8, 
-            'set./1': 9, 'out./1': 10, 'nov./1': 11, 'dez./1': 12
-        }
-        
-        df_metas = df_metas_raw.melt(
-            id_vars=['Empreendimento', 'Região'], 
-            value_vars=[col for col in df_metas_raw.columns if col in meses_colunas.keys()],
-            var_name='Mes_Texto', 
-            value_name='Meta_Qtd'
-        )
-        df_metas['Mes_Num'] = df_metas['Mes_Texto'].map(meses_colunas)
-
-        # 3. Sidebar e Filtros
-        st.sidebar.header("Filtros")
-        df_vendas['Ano da Venda'] = pd.to_numeric(df_vendas['Ano da Venda'], errors='coerce')
-        df_vendas['Mês Venda'] = pd.to_numeric(df_vendas['Mês Venda'], errors='coerce')
-        
-        anos_disponiveis = sorted(df_vendas['Ano da Venda'].dropna().unique().astype(int).tolist())
-        ano_sel = st.sidebar.selectbox("Selecione o Ano", anos_disponiveis, index=len(anos_disponiveis)-1)
-        
-        meses_disponiveis = sorted(df_vendas[df_vendas['Ano da Venda'] == ano_sel]['Mês Venda'].dropna().unique().astype(int).tolist())
-        mes_sel = st.sidebar.selectbox("Selecione o Mês", meses_disponiveis)
-
-        # 4. Filtragem
-        vendas_filtradas = df_vendas[(df_vendas['Ano da Venda'] == ano_sel) & (df_vendas['Mês Venda'] == mes_sel)]
-        metas_filtradas = df_metas[df_metas['Mes_Num'] == mes_sel]
-
-        # 5. Dashboard - Geral
-        st.subheader(f"Resultado Geral - Mês {mes_sel} / {ano_sel}")
-        total_realizado = vendas_filtradas.shape[0] 
-        total_meta = metas_filtradas['Meta_Qtd'].sum()
-        total_vgv = vendas_filtradas['Valor Real de Venda'].sum()
-        
-        c1, c2, c3 = st.columns([1, 2, 1])
-        with c2:
-            criar_medidor("Geral", total_realizado, total_meta, total_vgv, total_realizado)
-
-        # 6. Dashboard - Regiões
-        st.subheader("Indicadores por Região")
-        regioes = sorted(df_vendas['Região'].dropna().unique())
-        
-        cols = st.columns(3)
-        for i, regiao in enumerate(regioes):
-            with cols[i % 3]:
-                v_reg = vendas_filtradas[vendas_filtradas['Região'] == regiao]
-                m_reg = metas_filtradas[metas_filtradas['Região'] == regiao]['Meta_Qtd'].sum()
-                criar_medidor(regiao, v_reg.shape[0], m_reg, v_reg['Valor Real de Venda'].sum(), v_reg.shape[0])
-
+        conn = st.connection("gsheets", type=GSheetsConnection)
     except Exception as e:
-        st.error(f"Erro: {e}")
+        st.error(
+            "Não foi possível iniciar a conexão Google Sheets. "
+            "Configure `secrets.toml` com `[connections.gsheets]` (tipo service_account) conforme a documentação do streamlit-gsheets."
+        )
+        st.caption(str(e))
+        return
+
+    try:
+        df_vendas = conn.read(spreadsheet=SPREADSHEET_ID, worksheet=WS_VENDAS, ttl=600)
+        df_metas_raw = conn.read(spreadsheet=SPREADSHEET_ID, worksheet=WS_METAS, ttl=600)
+    except Exception as e:
+        st.error(f"Erro ao ler a planilha (verifique ID, nomes das abas e permissões da conta de serviço): {e}")
+        st.info(
+            f"**ID:** `{SPREADSHEET_ID}`  \n**Abas:** `{WS_VENDAS}`, `{WS_METAS}`"
+        )
+        return
+
+    df_vendas = normalizar_colunas(df_vendas)
+    df_metas = melt_metas(df_metas_raw)
+
+    # Colunas esperadas na aba de vendas
+    col_ano = "Ano da Venda" if coluna_existe(df_vendas, "Ano da Venda") else None
+    col_mes = "Mês Venda" if coluna_existe(df_vendas, "Mês Venda") else None
+    col_regiao = "Região" if coluna_existe(df_vendas, "Região") else None
+    col_valor = (
+        "Valor Real de Venda"
+        if coluna_existe(df_vendas, "Valor Real de Venda")
+        else ("Valor" if coluna_existe(df_vendas, "Valor") else None)
+    )
+
+    if not col_ano or not col_mes:
+        st.error(
+            "A aba de vendas precisa das colunas **Ano da Venda** e **Mês Venda**. "
+            f"Colunas encontradas: {', '.join(df_vendas.columns[:25].tolist())}{'…' if len(df_vendas.columns) > 25 else ''}"
+        )
+        return
+
+    df_vendas["_ano"] = pd.to_numeric(df_vendas[col_ano], errors="coerce")
+    df_vendas["_mes"] = pd.to_numeric(df_vendas[col_mes], errors="coerce")
+
+    if col_valor:
+        df_vendas["_vgv"] = df_vendas[col_valor].map(parse_valor_br)
+    else:
+        df_vendas["_vgv"] = 0.0
+        st.warning("Coluna **Valor Real de Venda** / **Valor** não encontrada — VGV ficará zerado.")
+
+    st.sidebar.markdown("### Filtros")
+    anos_disponiveis: List[int] = sorted(
+        int(x) for x in df_vendas["_ano"].dropna().unique().tolist() if pd.notna(x)
+    )
+    if not anos_disponiveis:
+        st.warning("Nenhum ano válido encontrado na coluna de ano.")
+        return
+
+    ano_sel = st.sidebar.selectbox("Ano", anos_disponiveis, index=len(anos_disponiveis) - 1)
+
+    meses_no_ano = sorted(
+        int(x)
+        for x in df_vendas.loc[df_vendas["_ano"] == ano_sel, "_mes"].dropna().unique().tolist()
+        if pd.notna(x)
+    )
+    if not meses_no_ano:
+        meses_no_ano = list(range(1, 13))
+
+    idx_mes_padrao = max(0, len(meses_no_ano) - 1) if meses_no_ano else 0
+    mes_sel = st.sidebar.selectbox("Mês", meses_no_ano, index=idx_mes_padrao)
+
+    vendas_f = df_vendas[(df_vendas["_ano"] == ano_sel) & (df_vendas["_mes"] == mes_sel)].copy()
+    metas_f = df_metas[df_metas["Mes_Num"] == mes_sel].copy()
+
+    total_realizado = int(vendas_f.shape[0])
+    total_meta = float(metas_f["Meta_Qtd"].sum()) if not metas_f.empty else 0.0
+    total_vgv = float(vendas_f["_vgv"].sum())
+
+    pct_ating = (total_realizado / total_meta * 100.0) if total_meta > 0 else 0.0
+
+    st.markdown(
+        f"""
+        <div class="vel-kpi-row">
+            <div class="vel-kpi"><div class="lbl">Período</div><div class="val">{mes_sel:02d}/{ano_sel}</div></div>
+            <div class="vel-kpi"><div class="lbl">Vendas realizadas</div><div class="val">{total_realizado}</div></div>
+            <div class="vel-kpi"><div class="lbl">Meta (un.)</div><div class="val">{int(total_meta)}</div></div>
+            <div class="vel-kpi"><div class="lbl">VGV no mês</div><div class="val val--red">{fmt_br_milhoes(total_vgv)}</div></div>
+            <div class="vel-kpi"><div class="lbl">% da meta</div><div class="val">{pct_ating:.1f}%</div></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.subheader("Visão geral")
+    c1, c2, c3 = st.columns([1, 2, 1])
+    with c2:
+        criar_medidor("Geral — quantidade vs meta", float(total_realizado), total_meta, total_vgv, total_realizado)
+
+    st.subheader("Por região")
+    if col_regiao and col_regiao in vendas_f.columns:
+        regioes_v = sorted(str(x).strip() for x in vendas_f[col_regiao].dropna().unique() if str(x).strip())
+        regioes_m = sorted(str(x).strip() for x in metas_f["Região"].dropna().unique()) if "Região" in metas_f.columns else []
+        regioes = sorted(set(regioes_v) | set(regioes_m))
+
+        if not regioes:
+            st.info("Não há região nas vendas filtradas nem nas metas deste mês.")
+        else:
+            cols = st.columns(min(3, len(regioes)) or 1)
+            for i, regiao in enumerate(regioes):
+                with cols[i % len(cols)]:
+                    v_reg = vendas_f[vendas_f[col_regiao].astype(str).str.strip() == regiao]
+                    if "Região" in metas_f.columns:
+                        m_reg = float(
+                            metas_f[metas_f["Região"].astype(str).str.strip() == regiao]["Meta_Qtd"].sum()
+                        )
+                    else:
+                        m_reg = 0.0
+                    criar_medidor(
+                        regiao,
+                        float(v_reg.shape[0]),
+                        m_reg,
+                        float(v_reg["_vgv"].sum()),
+                        int(v_reg.shape[0]),
+                    )
+    else:
+        st.warning("Coluna **Região** não encontrada na aba de vendas — indicadores por região omitidos.")
+
+    st.caption(
+        "Se os medidores por **região** ficarem com meta zerada, confira se o texto de **Região** na aba "
+        "**Metas** (ex.: «Zona Oeste - Leo») bate com o da **BD Vendas Completa** (ex.: bairro). "
+        "A tabela abaixo cruza por **Empreendimento**, costuma alinhar melhor à planilha de metas."
+    )
+
+    if coluna_existe(df_vendas, "Empreendimento") and coluna_existe(metas_f, "Empreendimento"):
+        st.subheader("Por empreendimento")
+        emp_v = vendas_f.assign(
+            _emp=vendas_f["Empreendimento"].astype(str).str.strip()
+        )
+        vg = (
+            emp_v.groupby("_emp", as_index=False)
+            .agg(realizado=("Empreendimento", "count"), vgv=("_vgv", "sum"))
+            .rename(columns={"_emp": "Empreendimento"})
+        )
+        emp_m = metas_f.assign(
+            _emp=metas_f["Empreendimento"].astype(str).str.strip()
+        )
+        mg = (
+            emp_m.groupby("_emp", as_index=False)["Meta_Qtd"]
+            .sum()
+            .rename(columns={"_emp": "Empreendimento", "Meta_Qtd": "Meta (un.)"})
+        )
+        tab = vg.merge(mg, on="Empreendimento", how="outer").fillna(0)
+        tab["Meta (un.)"] = tab["Meta (un.)"].astype(float)
+        tab["realizado"] = tab["realizado"].astype(float)
+        tab["vgv"] = tab["vgv"].astype(float)
+        tab["% meta"] = tab.apply(
+            lambda r: (r["realizado"] / r["Meta (un.)"] * 100.0) if r["Meta (un.)"] > 0 else 0.0,
+            axis=1,
+        )
+        tab = tab.sort_values(["Meta (un.)", "realizado"], ascending=False)
+        show = tab.rename(columns={"vgv": "VGV (R$)", "realizado": "Realizado (un.)"})
+        show["VGV (R$)"] = show["VGV (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
+        show["% meta"] = show["% meta"].map(lambda x: f"{x:.1f}%")
+        st.dataframe(show, use_container_width=True, hide_index=True)
+    else:
+        st.info(
+            "Para ver o cruzamento por empreendimento, as duas abas precisam da coluna **Empreendimento**."
+        )
+
+    with st.expander("Prévia dos dados (mês filtrado)"):
+        st.dataframe(vendas_f.head(50), use_container_width=True)
+
+    st.markdown(
+        f'<div class="footer" style="text-align:center;padding:1rem 0;color:{COR_TEXTO_MUTED};font-size:0.82rem;">'
+        f"Direcional Engenharia · Vendas — Acompanhamento de metas</div>",
+        unsafe_allow_html=True,
+    )
+
 
 if __name__ == "__main__":
     main()
