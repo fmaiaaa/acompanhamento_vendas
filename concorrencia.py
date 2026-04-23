@@ -230,15 +230,18 @@ def process_data() -> pd.DataFrame:
     
     df_ger["Preço_Min"] = df_ger["Venda a Partir"].apply(parse_val)
     
-    # 2. Merge Master (Chave = CHAVE) - Corrigindo KeyError
+    # 2. Merge Master (Chave = CHAVE para Detalhada e Mensal)
     df_master = df_det.merge(
-        df_ger[["CHAVE", "Preço_Min", "Previsão"]], 
+        df_men[["CHAVE", "Vendas (Qnt.)", "Estoque (Qnt.)", "VGV (R$)", "PREÇO MÉDIO"]], 
         on="CHAVE", 
         how="left"
     )
+    
+    # Merge com Geral usando Empreendimento (Pois BD GERAL não tem CHAVE no seu novo formato)
     df_master = df_master.merge(
-        df_men[["CHAVE", "Vendas (Qnt.)", "Estoque (Qnt.)", "VGV (R$)", "PREÇO MÉDIO"]], 
-        on="CHAVE", 
+        df_ger[["Empreendimento", "Preço_Min", "Previsão"]], 
+        left_on="EMPREENDIMENTO", 
+        right_on="Empreendimento", 
         how="left"
     )
     
@@ -260,8 +263,8 @@ def process_data() -> pd.DataFrame:
     # Densidade Competitiva por Bairro
     df_master["Densidade_Bairro"] = df_master.groupby("BAIRRO")["CHAVE"].transform("nunique")
     
-    # Identificar Direcional (Comparação)
-    # Critério: Endereço ou Nome presentes na aba DADOS DIRECIONAL
+    # 4. Identificar Direcional (Comparação)
+    # Filtra empreendimentos baseados no endereço/nome presentes na aba DADOS DIRECIONAL
     allowed_addresses = [str(x).strip().upper() for x in df_dados_dir["Endereço"].unique() if x]
     allowed_keys = [str(x).strip().upper() for x in df_dados_dir["Nome do Empreendimento (Chave)"].unique() if x]
     
@@ -302,11 +305,14 @@ def main():
         st.markdown("## Visão Geral do Mercado")
         
         # Comparação Direcional vs Mercado
-        avg_m2_mkt = df_f[~df_f["Is_Direcional"]]["Preço_m2"].mean()
-        avg_m2_dir = df_f[df_f["Is_Direcional"]]["Preço_m2"].mean()
+        df_mkt = df_f[~df_f["Is_Direcional"]]
+        df_dir = df_f[df_f["Is_Direcional"]]
         
-        avg_abs_mkt = df_f[~df_f["Is_Direcional"]]["Absorcao"].mean() * 100
-        avg_abs_dir = df_f[df_f["Is_Direcional"]]["Absorcao"].mean() * 100
+        avg_m2_mkt = df_mkt["Preço_m2"].mean()
+        avg_m2_dir = df_dir["Preço_m2"].mean()
+        
+        avg_abs_mkt = df_mkt["Absorcao"].mean() * 100
+        avg_abs_dir = df_dir["Absorcao"].mean() * 100
         
         st.markdown(f"""
             <div class="vel-kpi-row">
@@ -328,6 +334,7 @@ def main():
         with col2:
             st.subheader("Absorção por Concorrente")
             df_reg = df_f.groupby("CONCORRENTE")["Absorcao"].mean().reset_index().sort_values("Absorcao", ascending=False)
+            # Garantir que a Direcional tenha destaque no gráfico de barras
             fig = px.bar(df_reg, x='CONCORRENTE', y='Absorcao', color='CONCORRENTE', color_discrete_map={"DIRECIONAL": COR_VERMELHO})
             fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
@@ -335,7 +342,7 @@ def main():
     elif page == "Mapa Competitivo":
         st.markdown("## Mapa Competitivo e Saturação")
         st.subheader("Distribuição de Preço/m² por Bairro")
-        # Boxplot destacando outliers e posicionamento
+        # Boxplot destacando outliers e posicionamento Direcional
         fig = px.box(df_f, x="BAIRRO", y="Preço_m2", color="Is_Direcional", 
                      color_discrete_map={True: COR_VERMELHO, False: COR_AZUL_ESC},
                      labels={"Is_Direcional": "Produto Direcional"}, points="all", hover_name="EMPREENDIMENTO")
