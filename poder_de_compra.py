@@ -116,7 +116,7 @@ def _exibir_logo_topo() -> None:
     try:
         if path:
             ext = Path(path).suffix.lower().lstrip(".")
-            mime = "image/png" if ext == "png" else "image/jpeg" if ext in ("jpg", "jpeg") else "image/png"
+            mime = "image/jpeg" if ext == "png" else "image/jpeg" if ext in ("jpg", "jpeg") else "image/png"
             with open(path, "rb") as f:
                 b64 = base64.b64encode(f.read()).decode("ascii")
             st.markdown(f'<div class="ficha-logo-wrap"><img src="data:{mime};base64,{b64}" alt="Direcional" /></div>', unsafe_allow_html=True)
@@ -131,8 +131,8 @@ def _cabecalho_pagina() -> None:
     st.markdown(
         f'<div class="ficha-hero-stack">'
         f'<div class="ficha-hero">'
-        f'<p class="ficha-title">Análise de Gaps de Vendas</p>'
-        f'<p class="ficha-sub">Dinheiro na mesa: Realizado vs Projetado — <strong>BD COMPLETA</strong>.</p>'
+        f'<p class="ficha-title">Análise Realizado X Projetado</p>'
+        f'<p class="ficha-sub">Gaps de Vendas — <strong>BD COMPLETA</strong>.</p>'
         f"</div>"
         f'<div class="ficha-hero-bar-wrap" aria-hidden="true"><div class="ficha-hero-bar"></div></div>'
         f"</div>",
@@ -327,7 +327,7 @@ def fmt_br_porcentagem(v: float) -> str:
 # -----------------------------------------------------------------------------
 def main() -> None:
     fav = _resolver_png_raiz(FAVICON_ARQUIVO)
-    st.set_page_config(page_title="Gaps de Vendas | Direcional", page_icon=str(fav) if fav else None, layout="wide")
+    st.set_page_config(page_title="Análise Realizado X Projetado | Direcional", page_icon=str(fav) if fav else None, layout="wide")
     aplicar_estilo()
     _cabecalho_pagina()
 
@@ -353,8 +353,8 @@ def main() -> None:
     # Mapeamento de Colunas
     c_data = achar_coluna(df, ["CONTRATO GERADO EM", "Data do Contrato", "Contrato gerado"])
     c_emp = achar_coluna(df, ["Empreendimento"])
-    c_reg = achar_coluna(df, ["Regional ou Imob", "Regional"])
-    c_imob = achar_coluna(df, ["Imobiliária", "Imobiliaria"])
+    c_reg_imob = achar_coluna(df, ["Regional ou Imob", "Regional"])
+    c_imobiliaria = achar_coluna(df, ["Imobiliária", "Imobiliaria"])
     c_canal = achar_coluna(df, ["Canal"])
     c_rank = achar_coluna(df, ["RANKING", "Ranking"])
     
@@ -400,7 +400,7 @@ def main() -> None:
     df["Gap_Emc"] = df["VGV_Emc"] - df["VGV_Real"]
 
     # Limpeza de campos categóricos nulos
-    for col in [c_emp, c_reg, c_imob, c_canal, c_rank]:
+    for col in [c_emp, c_reg_imob, c_imobiliaria, c_canal, c_rank]:
         if col:
             df[col] = df[col].fillna("Não Informado").astype(str).str.strip()
 
@@ -419,11 +419,11 @@ def main() -> None:
     with row1_c1: sel_ano = st.multiselect("Ano", anos_disp, default=[anos_disp[-1]] if anos_disp else [])
     with row1_c2: sel_mes = st.multiselect("Mês", meses_disp, default=[mes_padrao])
     with row1_c3: sel_canal = st.multiselect("Canal", sorted(df[c_canal].unique()) if c_canal else [])
-    with row1_c4: sel_reg = st.multiselect("Regional ou Imob", sorted(df[c_reg].unique()) if c_reg else [])
+    with row1_c4: sel_reg_imob_filt = st.multiselect("Regional ou Imob", sorted(df[c_reg_imob].unique()) if c_reg_imob else [])
 
     row2_c1, row2_c2, row2_c3 = st.columns(3)
     with row2_c1: sel_emp = st.multiselect("Empreendimento", sorted(df[c_emp].unique()) if c_emp else [])
-    with row2_c2: sel_imob = st.multiselect("Imobiliária", sorted(df[c_imob].unique()) if c_imob else [])
+    with row2_c2: sel_imobiliaria = st.multiselect("Imobiliária", sorted(df[c_imobiliaria].unique()) if c_imobiliaria else [])
     with row2_c3: sel_rank = st.multiselect("Ranking", sorted(df[c_rank].unique()) if c_rank else [])
 
     # Aplicação de Filtros
@@ -431,9 +431,9 @@ def main() -> None:
     if sel_ano: df_f = df_f[df_f["_ano"].isin(sel_ano)]
     if sel_mes: df_f = df_f[df_f["_mes"].isin(sel_mes)]
     if c_canal and sel_canal: df_f = df_f[df_f[c_canal].isin(sel_canal)]
-    if c_reg and sel_reg: df_f = df_f[df_f[c_reg].isin(sel_reg)]
+    if c_reg_imob and sel_reg_imob_filt: df_f = df_f[df_f[c_reg_imob].isin(sel_reg_imob_filt)]
     if c_emp and sel_emp: df_f = df_f[df_f[c_emp].isin(sel_emp)]
-    if c_imob and sel_imob: df_f = df_f[df_f[c_imob].isin(sel_imob)]
+    if c_imobiliaria and sel_imobiliaria: df_f = df_f[df_f[c_imobiliaria].isin(sel_imobiliaria)]
     if c_rank and sel_rank: df_f = df_f[df_f[c_rank].isin(sel_rank)]
 
     # -------------------------------------------------------------------------
@@ -472,7 +472,7 @@ def main() -> None:
     # -------------------------------------------------------------------------
     # Gráfico de Linha do Tempo (Evolução dos Gaps)
     # -------------------------------------------------------------------------
-    st.subheader("Evolução Mensal do Dinheiro na Mesa")
+    st.subheader("Evolução Mensal")
     
     if not df_f.empty:
         df_chart = df_f.groupby(["_ano", "_mes"], as_index=False).agg(
@@ -507,11 +507,11 @@ def main() -> None:
     # -------------------------------------------------------------------------
     # Função Auxiliar de Geração de Tabelas de Gap
     # -------------------------------------------------------------------------
-    def gerar_tabela_gap(coluna_agrupamento: str, label_tabela: str):
-        if not coluna_agrupamento: return
+    def gerar_tabela_gap(df_input: pd.DataFrame, coluna_agrupamento: str, label_tabela: str):
+        if not coluna_agrupamento or df_input.empty: return
         st.subheader(f"Gaps por {label_tabela}")
         
-        tab = df_f.groupby(coluna_agrupamento, as_index=False).agg(
+        tab = df_input.groupby(coluna_agrupamento, as_index=False).agg(
             QTD=(coluna_agrupamento, "count"),
             VGV_Real=("VGV_Real", "sum"),
             Gap_Dir=("Gap_Dir", "sum"),
@@ -543,11 +543,24 @@ def main() -> None:
     # -------------------------------------------------------------------------
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
     
-    if c_emp: gerar_tabela_gap(c_emp, "Empreendimento")
-    if c_reg: gerar_tabela_gap(c_reg, "Regional ou Imob")
-    if c_imob: gerar_tabela_gap(c_imob, "Imobiliária")
-    if c_rank: gerar_tabela_gap(c_rank, "Ranking")
-    if c_canal: gerar_tabela_gap(c_canal, "Canal")
+    if c_emp: 
+        gerar_tabela_gap(df_f, c_emp, "Empreendimento")
+    
+    # Separação por Regional e Imob baseada no Canal
+    if c_reg_imob and c_canal:
+        # Regional: Canais DIR ou RIV
+        df_regionais = df_f[df_f[c_canal].isin(['DIR', 'RIV'])]
+        if not df_regionais.empty:
+            gerar_tabela_gap(df_regionais, c_reg_imob, "Regional (Canais DIR/RIV)")
+        
+        # Imob: Canais RJ ou RJG
+        df_imobs = df_f[df_f[c_canal].isin(['RJ', 'RJG'])]
+        if not df_imobs.empty:
+            gerar_tabela_gap(df_imobs, c_reg_imob, "Imob (Canais RJ/RJG)")
+            
+    if c_imobiliaria: gerar_tabela_gap(df_f, c_imobiliaria, "Imobiliária")
+    if c_rank: gerar_tabela_gap(df_f, c_rank, "Ranking")
+    if c_canal: gerar_tabela_gap(df_f, c_canal, "Canal")
 
     st.markdown(
         f'<div class="footer" style="text-align:center;padding:1rem 0;color:{COR_TEXTO_MUTED};font-size:0.82rem;">'
