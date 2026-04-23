@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Análise de Concorrência — Inteligência Competitiva e Performance.
-Foco: Estudo Geográfico de Precisão com Raio Dinâmico e Performance Temporal.
+Foco: Estudo Geográfico de Precisão com Raio Dinâmico, Performance Temporal e Monetização.
 """
 from __future__ import annotations
 
@@ -125,7 +125,7 @@ def _cabecalho_pagina() -> None:
         f'<div class="ficha-hero-stack">'
         f'<div class="ficha-hero">'
         f'<p class="ficha-title">Estudo de Inteligência Competitiva</p>'
-        f'<p class="ficha-sub">Análise Realizado vs Projetado — Cluster Temporal.</p>'
+        f'<p class="ficha-sub">Análise Realizado vs Projetado — Cluster Temporal e Monetização.</p>'
         f"</div>"
         f'<div class="ficha-hero-bar-wrap" aria-hidden="true"><div class="ficha-hero-bar"></div></div>'
         f"</div>",
@@ -146,7 +146,7 @@ def parse_val(v):
 def geocode_address_precision(address: str) -> tuple[Optional[float], Optional[float]]:
     if not address or str(address).lower() == "nan": return None, None
     try:
-        geolocator = Nominatim(user_agent="direcional_precision_v3")
+        geolocator = Nominatim(user_agent="direcional_precision_v4")
         clean_addr = str(address).split("(")[0].strip()
         location = geolocator.geocode(clean_addr + ", Rio de Janeiro, RJ, Brasil", timeout=15)
         if location: return location.latitude, location.longitude
@@ -177,35 +177,52 @@ def load_raw_sheets() -> dict[str, pd.DataFrame]:
 def process_pipeline():
     sheets = load_raw_sheets()
     
-    # Nova aba BD TEMPORAL
     df_temp = sheets.get("BD TEMPORAL", pd.DataFrame())
+    df_det = sheets.get("BD DETALHADA", pd.DataFrame())
     df_ref_dir = sheets.get("DADOS DIRECIONAL", pd.DataFrame())
     df_procv = sheets.get("PROCV", pd.DataFrame())
     
-    # 1. Limpeza BD TEMPORAL
+    # 1. Processamento BD DETALHADA (Contagem de Estoque Disponível)
+    df_det["Preço_Unidade"] = df_det["PREÇO"].apply(parse_val)
+    df_det["Preço_m2_Det"] = df_det["PREÇO_M2"].apply(parse_val)
+    
+    # Count de estoque disponível por Chave/Empreendimento
+    df_estoque_atual = df_det[df_det["DISPONIBILIDADE"].str.strip().str.upper() == "DISPONÍVEL"].copy()
+    df_estoque_count = df_estoque_atual.groupby("CHAVE").agg(
+        Estoque_Count=("DISPONIBILIDADE", "count"),
+        VGV_Estoque=("Preço_Unidade", "sum"),
+        Tipologia_Det=("TIPOLOGIA", "first")
+    ).reset_index()
+    
+    # 2. Processamento BD TEMPORAL
     df_temp["VENDAS"] = pd.to_numeric(df_temp["VENDAS"], errors='coerce').fillna(0)
     df_temp["ESTOQUE"] = pd.to_numeric(df_temp["ESTOQUE"], errors='coerce').fillna(0)
     df_temp["ESTOQUE INICIAL"] = pd.to_numeric(df_temp["ESTOQUE INICIAL"], errors='coerce').fillna(0)
+    df_temp["VGV_Vendido"] = df_temp["VGV"].apply(parse_val)
     df_temp["PREÇO MÉDIO"] = df_temp["PREÇO MÉDIO"].apply(parse_val)
     df_temp["DATA_DT"] = pd.to_datetime(df_temp["DATA"], dayfirst=True, errors='coerce')
     
-    # Por segurança, mantemos apenas registros válidos
     df_temp = df_temp[df_temp["PREÇO MÉDIO"] > 0].copy()
-    
-    # 2. Engenharia de Features Temporais
     df_temp = df_temp.sort_values(["CHAVE", "DATA_DT"])
     
-    # Taxa de Absorção: Vendas / (Estoque_t-1 + Vendas_t) -> Note: Estoque Inicial já é o estoque do início do mês
-    df_temp["Absorcao"] = df_temp["VENDAS"] / df_temp["ESTOQUE INICIAL"]
+    # Cruzamento temporal com Tipologia da Detalhada
+    df_temp = df_temp.merge(df_det[["CHAVE", "TIPOLOGIA"]].drop_duplicates(), on="CHAVE", how="left")
     
-    # Velocidade de Vendas: Vendas / Estoque Inicial (anterior ao fechamento do mês)
+    # 3. Engenharia de Features
+    # Taxa de Absorção: Vendas / Estoque Inicial
+    df_temp["Absorcao"] = df_temp["VENDAS"] / df_temp["ESTOQUE INICIAL"].replace(0, np.nan)
+    
+    # Velocidade de Vendas
     df_temp["Velocidade"] = df_temp["VENDAS"] / (df_temp["ESTOQUE INICIAL"].replace(0, np.nan))
     
-    # Taxa de Escoamento: Estoque Atual / Estoque Inicial
-    df_temp["Escoamento"] = df_temp["ESTOQUE"] / df_temp["ESTOQUE INICIAL"]
+    # Taxa de Escoamento
+    df_temp["Escoamento"] = df_temp["ESTOQUE"] / df_temp["ESTOQUE INICIAL"].replace(0, np.nan)
     
-    # Variação de Preço (MoM)
-    df_temp["Delta_Preco"] = df_temp.groupby("CHAVE")["PREÇO MÉDIO"].pct_change()
+    # Indicador 7: VGV Realizado / VGV Total (Monetização)
+    # VGV Total = VGV Vendido + (Estoque Atual * Preço Médio)
+    df_temp["VGV_Potencial_Estoque"] = df_temp["ESTOQUE"] * df_temp["PREÇO MÉDIO"]
+    df_temp["VGV_Total_Projeto"] = df_temp["VGV_Vendido"] + df_temp["VGV_Potencial_Estoque"]
+    df_temp["VGV_Rate"] = df_temp["VGV_Vendido"] / df_temp["VGV_Total_Projeto"].replace(0, np.nan)
     
     # Share de Vendas (Mensal)
     total_vendas_mes = df_temp.groupby("DATA")["VENDAS"].transform("sum")
@@ -215,10 +232,10 @@ def process_pipeline():
     direcional_keys = [str(x).strip().upper() for x in df_ref_dir["Nome do Empreendimento (Chave)"].unique() if x]
     df_temp["Is_Direcional"] = df_temp["CHAVE"].str.strip().str.upper().isin(direcional_keys)
     
-    # 3. Cruzamento de Endereços para o Mapa
-    df_temp_map = df_temp.merge(df_procv[["Chave", "Endereço"]].drop_duplicates().rename(columns={"Chave": "CHAVE", "Endereço": "Endereço_Ref"}), on="CHAVE", how="left")
+    # Cruzamento com Estoque Real da Detalhada
+    df_master = df_temp.merge(df_estoque_count, on="CHAVE", how="left")
     
-    return df_temp_map, df_ref_dir
+    return df_master, df_ref_dir
 
 # -----------------------------------------------------------------------------
 # Main Application
@@ -234,7 +251,7 @@ def main():
         return
 
     # Filtros de Topo
-    st.markdown("<div style='text-align: center; font-weight: bold; margin-bottom: 1rem;'>Configuração do Estudo de Cluster Temporal</div>", unsafe_allow_html=True)
+    st.markdown("<div style='text-align: center; font-weight: bold; margin-bottom: 1rem;'>Configuração do Estudo de Cluster</div>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1.8, 1, 1.2])
     
     with c1:
@@ -242,7 +259,6 @@ def main():
         alvo_selecionado = st.selectbox("Selecione o Empreendimento Direcional para Estudo", lista_alvos)
         
     with c2:
-        # CORREÇÃO DO ValueError: Ordenação baseada na coluna DATA_DT (datetime) em vez de strptime manual
         df_sorted_dates = df_master[["DATA", "DATA_DT"]].drop_duplicates().sort_values("DATA_DT")
         meses_disp = df_sorted_dates["DATA"].tolist()
         mes_estudo = st.selectbox("Mês para Visão de Mapa", meses_disp, index=len(meses_disp)-1 if meses_disp else 0)
@@ -255,36 +271,32 @@ def main():
     # -------------------------------------------------------------------------
     info_alvo_rows = df_ref_dir[df_ref_dir["Nome do Empreendimento (Chave)"] == alvo_selecionado]
     if info_alvo_rows.empty:
-        st.error("Empreendimento alvo não encontrado nos dados de referência.")
+        st.error("Empreendimento alvo não encontrado.")
         return
         
     info_alvo = info_alvo_rows.iloc[0]
     endereco_alvo = info_alvo["Endereço"]
     regiao_alvo = info_alvo["Região"]
     
-    with st.spinner("Processando geolocalização e histórico de cluster..."):
+    with st.spinner("Processando geolocalização e histórico..."):
         lat_alvo, lon_alvo = geocode_address_precision(endereco_alvo)
         
         if not lat_alvo:
             st.error("Falha ao localizar centro do cluster.")
             return
 
-        # Filtrar Cluster por Região primeiro para otimizar
         df_regiao = df_master[df_master["REGIÃO"] == regiao_alvo].copy()
         
-        # Geocodificar vizinhos
         addrs_conc = df_regiao["ENDEREÇO"].dropna().unique()
         coords_cache = {addr: geocode_address_precision(addr) for addr in addrs_conc}
         
         df_regiao["lat"] = df_regiao["ENDEREÇO"].map(lambda x: coords_cache.get(x, (None, None))[0])
         df_regiao["lon"] = df_regiao["ENDEREÇO"].map(lambda x: coords_cache.get(x, (None, None))[1])
         
-        # Calcular Distância
         df_regiao["Distancia_km"] = df_regiao.apply(
             lambda r: geodesic((lat_alvo, lon_alvo), (r["lat"], r["lon"])).km if pd.notna(r["lat"]) else 999, axis=1
         )
         
-        # Filtro de Raio
         df_cluster = df_regiao[df_regiao["Distancia_km"] <= raio_estudo].copy()
 
     # -------------------------------------------------------------------------
@@ -296,17 +308,17 @@ def main():
     
     abs_alvo = df_alvo["Absorcao"].iloc[0] * 100 if not df_alvo.empty else 0
     abs_vizinhos = df_vizinhos["Absorcao"].mean() * 100 if not df_vizinhos.empty else 0
-    
+    vgv_rate_alvo = df_alvo["VGV_Rate"].iloc[0] * 100 if not df_alvo.empty else 0
     m2_alvo = df_alvo["PREÇO MÉDIO"].iloc[0] if not df_alvo.empty else 0
     m2_vizinhos = df_vizinhos["PREÇO MÉDIO"].mean() if not df_vizinhos.empty else 0
 
     st.markdown(f"""
         <div class="vel-kpi-row">
-            <div class="vel-kpi"><div class="lbl">Preço Médio Vizinhos</div><div class="val">R$ {m2_vizinhos:,.2f}</div></div>
+            <div class="vel-kpi"><div class="lbl">Preço Médio Cluster</div><div class="val">R$ {m2_vizinhos:,.2f}</div></div>
             <div class="vel-kpi"><div class="lbl">Preço Médio Direcional</div><div class="val val--red">R$ {m2_alvo:,.2f}</div></div>
-            <div class="vel-kpi"><div class="lbl">Absorção Vizinhos</div><div class="val">{abs_vizinhos:.1f}%</div></div>
             <div class="vel-kpi"><div class="lbl">Absorção Direcional</div><div class="val val--red">{abs_alvo:.1f}%</div></div>
-            <div class="vel-kpi"><div class="lbl">Estoque no Raio</div><div class="val">{int(df_mes["ESTOQUE"].sum())} unid.</div></div>
+            <div class="vel-kpi"><div class="lbl">Monetização (VGV Rate)</div><div class="val val--red">{vgv_rate_alvo:.1f}%</div></div>
+            <div class="vel-kpi"><div class="lbl">Estoque Real (Disponível)</div><div class="val">{int(df_alvo["Estoque_Count"].sum()) if not df_alvo.empty else 0} unid.</div></div>
         </div>
     """, unsafe_allow_html=True)
 
@@ -316,17 +328,17 @@ def main():
     st.subheader(f"Mapa do Cluster Competitivo (Raio {raio_estudo}km)")
     
     df_map_points = df_mes.groupby("EMPREENDIMENTO").agg({
-        "CONSTRUTORA": "first", "lat": "first", "lon": "first", "PREÇO MÉDIO": "mean", "ESTOQUE": "sum", "Is_Direcional": "first"
+        "CONSTRUTORA": "first", "lat": "first", "lon": "first", "PREÇO MÉDIO": "mean", "Estoque_Count": "sum", "Is_Direcional": "first"
     }).reset_index()
     
-    # Tamanho = Estoque
-    df_map_points["Marker_Size"] = df_map_points["ESTOQUE"].fillna(0) + 15
+    # Tamanho = Estoque Disponível Real
+    df_map_points["Marker_Size"] = df_map_points["Estoque_Count"].fillna(0) + 15
     
     fig_map = px.scatter_mapbox(df_map_points, lat="lat", lon="lon", 
                                 color="PREÇO MÉDIO", 
                                 size="Marker_Size",
                                 hover_name="EMPREENDIMENTO", 
-                                hover_data={"PREÇO MÉDIO": ":.2f", "ESTOQUE": True},
+                                hover_data={"PREÇO MÉDIO": ":.2f", "Estoque_Count": True},
                                 color_continuous_scale="Reds", 
                                 zoom=12, height=500, center={"lat": lat_alvo, "lon": lon_alvo})
     
@@ -339,52 +351,36 @@ def main():
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:2rem 0;'/>", unsafe_allow_html=True)
     st.subheader("Indicadores de Performance ao Longo do Tempo")
     
-    # Agrupar cluster temporal
     df_trend = df_cluster.groupby(["DATA_DT", "Is_Direcional"]).agg({
-        "Absorcao": "mean",
-        "Velocidade": "mean",
-        "Escoamento": "mean",
-        "PREÇO MÉDIO": "mean",
-        "Share_Vendas": "sum"
-    }).reset_index()
-    # Para o eixo X ficar limpo
-    df_trend = df_trend.sort_values("DATA_DT")
+        "Absorcao": "mean", "Velocidade": "mean", "Escoamento": "mean", "PREÇO MÉDIO": "mean", "VGV_Rate": "mean", "Share_Vendas": "sum"
+    }).reset_index().sort_values("DATA_DT")
     df_trend["DATA_STR"] = df_trend["DATA_DT"].dt.strftime("%m/%Y")
 
     g1, g2 = st.columns(2)
-    
     with g1:
         st.markdown("**Taxa de Absorção (Vendas / Estoque Inicial)**")
-        fig_abs = px.line(df_trend, x="DATA_STR", y="Absorcao", color="Is_Direcional",
-                          color_discrete_map={True: COR_VERMELHO, False: COR_AZUL_ESC}, markers=True)
+        fig_abs = px.line(df_trend, x="DATA_STR", y="Absorcao", color="Is_Direcional", color_discrete_map={True: COR_VERMELHO, False: COR_AZUL_ESC}, markers=True)
         fig_abs.update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
         st.plotly_chart(fig_abs, use_container_width=True)
         
-        st.markdown("**Taxa de Escoamento de Estoque (Final / Inicial)**")
-        fig_esc = px.line(df_trend, x="DATA_STR", y="Escoamento", color="Is_Direcional",
-                          color_discrete_map={True: COR_VERMELHO, False: COR_AZUL_ESC}, markers=True)
-        fig_esc.update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
-        st.plotly_chart(fig_esc, use_container_width=True)
+        st.markdown("**Taxa de Monetização (VGV Realizado / VGV Total)**")
+        fig_vgv_r = px.line(df_trend, x="DATA_STR", y="VGV_Rate", color="Is_Direcional", color_discrete_map={True: COR_VERMELHO, False: COR_AZUL_ESC}, markers=True)
+        fig_vgv_r.update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
+        st.plotly_chart(fig_vgv_r, use_container_width=True)
 
     with g2:
-        st.markdown("**Velocidade de Vendas (Vendas / Estoque Inicial)**")
-        fig_vel = px.line(df_trend, x="DATA_STR", y="Velocidade", color="Is_Direcional",
-                          color_discrete_map={True: COR_VERMELHO, False: COR_AZUL_ESC}, markers=True)
-        fig_vel.update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
-        st.plotly_chart(fig_vel, use_container_width=True)
+        st.markdown("**Indicadores por Tipologia no Cluster**")
+        # Gráfico dinâmico por Tipologia
+        df_tipo = df_cluster.groupby(["DATA_DT", "TIPOLOGIA"]).agg({"Absorcao": "mean", "VGV_Rate": "mean"}).reset_index().sort_values("DATA_DT")
+        df_tipo["DATA_STR"] = df_tipo["DATA_DT"].dt.strftime("%m/%Y")
+        fig_tipo = px.line(df_tipo, x="DATA_STR", y="Absorcao", color="TIPOLOGIA", markers=True, color_discrete_sequence=px.colors.qualitative.Safe)
+        fig_tipo.update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="", legend=dict(orientation="h", y=-0.2))
+        st.plotly_chart(fig_tipo, use_container_width=True)
         
         st.markdown("**Dinâmica de Preço Médio Praticado**")
-        fig_prc = px.line(df_trend, x="DATA_STR", y="PREÇO MÉDIO", color="Is_Direcional",
-                          color_discrete_map={True: COR_VERMELHO, False: COR_AZUL_ESC}, markers=True)
+        fig_prc = px.line(df_trend, x="DATA_STR", y="PREÇO MÉDIO", color="Is_Direcional", color_discrete_map={True: COR_VERMELHO, False: COR_AZUL_ESC}, markers=True)
         fig_prc.update_layout(yaxis_tickprefix="R$ ", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
         st.plotly_chart(fig_prc, use_container_width=True)
-
-    # Share de Vendas em gráfico de área
-    st.markdown("**Share de Vendas no Cluster (Direcional vs Mercado)**")
-    fig_share = px.area(df_trend, x="DATA_STR", y="Share_Vendas", color="Is_Direcional",
-                        color_discrete_map={True: COR_VERMELHO, False: COR_AZUL_ESC})
-    fig_share.update_layout(yaxis_tickformat=".0%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
-    st.plotly_chart(fig_share, use_container_width=True)
 
     # -------------------------------------------------------------------------
     # TABELA DE BENCHMARKING
@@ -392,24 +388,16 @@ def main():
     st.markdown("### Benchmarking de Performance no Cluster")
     
     df_tab = df_mes.groupby("EMPREENDIMENTO").agg({
-        "CONSTRUTORA": "first",
-        "PREÇO MÉDIO": "mean",
-        "VENDAS": "sum",
-        "ESTOQUE": "sum",
-        "Absorcao": "mean",
-        "Distancia_km": "first"
+        "CONSTRUTORA": "first", "TIPOLOGIA": "first", "PREÇO MÉDIO": "mean", "VENDAS": "sum", "Estoque_Count": "sum", "Absorcao": "mean", "VGV_Rate": "mean", "Distancia_km": "first"
     }).reset_index().sort_values("Distancia_km", ascending=True)
     
     st.dataframe(df_tab.rename(columns={
-        "EMPREENDIMENTO": "Produto",
-        "PREÇO MÉDIO": "R$/m²",
-        "Absorcao": "Absorção",
-        "Distancia_km": "Distância"
+        "EMPREENDIMENTO": "Produto", "PREÇO MÉDIO": "R$/m²", "Estoque_Count": "Estoque Real", "Absorcao": "Absorção", "VGV_Rate": "VGV Rate", "Distancia_km": "Distância"
     }).style.format({
-        "R$/m²": "R$ {:.2f}", "Absorção": "{:.1%}", "Distância": "{:.1f} km"
+        "R$/m²": "R$ {:.2f}", "Absorção": "{:.1%}", "VGV Rate": "{:.1%}", "Distância": "{:.1f} km"
     }), use_container_width=True, hide_index=True)
 
-    st.markdown(f'<div style="text-align:center; padding:1rem; color:{COR_TEXTO_MUTED}; font-size:0.82rem;">Direcional Engenharia · Inteligência de Mercado · Estudo Temporal Georreferenciado</div>', unsafe_allow_html=True)
+    st.markdown(f'<div style="text-align:center; padding:1rem; color:{COR_TEXTO_MUTED}; font-size:0.82rem;">Direcional Engenharia · Inteligência de Mercado · Estudo de Cluster Georreferenciado</div>', unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
