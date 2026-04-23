@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Análise de Concorrência — Inteligência Competitiva e Performance.
-Foco: Estudo Geográfico por Empreendimento Direcional e Cluster Regional.
+Foco: Estudo Geográfico por Raio (15km) e Performance Real Direcional.
 """
 from __future__ import annotations
 
@@ -18,6 +18,8 @@ import streamlit as st
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from geopy.geocoders import Nominatim
+from geopy.distance import geodesic
 
 # -----------------------------------------------------------------------------
 # Identificação da planilha e Arquivos Visuais
@@ -45,7 +47,7 @@ RGB_AZUL_CSS = _hex_rgb_triplet(COR_AZUL_ESC)
 RGB_VERMELHO_CSS = _hex_rgb_triplet(COR_VERMELHO)
 
 # -----------------------------------------------------------------------------
-# Funções de Design (Padrão Gaps)
+# Funções de Design
 # -----------------------------------------------------------------------------
 def _resolver_png_raiz(nome: str) -> Path | None:
     for base in (_DIR_APP, _DIR_APP.parent):
@@ -122,8 +124,8 @@ def _cabecalho_pagina() -> None:
     st.markdown(
         f'<div class="ficha-hero-stack">'
         f'<div class="ficha-hero">'
-        f'<p class="ficha-title">Estudo Competitivo de Raio</p>'
-        f'<p class="ficha-sub">Performance Direcional vs Concorrência (Cluster 15km).</p>'
+        f'<p class="ficha-title">Inteligência Competitiva e Performance</p>'
+        f'<p class="ficha-sub">Análise Realizado X Projetado — Mercado e Concorrência.</p>'
         f"</div>"
         f'<div class="ficha-hero-bar-wrap" aria-hidden="true"><div class="ficha-hero-bar"></div></div>'
         f"</div>",
@@ -131,7 +133,7 @@ def _cabecalho_pagina() -> None:
     )
 
 # -----------------------------------------------------------------------------
-# Pipeline de Dados
+# Pipeline de Dados e Geocodificação
 # -----------------------------------------------------------------------------
 def parse_val(v):
     if not v: return 0.0
@@ -139,15 +141,25 @@ def parse_val(v):
     try: return float(re.sub(r'[^\d.]', '', s))
     except: return 0.0
 
+@st.cache_data(ttl=3600, show_spinner=False)
+def geocode_address(address: str) -> tuple[Optional[float], Optional[float]]:
+    """Converte endereço em Lat/Lon usando Nominatim (com cache para não sobrecarregar)."""
+    try:
+        geolocator = Nominatim(user_agent="direcional_market_intelligence_v1")
+        location = geolocator.geocode(address + ", Rio de Janeiro, Brasil", timeout=10)
+        if location:
+            return location.latitude, location.longitude
+    except:
+        pass
+    return None, None
+
 @st.cache_data(ttl=300, show_spinner=False)
-def load_all_sheets() -> dict[str, pd.DataFrame]:
+def load_base_data() -> dict[str, pd.DataFrame]:
     import gspread
     from google.oauth2.service_account import Credentials
-    
     sec = st.secrets["connections"]["gsheets"]
     info = {k: v for k, v in sec.items() if v}
     info["private_key"] = info["private_key"].replace("\\n", "\n")
-    
     scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
     creds = Credentials.from_service_account_info(info, scopes=scopes)
     gc = gspread.authorize(creds)
@@ -162,49 +174,51 @@ def load_all_sheets() -> dict[str, pd.DataFrame]:
             dfs[ws.title] = df
     return dfs
 
-def process_pipeline(mes_selecionado: str):
-    sheets = load_all_sheets()
+def process_market_pipeline(mes_selecionado: str):
+    sheets = load_base_data()
     
     df_det = sheets.get("BD DETALHADA", pd.DataFrame())
-    df_ger = sheets.get("BD GERAL", pd.DataFrame())
     df_men = sheets.get(mes_selecionado, pd.DataFrame())
+    df_procv = sheets.get("PROCV", pd.DataFrame())
+    df_ref_dir = sheets.get("DADOS DIRECIONAL", pd.DataFrame())
     df_est_dir = sheets.get("Automação Estudos Concorrentes - Lucas", pd.DataFrame())
     df_ven_dir = sheets.get("Controle de Vendas RJ - Periodo Integral", pd.DataFrame())
-    df_ref = sheets.get("DADOS DIRECIONAL", pd.DataFrame())
     
-    # 1. Tratar Concorrência (Até 10k/m2)
+    # 1. Cruzamento Concorrência (Até 10k/m2)
     df_det["Preço_Float"] = df_det["PREÇO"].apply(parse_val)
     df_det["Metragem_Float"] = df_det["METRAGEM"].apply(parse_val)
     df_det["Preço_m2"] = np.where(df_det["Metragem_Float"] > 0, df_det["Preço_Float"] / df_det["Metragem_Float"], 0)
     df_det = df_det[df_det["Preço_m2"] <= 10000].copy()
     
+    # Merge performance mensal
     df_master = df_det.merge(df_men[["CHAVE", "Vendas (Qnt.)", "Estoque (Qnt.)"]], on="CHAVE", how="left")
     
-    # 2. Tratar Dados Direcional (Estoque)
+    # Adicionar Endereços dos Concorrentes via aba PROCV
+    df_procv_sub = df_procv[["Chave", "Endereço"]].drop_duplicates().rename(columns={"Chave": "CHAVE", "Endereço": "Endereço_Conc"})
+    df_master = df_master.merge(df_procv_sub, on="CHAVE", how="left")
+    
+    # 2. Dados Direcional (Performance Real)
+    # Estoque
     status_estoque = ["Disponível", "Fora de venda", "Fora de venda - Comercial", "Mirror"]
     df_est_dir = df_est_dir[df_est_dir["Status da unidade"].isin(status_estoque)].copy()
-    
-    def calc_liquido(row):
-        return parse_val(row.get("Valor Final Com Kit", 0)) - parse_val(row.get("Folga de Tabela", 0)) - parse_val(row.get("Bônus Adimplência", 0))
-    
-    df_est_dir["Valor_Liquido"] = df_est_dir.apply(calc_liquido, axis=1)
+    df_est_dir["Valor_Liquido"] = df_est_dir.apply(lambda r: parse_val(r.get("Valor Final Com Kit", 0)) - parse_val(r.get("Folga de Tabela", 0)) - parse_val(r.get("Bônus Adimplência", 0)), axis=1)
     df_est_dir["Area_Float"] = df_est_dir["Área privativa total"].apply(parse_val)
     
-    # 3. Tratar Dados Direcional (Vendas)
+    # Vendas
     df_ven_dir = df_ven_dir[pd.to_numeric(df_ven_dir["Venda Comercial?"], errors='coerce') == 1].copy()
     df_ven_dir["VGV_Real"] = df_ven_dir["Valor Real de Venda"].apply(parse_val)
     df_ven_dir["Data_Venda_DT"] = pd.to_datetime(df_ven_dir["Data da venda"], dayfirst=True, errors='coerce')
     
-    return df_master, df_est_dir, df_ven_dir, df_ref
+    return df_master, df_est_dir, df_ven_dir, df_ref_dir
 
 # -----------------------------------------------------------------------------
-# Main App
+# Main Application
 # -----------------------------------------------------------------------------
 def main():
     aplicar_estilo()
     _cabecalho_pagina()
     
-    # Coleta de abas mensais disponíveis
+    # Buscar nomes das abas de performance
     import gspread
     from google.oauth2.service_account import Credentials
     sec = st.secrets["connections"]["gsheets"]
@@ -215,132 +229,154 @@ def main():
     gc = gspread.authorize(creds)
     sh = gc.open_by_key(SPREADSHEET_ID_CONC)
     abas_mensais = [ws.title for ws in sh.worksheets() if "/" in ws.title]
-    
-    # Filtros de Topo
-    st.markdown("<div style='text-align: center; font-weight: bold; margin-bottom: 1rem;'>Parâmetros do Estudo</div>", unsafe_allow_html=True)
+
+    # Filtros de Topo (Design Unificado)
+    st.markdown("<div style='text-align: center; font-weight: bold; margin-bottom: 1rem;'>Parâmetros do Estudo Competitivo</div>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([2, 1, 1])
     
     with c1:
-        # Carregamento prévio da referência para o seletor
+        # Carregar Referência Direcional para o Seletor
         df_ref_temp = pd.DataFrame(sh.worksheet("DADOS DIRECIONAL").get_all_records())
+        df_ref_temp.columns = [str(c).strip() for c in df_ref_temp.columns]
         lista_alvos = sorted(df_ref_temp["Nome do Empreendimento (Chave)"].unique())
-        alvo_selecionado = st.selectbox("Empreendimento Direcional para Estudo", lista_alvos)
+        alvo_selecionado = st.selectbox("Selecione o Empreendimento Direcional para Estudo", lista_alvos)
         
     with c2:
         mes_estudo = st.selectbox("Mês de Performance (Mercado)", abas_mensais, index=len(abas_mensais)-1 if abas_mensais else 0)
         
     with c3:
-        # O ano de vendas pode vir do seletor mas baseado na base real
         ano_estudo = st.selectbox("Ano de Vendas (Real Direcional)", [2024, 2025, 2026], index=2)
 
     try:
-        df_conc, df_est_dir, df_ven_dir, df_ref = process_pipeline(mes_estudo)
+        df_mercado, df_est_dir, df_ven_dir, df_ref_dir = process_market_pipeline(mes_estudo)
     except Exception as e:
-        st.error(f"Erro no pipeline: {e}")
+        st.error(f"Erro no processamento das bases: {e}")
         return
 
-    # Lógica de Cluster Regional
-    info_alvo = df_ref[df_ref["Nome do Empreendimento (Chave)"] == alvo_selecionado].iloc[0]
-    regiao_cluster = info_alvo["Região"]
+    # -------------------------------------------------------------------------
+    # Lógica Geográfica: Centro e Raio de 15km
+    # -------------------------------------------------------------------------
+    info_alvo = df_ref_dir[df_ref_dir["Nome do Empreendimento (Chave)"] == alvo_selecionado].iloc[0]
+    endereco_alvo = info_alvo["Endereço"]
+    regiao_alvo = info_alvo["Região"]
     
-    # Filtro Mercado (Vizinhos na mesma região)
-    df_f_conc = df_conc[df_conc["REGIÃO"] == regiao_cluster].copy()
-    
-    # Cálculos Direcional (Alvo)
+    with st.spinner(f"Geolocalizando cluster para {alvo_selecionado}..."):
+        lat_alvo, lon_alvo = geocode_address(endereco_alvo)
+        
+        if not lat_alvo:
+            st.error(f"Não foi possível localizar o endereço: {endereco_alvo}. Usando fallback regional.")
+            coord_fallback = {"Jacarepagua/Barra": [-22.95, -43.35], "Zona Norte": [-22.88, -43.28], "Nova Iguaçu/Baixada": [-22.75, -43.45], "Zona Oeste": [-22.9, -43.55], "São Gonçalo": [-22.82, -43.05]}
+            lat_alvo, lon_alvo = coord_fallback.get(regiao_alvo, [-22.9, -43.2])
+
+        # Geocodificar concorrentes únicos para o mapa
+        df_cluster = df_mercado[df_mercado["REGIÃO"] == regiao_alvo].copy()
+        
+        unique_addresses = df_cluster["Endereço_Conc"].dropna().unique()
+        coords_map = {addr: geocode_address(addr) for addr in unique_addresses}
+        
+        df_cluster["lat"] = df_cluster["Endereço_Conc"].map(lambda x: coords_map.get(x, (None, None))[0])
+        df_cluster["lon"] = df_cluster["Endereço_Conc"].map(lambda x: coords_map.get(x, (None, None))[1])
+        
+        # Filtro de 15km
+        def calc_dist(row):
+            if pd.isna(row["lat"]) or pd.isna(row["lon"]): return 999
+            return geodesic((lat_alvo, lon_alvo), (row["lat"], row["lon"])).km
+        
+        df_cluster["Distancia_km"] = df_cluster.apply(calc_dist, axis=1)
+        df_final = df_cluster[df_cluster["Distancia_km"] <= 15].copy()
+
+    # -------------------------------------------------------------------------
+    # KPIs Comparativos (Performance Real)
+    # -------------------------------------------------------------------------
+    # Dados Direcional Reais
     vendas_alvo = len(df_ven_dir[(df_ven_dir["Empreendimento"] == alvo_selecionado) & (df_ven_dir["Data_Venda_DT"].dt.year == ano_estudo)])
-    estoque_alvo = len(df_est_dir[df_est_dir["Nome do Empreendimento"] == alvo_selecionado])
+    estoque_alvo_count = len(df_est_dir[df_est_dir["Nome do Empreendimento"] == alvo_selecionado])
     
-    # Absorção Real Direcional
-    abs_dir = (vendas_alvo / (vendas_alvo + estoque_alvo)) * 100 if (vendas_alvo + estoque_alvo) > 0 else 0
-    
-    # Preço m2 Médio Direcional Real
     estoque_v_liq = df_est_dir[df_est_dir["Nome do Empreendimento"] == alvo_selecionado]["Valor_Liquido"].sum()
     estoque_area = df_est_dir[df_est_dir["Nome do Empreendimento"] == alvo_selecionado]["Area_Float"].sum()
-    m2_dir = estoque_v_liq / estoque_area if estoque_area > 0 else 0
-
-    st.markdown(f"### Estudo de Viabilidade: Cluster {regiao_cluster}")
+    m2_real_dir = estoque_v_liq / estoque_area if estoque_area > 0 else 0
     
-    # KPIs Comparativos
-    avg_m2_conc = df_f_conc[df_f_conc["CHAVE"] != alvo_selecionado]["Preço_m2"].mean()
+    # Absorção Real
+    abs_real_dir = (vendas_alvo / (vendas_alvo + estoque_alvo_count)) * 100 if (vendas_alvo + estoque_alvo_count) > 0 else 0
+    
+    # Dados Mercado Cluster
+    avg_m2_cluster = df_final[df_final["CHAVE"] != alvo_selecionado]["Preço_m2"].mean()
     
     st.markdown(f"""
         <div class="vel-kpi-row">
-            <div class="vel-kpi"><div class="lbl">Preço m² Médio Cluster</div><div class="val">R$ {avg_m2_conc:,.2f}</div></div>
-            <div class="vel-kpi"><div class="lbl">Preço m² Real ({alvo_selecionado})</div><div class="val val--red">R$ {m2_dir:,.2f}</div></div>
-            <div class="vel-kpi"><div class="lbl">Vendas {alvo_selecionado} ({ano_estudo})</div><div class="val val--red">{vendas_alvo} unid.</div></div>
-            <div class="vel-kpi"><div class="lbl">Estoque {alvo_selecionado}</div><div class="val">{estoque_alvo} unid.</div></div>
-            <div class="vel-kpi"><div class="lbl">Absorção Real Direcional</div><div class="val val--red">{abs_dir:.1f}%</div></div>
+            <div class="vel-kpi"><div class="lbl">Preço m² Médio Cluster (15km)</div><div class="val">R$ {avg_m2_cluster:,.2f}</div></div>
+            <div class="vel-kpi"><div class="lbl">Preço m² Real ({alvo_selecionado})</div><div class="val val--red">R$ {m2_real_dir:,.2f}</div></div>
+            <div class="vel-kpi"><div class="lbl">Vendas Realizadas ({ano_estudo})</div><div class="val val--red">{vendas_alvo} unid.</div></div>
+            <div class="vel-kpi"><div class="lbl">Estoque Atual</div><div class="val">{estoque_alvo_count} unid.</div></div>
+            <div class="vel-kpi"><div class="lbl">Absorção Real Direcional</div><div class="val val--red">{abs_real_dir:.1f}%</div></div>
         </div>
     """, unsafe_allow_html=True)
 
     # -------------------------------------------------------------------------
-    # MAPA GEOGRÁFICO DE CONCORRÊNCIA
+    # MAPA GEOGRÁFICO DO ESTUDO
     # -------------------------------------------------------------------------
-    st.subheader("Mapa Competitivo: Direcional vs Cluster (Raio Regional)")
+    st.subheader(f"Mapa do Cluster Competitivo (Raio 15km - {regiao_alvo})")
     
-    # Mock de coordenadas baseadas em regiões do RJ para visualização (já que a planilha não tem lat/lon)
-    coord_map = {
-        "Jacarepagua/Barra": [-22.95, -43.35],
-        "Zona Norte": [-22.88, -43.28],
-        "Nova Iguaçu/Baixada": [-22.75, -43.45],
-        "Zona Oeste": [-22.90, -43.55],
-        "São Gonçalo": [-22.82, -43.05]
-    }
-    base_coord = coord_map.get(regiao_cluster, [-22.9, -43.2])
+    # Criar DataFrame para o mapa (unificando Direcional e Concorrência)
+    df_mapa = df_final.groupby("EMPREENDIMENTO").agg({
+        "CONCORRENTE": "first", "lat": "first", "lon": "first", "Preço_m2": "mean", "Vendas (Qnt.)": "first"
+    }).reset_index()
     
-    # Gerar dispersão visual no mapa baseada em endereço para simular localizações reais
-    df_f_conc["lat"] = base_coord[0] + np.random.uniform(-0.03, 0.03, len(df_f_conc))
-    df_f_conc["lon"] = base_coord[1] + np.random.uniform(-0.03, 0.03, len(df_f_conc))
-    df_f_conc["Marker_Size"] = pd.to_numeric(df_f_conc["Vendas (Qnt.)"], errors='coerce').fillna(5) + 10
+    # Adicionar o alvo direcional explicitamente se não estiver
+    df_mapa["Marker_Color"] = df_mapa["CONCORRENTE"].apply(lambda x: COR_VERMELHO if x == "DIRECIONAL" else COR_AZUL_ESC)
+    df_mapa["Marker_Size"] = pd.to_numeric(df_mapa["Vendas (Qnt.)"], errors='coerce').fillna(0) + 15
     
-    fig_map = px.scatter_mapbox(df_f_conc, lat="lat", lon="lon", color="CONCORRENTE", size="Marker_Size",
-                                hover_name="EMPREENDIMENTO", hover_data=["Preço_m2", "TIPOLOGIA"],
+    fig_map = px.scatter_mapbox(df_mapa, lat="lat", lon="lon", color="CONCORRENTE", size="Marker_Size",
+                                hover_name="EMPREENDIMENTO", hover_data=["Preço_m2"],
                                 color_discrete_map={"DIRECIONAL": COR_VERMELHO},
-                                zoom=12, height=500)
+                                zoom=12, height=600, center={"lat": lat_alvo, "lon": lon_alvo})
     
     fig_map.update_layout(mapbox_style="carto-positron", margin={"r":0,"t":0,"l":0,"b":0}, paper_bgcolor="rgba(0,0,0,0)")
     st.plotly_chart(fig_map, use_container_width=True)
+    st.caption(f"Mapa centralizado em: {endereco_alvo}")
 
     # -------------------------------------------------------------------------
-    # TABELA COMPARATIVA
+    # TABELA DE BENCHMARKING
     # -------------------------------------------------------------------------
     st.markdown("### 📊 Benchmarking do Cluster Regional")
     
-    df_tab = df_f_conc.groupby("EMPREENDIMENTO").agg({
+    df_tab = df_final.groupby("EMPREENDIMENTO").agg({
         "CONCORRENTE": "first",
         "TIPOLOGIA": "first",
         "Metragem_Float": "mean",
         "Preço_m2": "mean",
         "Vendas (Qnt.)": "first",
-        "Estoque (Qnt.)": "first"
-    }).reset_index().sort_values("Preço_m2", ascending=False)
+        "Distancia_km": "first"
+    }).reset_index().sort_values("Distancia_km", ascending=True)
     
     st.dataframe(df_tab.rename(columns={
         "EMPREENDIMENTO": "Produto",
         "Metragem_Float": "m² Médio",
         "Preço_m2": "R$/m²",
         "Vendas (Qnt.)": f"Vendas ({mes_estudo})",
-        "Estoque (Qnt.)": "Estoque Atual"
-    }).style.format({"R$/m²": "R$ {:.2f}", "m² Médio": "{:.1f}"}), use_container_width=True, hide_index=True)
+        "Distancia_km": "Distância (km)"
+    }).style.format({
+        "R$/m²": "R$ {:.2f}", 
+        "m² Médio": "{:.1f}",
+        "Distância (km)": "{:.1f} km"
+    }), use_container_width=True, hide_index=True)
 
-    # Diagnóstico Final
+    # Diagnóstico
     st.markdown("<br>### 💡 Diagnóstico de Viabilidade do Cluster", unsafe_allow_html=True)
-    cluster_abs_media = pd.to_numeric(df_f_conc["Vendas (Qnt.)"], errors='coerce').fillna(0).mean()
-    
     c_diag1, c_diag2 = st.columns(2)
     with c_diag1:
-        if m2_dir < avg_m2_conc:
-            st.success(f"💰 **Margem de Valorização:** O m² da Direcional está abaixo da média regional. Há espaço para reposicionamento de preço.")
+        if m2_real_dir < avg_m2_cluster:
+            st.success(f"💰 **Oportunidade de Preço:** Seu m² real está abaixo da média do cluster regional. Há espaço para reposicionamento ou aumento de margem.")
         else:
-            st.warning(f"⚠️ **Pressão Competitiva:** Preço/m² da Direcional está acima da média. Necessário destacar diferenciais construtivos.")
+            st.warning(f"⚠️ **Pressão Competitiva:** Seu m² está acima da média dos vizinhos. A estratégia deve focar em diferenciais de lazer e acabamento.")
     
     with c_diag2:
-        if abs_dir > 5: # Critério de 5% como saudabilidade mínima
-            st.info(f"📈 **Absorção Saudável:** O ritmo de vendas real da Direcional indica boa aceitação do produto no cluster.")
+        if abs_real_dir > 7:
+            st.info(f"🚀 **Alta Velocidade:** A absorção real está saudável. O produto possui boa liquidez na região.")
         else:
-            st.error(f"📉 **Atenção:** Baixa absorção real. Verificar se a tipologia ou o preço estão desalinhados com a demanda regional.")
+            st.error(f"📉 **Alerta de Giro:** Absorção abaixo de 7%. Avaliar se a tipologia está adequada ao ticket médio da região.")
 
-    st.markdown(f'<div style="text-align:center; padding:1rem; color:{COR_TEXTO_MUTED}; font-size:0.82rem;">Direcional Engenharia · Inteligência de Mercado · Cluster Regional Georreferenciado</div>', unsafe_allow_html=True)
+    st.markdown(f'<div style="text-align:center; padding:1rem; color:{COR_TEXTO_MUTED}; font-size:0.82rem;">Direcional Engenharia · Inteligência de Mercado · Estudo de Cluster Georreferenciado</div>', unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
