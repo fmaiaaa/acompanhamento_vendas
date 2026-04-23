@@ -1065,6 +1065,57 @@ def main() -> None:
     else:
         st.warning("Coluna 'Ranking' não encontrada na base.")
 
+    # -------------------------------------------------------------------------
+    # FUNIL IDEAL E ENGENHARIA REVERSA
+    # -------------------------------------------------------------------------
+    st.markdown("<br><hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
+    st.subheader("Engenharia Reversa: Funil Ideal")
+    st.caption("Projeção de volume necessário nas etapas de marketing e conversão para atingir a **Meta de Vendas** filtrada.")
+    
+    # Engenharia reversa baseada nas taxas de conversão informadas
+    v_meta = math.floor(total_meta_qtd)
+    pa_ideal = math.ceil(v_meta / 0.64) if v_meta > 0 else 0
+    p_ideal = math.ceil(pa_ideal / 0.64) if pa_ideal > 0 else 0
+    vi_ideal = math.ceil(p_ideal / 0.25) if p_ideal > 0 else 0
+    a_ideal = math.ceil(vi_ideal / 0.50) if vi_ideal > 0 else 0
+    
+    # 1. Gráfico Funil (Plotly)
+    fig_funil = go.Figure(go.Funnel(
+        y=['Agendamentos', 'Visitas', 'Pastas', 'Pastas Aprovadas', 'Vendas (Meta)'],
+        x=[a_ideal, vi_ideal, p_ideal, pa_ideal, v_meta],
+        textinfo="value",
+        marker={"color": ["#022654", "#04428f", "#1e60b3", "#cb0935", "#9e0828"]},
+        connector={"fillcolor": "rgba(4, 66, 143, 0.15)"}
+    ))
+    fig_funil.update_layout(
+        margin=dict(l=20, r=20, t=30, b=20),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=380,
+        font=dict(family="Inter", color=COR_TEXTO_LABEL)
+    )
+    st.plotly_chart(fig_funil, use_container_width=True, config={"displayModeBar": False})
+
+    # 2. Métricas Derivadas (Digital e Corretores)
+    vd_ideal = math.ceil(v_meta * 0.40)
+    od_ideal = math.ceil(vd_ideal / 0.044) if vd_ideal > 0 else 0
+    ld_ideal = math.ceil(od_ideal / 0.50) if od_ideal > 0 else 0
+    
+    corretores_ideal = math.ceil(v_meta / 0.20) if v_meta > 0 else 0
+
+    st.markdown(
+        f"""
+        <div style="margin-top: 1.5rem; margin-bottom: 0.85rem;"><strong>Métricas Derivadas: Digital e Corretores Ativos</strong></div>
+        <div class="vel-kpi-row">
+            <div class="vel-kpi"><div class="lbl">Leads Digitais</div><div class="val">{ld_ideal}</div></div>
+            <div class="vel-kpi"><div class="lbl">Oportunidades Digitais</div><div class="val">{od_ideal}</div></div>
+            <div class="vel-kpi"><div class="lbl">Vendas Digitais (40%)</div><div class="val">{vd_ideal}</div></div>
+            <div class="vel-kpi"><div class="lbl">Corretores (20% vendendo)</div><div class="val">{corretores_ideal}</div></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
     st.markdown(
         f'<div class="footer" style="text-align:center;padding:1rem 0;color:{COR_TEXTO_MUTED};font-size:0.82rem;">'
         f"Direcional Engenharia · Vendas — Acompanhamento de metas</div>",
