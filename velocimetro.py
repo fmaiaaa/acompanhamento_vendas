@@ -262,41 +262,74 @@ def parse_valor_br(val: Any) -> float:
 
 
 def extrair_mes(val: Any) -> Optional[int]:
-    """Extrai mês numérico mesmo que venha como texto (ex: Maio/2026)."""
+    """Extrai mês numérico com alta precisão para diferentes formatações (ex: Maio/2026, 05/2026)."""
     if pd.isna(val): return None
     v = str(val).strip().lower()
+    if not v: return None
+    
+    # 1. Busca por nome do mês dentro da string
+    for m_str, m_num in MESES_TEXTO_MAP.items():
+        if m_str in v:
+            return m_num
+            
+    # 2. Busca por número solto (ex: 5 ou 05)
     try:
-        return int(float(v))
+        m = int(float(v))
+        if 1 <= m <= 12: return m
     except ValueError:
         pass
-    for m_str, m_num in MESES_TEXTO_MAP.items():
-        if v.startswith(m_str):
-            return m_num
+        
+    # 3. Busca em formatos de data com barra (dd/mm/yyyy ou mm/yyyy)
     if '/' in v:
         p = v.split('/')
-        if len(p) == 2:
-            try: return int(p[0])
+        if len(p) == 3:  # dd/mm/yyyy
+            try:
+                m = int(p[1])
+                if 1 <= m <= 12: return m
             except: pass
-        elif len(p) == 3:
-            try: return int(p[1])
+        elif len(p) == 2:  # mm/yyyy
+            try:
+                m = int(p[0])
+                if 1 <= m <= 12: return m
             except: pass
+            
     return None
 
 
 def extrair_ano(val: Any) -> Optional[int]:
-    """Extrai ano numérico mesmo que venha em data extensa."""
+    """Extrai ano numérico de strings complexas."""
     if pd.isna(val): return None
     v = str(val).strip()
+    if not v: return None
+    
+    # 1. Ano direto como número
     try:
-        return int(float(v))
+        ano = int(float(v))
+        if ano > 2000: return ano
     except ValueError:
         pass
+        
+    # 2. Ano presente após a última barra
     if '/' in v:
         p = v.split('/')
         try:
             ano = int(p[-1])
             if ano > 2000: return ano
         except: pass
+        
+    return None
+
+
+def achar_coluna(df: pd.DataFrame, aliases: List[str]) -> Optional[str]:
+    """Busca uma coluna no DataFrame por uma lista de aliases (busca exata ou parcial)."""
+    for a in aliases:
+        for c in df.columns:
+            if a.lower() == str(c).strip().lower():
+                return c
+    for a in aliases:
+        for c in df.columns:
+            if a.lower() in str(c).strip().lower():
+                return c
     return None
 
 
@@ -327,7 +360,7 @@ def melt_metas(df_metas_raw: pd.DataFrame) -> pd.DataFrame:
         if not cols_mes:
             return pd.DataFrame(columns=["Empreendimento", "Região", "Mes_Num", "Meta_Qtd"])
 
-    id_vars = [c for c in ("Empreendimento", "Região") if c in df.columns]
+    id_vars = [c for c in df.columns if c.lower() in ["empreendimento", "região", "regiao", "obra"]]
     if not id_vars:
         return pd.DataFrame(columns=["Empreendimento", "Região", "Mes_Num", "Meta_Qtd"])
 
@@ -341,6 +374,14 @@ def melt_metas(df_metas_raw: pd.DataFrame) -> pd.DataFrame:
     out = out.dropna(subset=["Mes_Num"])
     out["Mes_Num"] = out["Mes_Num"].astype(int)
     out["Meta_Qtd"] = pd.to_numeric(out["Meta_Qtd"], errors="coerce").fillna(0)
+    
+    # Normaliza colunas ID para garantir consistência
+    for c in out.columns:
+        if c.lower() in ["empreendimento", "obra"]:
+            out.rename(columns={c: "Empreendimento"}, inplace=True)
+        elif c.lower() in ["região", "regiao"]:
+            out.rename(columns={c: "Região"}, inplace=True)
+            
     return out
 
 
@@ -565,32 +606,63 @@ def main() -> None:
     df_vendas = normalizar_colunas(df_vendas)
     df_metas = melt_metas(df_metas_raw)
 
-    # Colunas esperadas na aba de vendas
-    col_ano = "Ano da Venda" if coluna_existe(df_vendas, "Ano da Venda") else None
-    col_mes = "Mês Venda" if coluna_existe(df_vendas, "Mês Venda") else None
-    col_regiao = "Região" if coluna_existe(df_vendas, "Região") else None
-    col_canal = "Canal" if coluna_existe(df_vendas, "Canal") else None
-    col_valor = (
-        "Valor Real de Venda"
-        if coluna_existe(df_vendas, "Valor Real de Venda")
-        else ("Valor" if coluna_existe(df_vendas, "Valor") else None)
-    )
+    # -------------------------------------------------------------------------
+    # Filtra as linhas de TOTAL que vem das planilhas para não duplicar somas
+    # -------------------------------------------------------------------------
+    if "Empreendimento" in df_metas.columns:
+        df_metas = df_metas[~df_metas["Empreendimento"].astype(str).str.strip().str.lower().isin(["total", "geral", ""])]
+    if "Região" in df_metas.columns:
+        df_metas = df_metas[~df_metas["Região"].astype(str).str.strip().str.lower().isin(["total", "geral"])]
 
-    if not col_ano or not col_mes:
+    # -------------------------------------------------------------------------
+    # Mapeamento Inteligente de Colunas
+    # -------------------------------------------------------------------------
+    col_ano = achar_coluna(df_vendas, ["Ano da Venda", "Ano Venda", "Ano"])
+    col_mes = achar_coluna(df_vendas, ["Mês da Venda - Looker", "Mês da Venda", "Mês Venda", "Mes Venda", "Mês", "Mes"])
+    col_regiao = achar_coluna(df_vendas, ["Região", "Regiao"])
+    col_canal = achar_coluna(df_vendas, ["Canal"])
+    col_valor = achar_coluna(df_vendas, ["Valor Real de Venda", "Valor Real", "Valor"])
+    col_emp = achar_coluna(df_vendas, ["Empreendimento", "Obra", "Nome do Empreendimento"])
+
+    if not col_ano and not col_mes:
         st.error(
-            "A aba de vendas precisa das colunas **Ano da Venda** e **Mês Venda**. "
-            f"Colunas encontradas: {', '.join(df_vendas.columns[:25].tolist())}{'…' if len(df_vendas.columns) > 25 else ''}"
+            "Não foi possível encontrar as colunas de Ano e Mês na aba de vendas. "
+            f"Colunas disponíveis: {', '.join(df_vendas.columns[:25].tolist())}"
         )
         return
 
-    df_vendas["_ano"] = df_vendas[col_ano].apply(extrair_ano)
-    df_vendas["_mes"] = df_vendas[col_mes].apply(extrair_mes)
+    # Padroniza as colunas de Vendas para baterem com as das Metas
+    if col_emp and col_emp != "Empreendimento":
+        df_vendas.rename(columns={col_emp: "Empreendimento"}, inplace=True)
+        col_emp = "Empreendimento"
+    if col_regiao and col_regiao != "Região":
+        df_vendas.rename(columns={col_regiao: "Região"}, inplace=True)
+        col_regiao = "Região"
+
+    # Remove também eventuais linhas de "Total" na aba de vendas
+    if col_emp:
+        df_vendas = df_vendas[~df_vendas[col_emp].astype(str).str.strip().str.lower().isin(["total", "geral", ""])]
+
+    # Extração de Mês
+    df_vendas["_mes"] = df_vendas[col_mes].apply(extrair_mes) if col_mes else None
+    
+    # Extração de Ano e Fallback: Se o Ano da Venda estiver zoado/zerado, tenta extrair de dentro da coluna Mês
+    df_vendas["_ano"] = df_vendas[col_ano].apply(extrair_ano) if col_ano else None
+    
+    def aplicar_fallback_ano(row: pd.Series) -> Optional[int]:
+        ano = row["_ano"]
+        if pd.isna(ano) or ano < 2000:
+            if col_mes:
+                return extrair_ano(row[col_mes])
+        return ano
+        
+    df_vendas["_ano"] = df_vendas.apply(aplicar_fallback_ano, axis=1)
 
     if col_valor:
         df_vendas["_vgv"] = df_vendas[col_valor].map(parse_valor_br)
     else:
         df_vendas["_vgv"] = 0.0
-        st.warning("Coluna **Valor Real de Venda** / **Valor** não encontrada — VGV ficará zerado.")
+        st.warning("Coluna de Valor (VGV) não encontrada — o financeiro ficará zerado.")
 
     # Nova regra de criação do Canal Agrupado
     if col_canal:
@@ -620,19 +692,21 @@ def main() -> None:
         help="RIO (100% da Meta, Todas as Vendas) | DIR (50% Meta, Vendas DV RJ) | PARC (25% Meta, Vendas RJG) | RJ (25% Meta, Vendas RJ)"
     )
 
+    # Identifica apenas anos válidos (> 2000)
     anos_disponiveis: List[int] = sorted(
-        int(x) for x in df_vendas["_ano"].dropna().unique().tolist() if pd.notna(x)
+        int(x) for x in df_vendas["_ano"].dropna().unique().tolist() if pd.notna(x) and x > 2000
     )
     if not anos_disponiveis:
-        st.warning("Nenhum ano numérico válido encontrado na coluna de ano.")
+        st.warning("Nenhum ano numérico válido (> 2000) foi encontrado na base de vendas.")
         return
 
     ano_sel = st.sidebar.selectbox("Ano", anos_disponiveis, index=len(anos_disponiveis) - 1)
 
+    # Identifica apenas meses válidos (1 a 12)
     meses_no_ano = sorted(
         int(x)
         for x in df_vendas.loc[df_vendas["_ano"] == ano_sel, "_mes"].dropna().unique().tolist()
-        if pd.notna(x)
+        if pd.notna(x) and 1 <= int(x) <= 12
     )
     if not meses_no_ano:
         meses_no_ano = list(range(1, 13))
