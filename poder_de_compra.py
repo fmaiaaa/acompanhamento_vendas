@@ -20,7 +20,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 # -----------------------------------------------------------------------------
-# Identificação da planilha e Arquivos Visuais
+# Identificação da folha de cálculo e Ficheiros Visuais
 # -----------------------------------------------------------------------------
 SPREADSHEET_ID = "1PZS41l6oPxQp3qq-2_zcw7RbMK5W3XCIryE41hH6dmI"
 WS_VENDAS = "BD COMPLETA"
@@ -31,7 +31,7 @@ FAVICON_ARQUIVO = "502.57_LOGO D_COR_V3F.png"
 FUNDO_CADASTRO_ARQUIVO = "fundo_cadastrorh.jpg"
 URL_LOGO_DIRECIONAL_EMAIL = "https://logodownload.org/wp-content/uploads/2021/04/direcional-engenharia-logo.png"
 
-# Paleta alinhada à Ficha Credenciamento / Vendas RJ
+# Paleta alinhada à Ficha de Credenciamento / Vendas RJ
 COR_AZUL_ESC = "#04428f"
 COR_VERMELHO = "#cb0935"
 COR_FUNDO_CARD = "rgba(255, 255, 255, 0.78)"
@@ -117,7 +117,7 @@ def _exibir_logo_topo() -> None:
     try:
         if path:
             ext = Path(path).suffix.lower().lstrip(".")
-            mime = "image/jpeg" if ext == "png" else "image/jpeg" if ext in ("jpg", "jpeg") else "image/png"
+            mime = "image/jpeg" if ext in ("jpg", "jpeg") else "image/png"
             with open(path, "rb") as f:
                 b64 = base64.b64encode(f.read()).decode("ascii")
             st.markdown(f'<div class="ficha-logo-wrap"><img src="data:{mime};base64,{b64}" alt="Direcional" /></div>', unsafe_allow_html=True)
@@ -317,14 +317,14 @@ def achar_coluna(df: pd.DataFrame, aliases: List[str]) -> Optional[str]:
 def fmt_br_milhoes(v: float) -> str:
     if v == 0: return "R$ 0,00"
     if v >= 1e6: return f"R$ {v / 1e6:.2f} mi"
-    if v >= 1e3: return f"R$ {v / 1e3:.2f} mil"
+    if v >= 1e3: return f"R$ {v / 1e3:.1f} mil"
     return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 def fmt_br_porcentagem(v: float) -> str:
     return f"{v:.1f}%".replace(".", ",")
 
 # -----------------------------------------------------------------------------
-# App Principal
+# Aplicação Principal
 # -----------------------------------------------------------------------------
 def main() -> None:
     fav = _resolver_png_raiz(FAVICON_ARQUIVO)
@@ -341,14 +341,14 @@ def main() -> None:
     sid = SPREADSHEET_ID
     cred_fp = _fingerprint_credenciais(info)
 
-    with st.spinner("Carregando dados da planilha..."):
+    with st.spinner("A carregar dados da folha de cálculo..."):
         try:
             df = ler_planilha_aba_df(sid, WS_VENDAS, cred_fp)
         except Exception as e:
-            st.error(f"Erro ao ler a planilha: {str(e)}")
+            st.error(f"Erro ao ler a folha de cálculo: {str(e)}")
             return
 
-    # Normalizar headers
+    # Normalizar cabeçalhos
     df.columns = [str(c).strip() for c in df.columns]
 
     # Mapeamento de Colunas
@@ -375,7 +375,7 @@ def main() -> None:
     c_subsi = achar_coluna(df, ["SUBSÍDIO DISPONÍVEL"])
 
     if not all([c_v_real, c_v_dir, c_v_emc]):
-        st.error("Colunas essenciais de valores (VALOR REAL DE VENDA, VALOR DIRECIONAL DE VENDA, VALOR EMCASH DE VENDA) não encontradas.")
+        st.error("Colunas essenciais de valores não encontradas.")
         return
 
     if not c_data:
@@ -387,8 +387,6 @@ def main() -> None:
     # -------------------------------------------------------------------------
     if c_v_comercial:
         df = df[pd.to_numeric(df[c_v_comercial], errors='coerce') == 1]
-    else:
-        st.warning("Coluna 'VENDA COMERCIAL' não encontrada. O filtro obrigatório não foi aplicado.")
 
     # -------------------------------------------------------------------------
     # Limpeza de Dados: Ignorar linhas com colunas vazias
@@ -408,7 +406,7 @@ def main() -> None:
     df["VGV_Dir"] = df[c_v_dir].apply(parse_valor_br)
     df["VGV_Emc"] = df[c_v_emc].apply(parse_valor_br)
 
-    # Calculando os Gaps Nominais linha a linha
+    # Cálculo dos Gaps Nominais
     df["Gap_Dir"] = df["VGV_Dir"] - df["VGV_Real"]
     df["Gap_Emc"] = df["VGV_Emc"] - df["VGV_Real"]
 
@@ -418,11 +416,10 @@ def main() -> None:
             df[col] = df[col].fillna("Não Informado").astype(str).str.strip()
 
     # -------------------------------------------------------------------------
-    # Filtros em Linhas Duplas
+    # Filtros
     # -------------------------------------------------------------------------
     anos_disp = sorted([int(x) for x in df["_ano"].dropna().unique() if x > 2000])
     meses_disp = list(range(1, 13))
-    
     mes_atual = datetime.now().month
     mes_padrao = mes_atual if mes_atual in meses_disp else 1
 
@@ -439,7 +436,6 @@ def main() -> None:
     with row2_c2: sel_imobiliaria = st.multiselect("Imobiliária", sorted(df[c_imobiliaria].unique()) if c_imobiliaria else [])
     with row2_c3: sel_rank = st.multiselect("Ranking", sorted(df[c_rank].unique()) if c_rank else [])
 
-    # Aplicação de Filtros
     df_f = df.copy()
     if sel_ano: df_f = df_f[df_f["_ano"].isin(sel_ano)]
     if sel_mes: df_f = df_f[df_f["_mes"].isin(sel_mes)]
@@ -450,7 +446,7 @@ def main() -> None:
     if c_rank and sel_rank: df_f = df_f[df_f[c_rank].isin(sel_rank)]
 
     # -------------------------------------------------------------------------
-    # Funções de Resumo de Indicadores com Média, Mediana e P10
+    # Indicadores Consolidados
     # -------------------------------------------------------------------------
     def render_kpi_block(df_target: pd.DataFrame, title: str):
         st.subheader(title)
@@ -461,21 +457,18 @@ def main() -> None:
         vendas_qtd = len(df_target)
         vgv_real_tot = df_target["VGV_Real"].sum()
         
-        # Gaps Direcional
         gap_dir_tot = df_target["Gap_Dir"].sum()
         gap_dir_avg = df_target["Gap_Dir"].mean()
         gap_dir_med = df_target["Gap_Dir"].median()
         gap_dir_p10 = df_target["Gap_Dir"].quantile(0.1)
         pct_gap_dir = (gap_dir_tot / vgv_real_tot * 100.0) if vgv_real_tot > 0 else 0.0
 
-        # Gaps Emcash
         gap_emc_tot = df_target["Gap_Emc"].sum()
         gap_emc_avg = df_target["Gap_Emc"].mean()
         gap_emc_med = df_target["Gap_Emc"].median()
         gap_emc_p10 = df_target["Gap_Emc"].quantile(0.1)
         pct_gap_emc = (gap_emc_tot / vgv_real_tot * 100.0) if vgv_real_tot > 0 else 0.0
 
-        # Primeira Linha: Visão Geral do Segmento
         st.markdown(
             f"""
             <div class="vel-kpi-row">
@@ -484,26 +477,12 @@ def main() -> None:
                 <div class="vel-kpi"><div class="lbl">Gap Direcional (Tot)</div><div class="val val--red">{fmt_br_milhoes(gap_dir_tot)}</div></div>
                 <div class="vel-kpi"><div class="lbl">Gap Emcash (Tot)</div><div class="val val--red">{fmt_br_milhoes(gap_emc_tot)}</div></div>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        # Segunda Linha: Estatísticas Direcional
-        st.markdown(
-            f"""
             <div class="vel-kpi-row">
                 <div class="vel-kpi"><div class="lbl">Média Gap (Dir)</div><div class="val">{fmt_br_milhoes(gap_dir_avg)}</div></div>
                 <div class="vel-kpi"><div class="lbl">Mediana Gap (Dir)</div><div class="val">{fmt_br_milhoes(gap_dir_med)}</div></div>
                 <div class="vel-kpi"><div class="lbl">P10 Gap (Dir)</div><div class="val">{fmt_br_milhoes(gap_dir_p10)}</div></div>
                 <div class="vel-kpi"><div class="lbl">Aumento Possível (Dir)</div><div class="val">{fmt_br_porcentagem(pct_gap_dir)}</div></div>
             </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        # Terceira Linha: Estatísticas Emcash
-        st.markdown(
-            f"""
             <div class="vel-kpi-row" style="margin-bottom: 2rem;">
                 <div class="vel-kpi"><div class="lbl">Média Gap (Emc)</div><div class="val">{fmt_br_milhoes(gap_emc_avg)}</div></div>
                 <div class="vel-kpi"><div class="lbl">Mediana Gap (Emc)</div><div class="val">{fmt_br_milhoes(gap_emc_med)}</div></div>
@@ -514,12 +493,11 @@ def main() -> None:
             unsafe_allow_html=True,
         )
 
-    # Renderização do bloco único de KPI (Tudo junto conforme solicitado)
     st.markdown("<br>", unsafe_allow_html=True)
     render_kpi_block(df_f, "Estatísticas Consolidadas")
 
     # -------------------------------------------------------------------------
-    # Gráfico de Linha do Tempo (Evolução dos Gaps)
+    # Evolução Mensal
     # -------------------------------------------------------------------------
     st.subheader("Evolução Mensal")
     
@@ -543,6 +521,7 @@ def main() -> None:
         
         fig.update_layout(
             barmode="group",
+            bargap=0.4, # Diminuindo a largura das barras ao aumentar o gap entre elas
             margin=dict(l=20, r=20, t=30, b=20),
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
@@ -552,7 +531,7 @@ def main() -> None:
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
         # -------------------------------------------------------------------------
-        # Histograma (Distribuição dos Gaps)
+        # Histograma (Distribuição dos Gaps de 5 em 5k)
         # -------------------------------------------------------------------------
         st.subheader("Distribuição da Frequência de Gaps")
         
@@ -562,14 +541,14 @@ def main() -> None:
             name="Distribuição Direcional",
             marker_color=COR_AZUL_ESC,
             opacity=0.75,
-            nbinsx=40
+            xbins=dict(size=5000) # De 5 em 5k
         ))
         fig_hist.add_trace(go.Histogram(
             x=df_f["Gap_Emc"],
             name="Distribuição Emcash",
             marker_color=COR_VERMELHO,
             opacity=0.75,
-            nbinsx=40
+            xbins=dict(size=5000) # De 5 em 5k
         ))
         
         fig_hist.update_layout(
@@ -588,7 +567,7 @@ def main() -> None:
         st.info("Não há dados no período selecionado para exibir os gráficos.")
 
     # -------------------------------------------------------------------------
-    # Função Auxiliar de Geração de Tabelas de Gap
+    # Tabelas
     # -------------------------------------------------------------------------
     def gerar_tabela_gap(df_input: pd.DataFrame, coluna_agrupamento: str, label_tabela: str):
         if not coluna_agrupamento or df_input.empty: return
@@ -603,7 +582,6 @@ def main() -> None:
         
         tab["% Gap Dir"] = tab.apply(lambda r: (r["Gap_Dir"] / r["VGV_Real"] * 100) if r["VGV_Real"] > 0 else 0, axis=1)
         tab["% Gap Emc"] = tab.apply(lambda r: (r["Gap_Emc"] / r["VGV_Real"] * 100) if r["VGV_Real"] > 0 else 0, axis=1)
-        
         tab = tab.sort_values("Gap_Dir", ascending=False)
         
         show = tab.rename(columns={
@@ -621,15 +599,10 @@ def main() -> None:
         
         st.dataframe(show, use_container_width=True, hide_index=True)
 
-    # -------------------------------------------------------------------------
-    # Renderização de Tabelas (Uma por linha)
-    # -------------------------------------------------------------------------
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
     
-    if c_emp: 
-        gerar_tabela_gap(df_f, c_emp, "Empreendimento")
+    if c_emp: gerar_tabela_gap(df_f, c_emp, "Empreendimento")
     
-    # Separação por Regional e Imob baseada no Canal
     if c_reg_imob and c_canal:
         df_regionais = df_f[df_f[c_canal].isin(['DIR', 'RIV'])]
         if not df_regionais.empty:
