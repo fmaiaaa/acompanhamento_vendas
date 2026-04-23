@@ -201,7 +201,7 @@ def parse_valor_br(val: Any) -> float:
         return 0.0
     if isinstance(val, (int, float)):
         return float(val)
-    s = str(val).strip().replace("R$", "").replace(" ", "")
+    s = str(val).strip().replace("R$", "").replace(" ", "").replace("\xa0", "")
     if not s or s.lower() == "nan":
         return 0.0
     s = re.sub(r"[^\d.,\-]", "", s)
@@ -294,42 +294,53 @@ def melt_metas(df_metas_raw: pd.DataFrame) -> pd.DataFrame:
     """Transforma Metas QTD e VGV largas em longas (mês numérico + meta_qtd + meta_vgv)."""
     df = normalizar_colunas(df_metas_raw)
     
-    # Identifica as colunas padrão
-    id_vars = [c for c in df.columns if c.lower() in ["empreendimento", "região", "regiao", "obra"]]
+    # Adicionamos um ID para evitar produto cartesiano se houver linhas duplicadas
+    df["_row_id"] = range(len(df))
     
-    # Identifica colunas QTD1 a QTD12
-    cols_qtd = [c for c in df.columns if re.match(r'^qtd(1[0-2]|[1-9])$', c.lower().strip())]
-    # Identifica colunas VGV1 a VGV12
-    cols_vgv = [c for c in df.columns if re.match(r'^vgv(1[0-2]|[1-9])$', c.lower().strip())]
+    id_vars = [c for c in df.columns if str(c).lower() in ["empreendimento", "região", "regiao", "obra"]]
+    id_vars_merge = id_vars + ["_row_id"]
+    
+    # Limpa valores NaN para garantir consistência no merge
+    for c in id_vars:
+        df[c] = df[c].fillna("Não Informado").astype(str).str.strip()
+        df.loc[df[c] == "", c] = "Não Informado"
+        df.loc[df[c].str.lower() == "nan", c] = "Não Informado"
+
+    # Regex ignora espaços, aceitando "QTD 1" ou "QTD1" e isolando 1-12 (ignora QTDTOTAL)
+    cols_qtd = [c for c in df.columns if re.match(r'^qtd\s*(1[0-2]|[1-9])$', str(c).lower().strip())]
+    cols_vgv = [c for c in df.columns if re.match(r'^vgv\s*(1[0-2]|[1-9])$', str(c).lower().strip())]
 
     if not id_vars or not cols_qtd:
         return pd.DataFrame(columns=["Empreendimento", "Região", "Mes_Num", "Meta_Qtd", "Meta_VGV"])
 
     # Melt de QTD
-    df_qtd = df.melt(id_vars=id_vars, value_vars=cols_qtd, var_name="Mes_Str", value_name="Meta_Qtd")
-    df_qtd["Mes_Num"] = df_qtd["Mes_Str"].str.upper().str.replace("QTD", "").astype(int)
+    df_qtd = df.melt(id_vars=id_vars_merge, value_vars=cols_qtd, var_name="Mes_Str", value_name="Meta_Qtd")
+    # Extrai o numero isolado independentemente de espaços ("QTD 1" -> 1)
+    df_qtd["Mes_Num"] = df_qtd["Mes_Str"].str.extract(r'(\d+)')[0].astype(int)
     df_qtd.drop(columns=["Mes_Str"], inplace=True)
     df_qtd["Meta_Qtd"] = pd.to_numeric(df_qtd["Meta_Qtd"], errors="coerce").fillna(0)
 
     # Melt de VGV (se existir)
     if cols_vgv:
-        df_vgv = df.melt(id_vars=id_vars, value_vars=cols_vgv, var_name="Mes_Str", value_name="Meta_VGV")
-        df_vgv["Mes_Num"] = df_vgv["Mes_Str"].str.upper().str.replace("VGV", "").astype(int)
+        df_vgv = df.melt(id_vars=id_vars_merge, value_vars=cols_vgv, var_name="Mes_Str", value_name="Meta_VGV")
+        df_vgv["Mes_Num"] = df_vgv["Mes_Str"].str.extract(r'(\d+)')[0].astype(int)
         df_vgv.drop(columns=["Mes_Str"], inplace=True)
-        # Usa parse_valor_br caso o usuário tenha formatado como R$ 2.000.000,00
+        # Usa parse_valor_br para converter a moeda formatada BR
         df_vgv["Meta_VGV"] = df_vgv["Meta_VGV"].apply(parse_valor_br)
         
-        # Junta QTD e VGV
-        out = pd.merge(df_qtd, df_vgv, on=id_vars + ["Mes_Num"], how="outer").fillna(0)
+        # Junta QTD e VGV usando as chaves únicas
+        out = pd.merge(df_qtd, df_vgv, on=id_vars_merge + ["Mes_Num"], how="outer").fillna(0)
     else:
         out = df_qtd.copy()
         out["Meta_VGV"] = 0.0
 
+    out.drop(columns=["_row_id"], inplace=True, errors="ignore")
+
     # Normaliza colunas ID
     for c in out.columns:
-        if c.lower() in ["empreendimento", "obra"]:
+        if str(c).lower() in ["empreendimento", "obra"]:
             out.rename(columns={c: "Empreendimento"}, inplace=True)
-        elif c.lower() in ["região", "regiao"]:
+        elif str(c).lower() in ["região", "regiao"]:
             out.rename(columns={c: "Região"}, inplace=True)
             
     return out
@@ -542,12 +553,11 @@ def main() -> None:
     df_vendas = normalizar_colunas(df_vendas)
     df_metas = melt_metas(df_metas_raw)
 
-    # Ignora os empreendimentos que nao possuem regiao na coluna metas
+    # Ignora os empreendimentos que nao possuem regiao na coluna metas (incluindo o Total)
     if "Região" in df_metas.columns:
-        df_metas = df_metas[df_metas["Região"].astype(str).str.strip().replace('nan', '') != ""]
-        df_metas = df_metas[~df_metas["Região"].astype(str).str.strip().str.lower().isin(["total", "geral"])]
+        df_metas = df_metas[~df_metas["Região"].astype(str).str.strip().str.lower().isin(["total", "geral", "não informado", "nao informado", "nan", "none", "null", ""])]
     if "Empreendimento" in df_metas.columns:
-        df_metas = df_metas[~df_metas["Empreendimento"].astype(str).str.strip().str.lower().isin(["total", "geral", ""])]
+        df_metas = df_metas[~df_metas["Empreendimento"].astype(str).str.strip().str.lower().isin(["total", "geral", "não informado", "nao informado", "nan", "none", "null", ""])]
 
     # -------------------------------------------------------------------------
     # Mapeamento Inteligente de Colunas
@@ -561,6 +571,7 @@ def main() -> None:
     col_venda_comercial = achar_coluna(df_vendas, ["Venda Comercial?", "Venda Comercial"])
     col_proprietario = achar_coluna(df_vendas, ["Proprietário da oportunidade", "Proprietario da oportunidade", "Nome da conta", "Proprietario", "Corretor"])
     col_ranking = achar_coluna(df_vendas, ["Ranking"])
+    col_data_venda = achar_coluna(df_vendas, ["Data da venda", "Data Venda", "Data de venda", "Data"])
 
     if not col_ano and not col_mes:
         st.error("Não foi possível encontrar as colunas de Ano e Mês na aba de vendas.")
@@ -576,23 +587,42 @@ def main() -> None:
     if col_emp:
         df_vendas = df_vendas[~df_vendas[col_emp].astype(str).str.strip().str.lower().isin(["total", "geral", ""])]
 
-    # Filtro Obrigatório: Apenas Venda Comercial == 1
+    # Filtro Obrigatório: Apenas Venda Comercial == 1 (com suporte a formatos lógicos/texto variados)
     if col_venda_comercial:
-        df_vendas = df_vendas[pd.to_numeric(df_vendas[col_venda_comercial], errors='coerce') == 1]
+        mask_venda = (
+            (pd.to_numeric(df_vendas[col_venda_comercial], errors='coerce') == 1) |
+            (df_vendas[col_venda_comercial].astype(str).str.strip().str.upper() == 'SIM') |
+            (df_vendas[col_venda_comercial].astype(str).str.strip().str.upper() == 'TRUE')
+        )
+        df_vendas = df_vendas[mask_venda]
     else:
         st.warning("Coluna 'Venda Comercial?' não encontrada na base.")
 
-    df_vendas["_mes"] = df_vendas[col_mes].apply(extrair_mes) if col_mes else None
-    df_vendas["_ano"] = df_vendas[col_ano].apply(extrair_ano) if col_ano else None
-    
+    # Resgate seguro de Mês e Ano (Fallback para Data da Venda se o campo principal estiver corrompido/vazio)
+    df_vendas["_mes_raw"] = df_vendas[col_mes].apply(extrair_mes) if col_mes else None
+    def aplicar_fallback_mes(row: pd.Series) -> Optional[int]:
+        m = row["_mes_raw"]
+        if pd.notna(m) and 1 <= m <= 12: return int(m)
+        if col_data_venda and pd.notna(row[col_data_venda]):
+            m2 = extrair_mes(row[col_data_venda])
+            if m2 and 1 <= m2 <= 12: return int(m2)
+        return None
+    df_vendas["_mes"] = df_vendas.apply(aplicar_fallback_mes, axis=1)
+
+    df_vendas["_ano_raw"] = df_vendas[col_ano].apply(extrair_ano) if col_ano else None
     def aplicar_fallback_ano(row: pd.Series) -> Optional[int]:
-        ano = row["_ano"]
-        if pd.isna(ano) or ano < 2000:
-            if col_mes:
-                return extrair_ano(row[col_mes])
-        return ano
-        
+        ano = row["_ano_raw"]
+        if pd.notna(ano) and ano > 2000:
+            return int(ano)
+        if col_mes and pd.notna(row[col_mes]):
+            a = extrair_ano(row[col_mes])
+            if a and a > 2000: return int(a)
+        if col_data_venda and pd.notna(row[col_data_venda]):
+            a = extrair_ano(row[col_data_venda])
+            if a and a > 2000: return int(a)
+        return None
     df_vendas["_ano"] = df_vendas.apply(aplicar_fallback_ano, axis=1)
+
     df_vendas["_vgv"] = df_vendas[col_valor].map(parse_valor_br) if col_valor else 0.0
 
     if col_canal:
@@ -614,7 +644,13 @@ def main() -> None:
     # LINHA ÚNICA DE FILTROS (Múltipla Seleção)
     # -------------------------------------------------------------------------
     anos_disponiveis = sorted(int(x) for x in df_vendas["_ano"].dropna().unique().tolist() if pd.notna(x) and x > 2000)
-    meses_no_ano = sorted(int(x) for x in df_vendas["_mes"].dropna().unique().tolist() if pd.notna(x) and 1 <= int(x) <= 12)
+    
+    # Ao invez de restringir o filtro pelos meses da venda, exibe 1 a 12 sempre.
+    meses_no_ano = list(range(1, 13))
+    # Pega o último mês com vendas apenas como valor default da tela:
+    meses_vendas = sorted(int(x) for x in df_vendas["_mes"].dropna().unique().tolist() if pd.notna(x) and 1 <= int(x) <= 12)
+    mes_padrao = meses_vendas[-1] if meses_vendas else 1
+
     regioes_disponiveis = sorted(set(str(x).strip() for x in df_metas["Região"].dropna().unique() if str(x).strip()))
     
     emps_comuns = []
@@ -631,8 +667,7 @@ def main() -> None:
     with col_filtros[1]:
         anos_sel = st.multiselect("Ano", anos_disponiveis, default=[anos_disponiveis[-1]] if anos_disponiveis else [])
     with col_filtros[2]:
-        mes_padrao = max(0, len(meses_no_ano) - 1) if meses_no_ano else []
-        meses_sel = st.multiselect("Mês", meses_no_ano, default=[meses_no_ano[mes_padrao]] if meses_no_ano else [])
+        meses_sel = st.multiselect("Mês", meses_no_ano, default=[mes_padrao])
     with col_filtros[3]:
         regioes_sel = st.multiselect("Região", regioes_disponiveis, default=[])
     with col_filtros[4]:
