@@ -2,7 +2,7 @@
 """
 Análise de Concorrência — Inteligência Competitiva e Performance.
 Foco: Comparação Direta via BD GERAL (Indicadores) e BD DETALHADA (Preços).
-Lógica: Filtro por Empreendimento e Coluna 'CONCORRE COM'.
+Lógica: Filtro por Empreendimento Direcional e sua rede de concorrência.
 """
 from __future__ import annotations
 
@@ -78,8 +78,7 @@ def aplicar_estilo() -> None:
         header[data-testid="stHeader"] {{ background: transparent !important; border: none !important; box-shadow: none !important; }}
         [data-testid="stSidebar"] {{ display: none !important; }}
         .block-container {{
-            max-width: 1700px !important; margin-left: auto !important; margin-right: auto !important;
-            padding: 1.45rem 2.25rem 1.55rem 2.25rem !important; background: rgba(255, 255, 255, 0.78) !important;
+            max-width: 1700px !important; padding: 1.45rem 2.25rem 1.55rem 2.25rem !important; background: rgba(255, 255, 255, 0.78) !important;
             backdrop-filter: blur(18px) saturate(1.15); border-radius: 24px !important;
             border: 1px solid rgba(255, 255, 255, 0.45) !important;
             box-shadow: 0 4px 6px -1px rgba({RGB_AZUL_CSS}, 0.06), 0 24px 48px -12px rgba({RGB_AZUL_CSS}, 0.18) !important;
@@ -124,8 +123,8 @@ def _cabecalho_pagina() -> None:
     st.markdown(
         f'<div class="ficha-hero-stack">'
         f'<div class="ficha-hero">'
-        f'<p class="ficha-title">Inteligência Competitiva - Análise Direta</p>'
-        f'<p class="ficha-sub">Performance via BD GERAL e Precificação via BD DETALHADA.</p>'
+        f'<p class="ficha-title">Inteligência Competitiva - Performance e Precificação</p>'
+        f'<p class="ficha-sub">Análise Comparativa Automática via Matriz de Concorrência.</p>'
         f"</div>"
         f'<div class="ficha-hero-bar-wrap" aria-hidden="true"><div class="ficha-hero-bar"></div></div>'
         f"</div>",
@@ -170,38 +169,37 @@ def process_pipeline():
     df_det = sheets.get("BD DETALHADA", pd.DataFrame())
     
     if df_geral.empty:
-        raise ValueError("A aba BD GERAL não foi encontrada.")
+        raise ValueError("A aba BD GERAL não foi encontrada ou está vazia.")
 
-    # Normalização GLOBAL para garantir que filtros e comparativos funcionem
+    # Normalização Global
     for df in [df_geral, df_det]:
         if "CHAVE" in df.columns: df["CHAVE"] = df["CHAVE"].astype(str).str.strip().str.upper()
         if "CONSTRUTORA" in df.columns: df["CONSTRUTORA"] = df["CONSTRUTORA"].astype(str).str.strip().str.upper()
         if "EMPREENDIMENTO" in df.columns: df["EMPREENDIMENTO"] = df["EMPREENDIMENTO"].astype(str).str.strip().str.upper()
+        if "CONCORRE COM" in df.columns: df["CONCORRE COM"] = df["CONCORRE COM"].astype(str).str.strip().str.upper()
 
     # 1. Processamento BD GERAL
     cols_num = ["VENDAS", "ESTOQUE", "ESTOQUE INICIAL"]
     for col in cols_num:
         df_geral[col] = pd.to_numeric(df_geral[col], errors='coerce').fillna(0)
     
-    df_geral["VGV_Vendido"] = df_geral["VGV"].apply(parse_val)
     df_geral["PRECO_MEDIO"] = df_geral["PREÇO MÉDIO"].apply(parse_val)
     df_geral["DATA_DT"] = pd.to_datetime(df_geral["DATA"], dayfirst=True, errors='coerce')
     df_geral = df_geral[df_geral["DATA_DT"].notna()].sort_values(["CHAVE", "DATA_DT"])
     
     # Cálculos Solicitados
-    # Absorção: Vendas / Estoque Inicial (anterior + vendas)
+    # Absorção = Vendas / Estoque Inicial (estoque_t-1 + vendas_t)
     df_geral["Absorcao"] = df_geral["VENDAS"] / df_geral["ESTOQUE INICIAL"].replace(0, np.nan)
-    # Velocidade: Vendas / Estoque Anterior
+    # Velocidade = Vendas / Estoque Anterior (Estoque Inicial - Vendas)
     df_geral["Velocidade"] = df_geral["VENDAS"] / (df_geral["ESTOQUE INICIAL"] - df_geral["VENDAS"]).replace(0, np.nan)
-    # Escoamento: Estoque Atual / Estoque Inicial
+    # Escoamento = Estoque / Estoque Inicial
     df_geral["Escoamento"] = df_geral["ESTOQUE"] / df_geral["ESTOQUE INICIAL"].replace(0, np.nan)
-    # VGV Rate: Monetização
-    df_geral["VGV_Rate"] = df_geral["VGV_Vendido"] / (df_geral["VGV_Vendido"] + (df_geral["ESTOQUE"] * df_geral["PRECO_MEDIO"])).replace(0, np.nan)
-    # Variação de Preço
+    # Variação de Preço MoM
     df_geral["Delta_Preco"] = df_geral.groupby("CHAVE")["PRECO_MEDIO"].pct_change()
     
     # 2. Processamento BD DETALHADA
     df_det["Preco_m2"] = df_det["PREÇO_M2"].apply(parse_val)
+    # Tratamento de Data para Detalhada (DD/MM/YYYY ou similar)
     df_det["DATA_DT"] = pd.to_datetime(df_det["DATA"], dayfirst=True, errors='coerce')
     df_det = df_det[df_det["DATA_DT"].notna()]
     
@@ -220,36 +218,31 @@ def main():
         st.error(f"Erro no pipeline: {e}")
         return
 
-    # Filtro de Empreendimento Direcional
-    st.markdown("<div style='text-align: center; font-weight: bold; margin-bottom: 1rem;'>Seleção de Estudo de Caso</div>", unsafe_allow_html=True)
+    # Filtro de Seleção de Estudo
+    st.markdown("<div style='text-align: center; font-weight: bold; margin-bottom: 1rem;'>Seleção de Produto Direcional para Estudo</div>", unsafe_allow_html=True)
     
-    # Filtro Construtora Direcional (Com normalização já aplicada no pipeline)
-    df_direcional = df_master[df_master["CONSTRUTORA"] == "DIRECIONAL"]
-    lista_direcional = sorted(df_direcional["EMPREENDIMENTO"].unique())
+    # Apenas Direcional na lista de seleção
+    df_direcional = df_master[df_direcional_mask := (df_master["CONSTRUTORA"] == "DIRECIONAL")]
+    lista_alvos = sorted(df_direcional["EMPREENDIMENTO"].unique())
     
-    if not lista_direcional:
-        st.error("Nenhum empreendimento DIRECIONAL localizado na base BD GERAL.")
+    if not lista_alvos:
+        st.error("Nenhum empreendimento DIRECIONAL localizado na base.")
         return
 
-    alvo_selecionado = st.selectbox("Selecione o Empreendimento Direcional Alvo", lista_direcional)
+    alvo_selecionado = st.selectbox("Escolha o Produto Alvo", lista_alvos)
 
-    # Identificar Concorrentes automáticos via coluna 'CONCORRE COM'
-    df_alvo_info = df_direcional[df_direcional["EMPREENDIMENTO"] == alvo_selecionado].iloc[0]
-    string_concorrentes = str(df_alvo_info.get("CONCORRE COM", ""))
-    
-    # Normalização rigorosa dos nomes de concorrentes
-    nomes_concorrentes = [x.strip().upper() for x in string_concorrentes.split(",") if x.strip()]
-    
-    # Filtrar DF para o cluster (Alvo + Concorrentes identificados)
+    # Lógica de Concorrência Automática
+    # Filtramos na BD GERAL todos os projetos onde a coluna 'CONCORRE COM' contém o nome do alvo selecionado
+    # ou onde o próprio nome é o alvo (para incluir a Direcional no estudo)
     df_cluster = df_master[
         (df_master["EMPREENDIMENTO"] == alvo_selecionado) | 
-        (df_master["EMPREENDIMENTO"].isin(nomes_concorrentes))
+        (df_master["CONCORRE COM"].str.contains(alvo_selecionado, na=False, regex=False))
     ].copy()
 
-    # Filtro de Mês para Resumo KPIs
+    # Filtro de Mês para Resumo
     df_sorted_dates = df_master[["DATA", "DATA_DT"]].drop_duplicates().sort_values("DATA_DT")
     meses_disp = df_sorted_dates["DATA"].tolist()
-    mes_estudo = st.selectbox("Mês de Referência para Resumo", meses_disp, index=len(meses_disp)-1)
+    mes_estudo = st.selectbox("Mês de Referência para Resumo Executivo", meses_disp, index=len(meses_disp)-1)
 
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1.5rem 0;'/>", unsafe_allow_html=True)
 
@@ -262,22 +255,25 @@ def main():
     abs_alvo = df_alvo_mes["Absorcao"].iloc[0] * 100 if not df_alvo_mes.empty else 0
     vel_alvo = df_alvo_mes["Velocidade"].iloc[0] * 100 if not df_alvo_mes.empty else 0
     m2_alvo = df_alvo_mes["PRECO_MEDIO"].iloc[0] if not df_alvo_mes.empty else 0
-    vgv_rate_alvo = df_alvo_mes["VGV_Rate"].iloc[0] * 100 if not df_alvo_mes.empty else 0
+    
+    # Média dos concorrentes identificados
+    df_conc_mes = df_mes[df_mes["EMPREENDIMENTO"] != alvo_selecionado]
+    m2_conc = df_conc_mes["PRECO_MEDIO"].mean() if not df_conc_mes.empty else 0
 
     st.markdown(f"""
         <div class="vel-kpi-row">
-            <div class="vel-kpi"><div class="lbl">Preço Médio Praticado</div><div class="val val--red">R$ {m2_alvo:,.2f}</div></div>
-            <div class="vel-kpi"><div class="lbl">Taxa de Absorção</div><div class="val val--red">{abs_alvo:.1f}%</div></div>
-            <div class="vel-kpi"><div class="lbl">Velocidade de Vendas</div><div class="val val--red">{vel_alvo:.1f}%</div></div>
-            <div class="vel-kpi"><div class="lbl">Monetização (VGV Rate)</div><div class="val val--red">{vgv_rate_alvo:.1f}%</div></div>
-            <div class="vel-kpi"><div class="lbl">Total Concorrentes Ativos</div><div class="val">{df_mes[df_mes["EMPREENDIMENTO"] != alvo_selecionado]["EMPREENDIMENTO"].nunique()}</div></div>
+            <div class="vel-kpi"><div class="lbl">Preço Médio Alvo</div><div class="val val--red">R$ {m2_alvo:,.2f}</div></div>
+            <div class="vel-kpi"><div class="lbl">Preço Médio Concorrentes</div><div class="val">R$ {m2_conc:,.2f}</div></div>
+            <div class="vel-kpi"><div class="lbl">Taxa de Absorção (Alvo)</div><div class="val val--red">{abs_alvo:.1f}%</div></div>
+            <div class="vel-kpi"><div class="lbl">Velocidade de Vendas (Alvo)</div><div class="val val--red">{vel_alvo:.1f}%</div></div>
+            <div class="vel-kpi"><div class="lbl">Nº Concorrentes Identificados</div><div class="val">{df_mes[df_mes["EMPREENDIMENTO"] != alvo_selecionado]["EMPREENDIMENTO"].nunique()}</div></div>
         </div>
     """, unsafe_allow_html=True)
 
     # -------------------------------------------------------------------------
-    # GRAFICOS DE COLUNAS (INDICADORES TEMPORAIS)
+    # GRAFICOS DE COLUNAS (BD GERAL)
     # -------------------------------------------------------------------------
-    st.subheader("Indicadores de Performance (Colunas - BD GERAL)")
+    st.subheader("Indicadores de Performance Mensal (BD GERAL)")
     
     if not df_cluster.empty:
         df_trend = df_cluster.sort_values("DATA_DT")
@@ -299,32 +295,32 @@ def main():
             st.plotly_chart(fig_esc, use_container_width=True)
 
         with g2:
-            st.markdown("**Velocidade de Vendas (Probabilidade Mensal)**")
+            st.markdown("**Velocidade de Vendas (Vendas / Estoque Anterior)**")
             fig_vel = px.bar(df_trend, x="DATA_STR", y="Velocidade", color="EMPREENDIMENTO", barmode="group",
                              color_discrete_sequence=px.colors.qualitative.Prism)
             fig_vel.update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
             st.plotly_chart(fig_vel, use_container_width=True)
             
-            st.markdown("**VGV Rate (Monetização Realizada)**")
-            fig_vgv = px.bar(df_trend, x="DATA_STR", y="VGV_Rate", color="EMPREENDIMENTO", barmode="group",
+            st.markdown("**Variação de Preço Médio Praticado (MoM)**")
+            fig_delta = px.bar(df_trend, x="DATA_STR", y="Delta_Preco", color="EMPREENDIMENTO", barmode="group",
                              color_discrete_sequence=px.colors.qualitative.Prism)
-            fig_vgv.update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
-            st.plotly_chart(fig_vgv, use_container_width=True)
+            fig_delta.update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
+            st.plotly_chart(fig_delta, use_container_width=True)
 
     # -------------------------------------------------------------------------
-    # TABELAS DE PREÇO DINÂMICAS (BD DETALHADA)
+    # TABELAS DE PREÇO (BD DETALHADA)
     # -------------------------------------------------------------------------
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:2rem 0;'/>", unsafe_allow_html=True)
     
-    # Filtrar BD Detalhada pelos empreendimentos do cluster identificado
-    cluster_names_all = df_cluster["EMPREENDIMENTO"].unique()
-    df_det_f = df_detalhada[df_detalhada["EMPREENDIMENTO"].isin(cluster_names_all)].copy()
+    # Filtrar BD Detalhada pelos empreendimentos identificados no cluster
+    cluster_names = df_cluster["EMPREENDIMENTO"].unique()
+    df_det_f = df_detalhada[df_detalhada["EMPREENDIMENTO"].isin(cluster_names)].copy()
     
     if not df_det_f.empty:
         df_det_f["Mes_Ano"] = df_det_f["DATA_DT"].dt.strftime("%m/%Y")
         
         # Tabela 1: Preço m2 MEDIANO por Empreendimento
-        st.subheader("Mediana do Preço m² por Empreendimento (BD DETALHADA)")
+        st.subheader("Tabela 1: Preço m² Mediano por Empreendimento (BD DETALHADA)")
         pivot_mediano = pd.pivot_table(
             df_det_f, 
             values="Preco_m2", 
@@ -333,7 +329,7 @@ def main():
             aggfunc="median"
         ).reset_index()
         
-        # Ordenar colunas cronologicamente
+        # Ordenação cronológica
         cols_datas = sorted([c for c in pivot_mediano.columns if c != "EMPREENDIMENTO"], 
                            key=lambda x: datetime.strptime(x, "%m/%Y"))
         pivot_mediano = pivot_mediano[["EMPREENDIMENTO"] + cols_datas]
@@ -341,7 +337,7 @@ def main():
                      use_container_width=True, hide_index=True)
 
         # Tabela 2: Preço m2 MÉDIO por Tipologia
-        st.subheader("Média do Preço m² por Tipologia (BD DETALHADA)")
+        st.subheader("Tabela 2: Preço m² Médio por Tipologia (BD DETALHADA)")
         pivot_medio = pd.pivot_table(
             df_det_f, 
             values="Preco_m2", 
@@ -356,7 +352,7 @@ def main():
         st.dataframe(pivot_medio.style.format({c: "R$ {:.2f}" for c in cols_datas_2}), 
                      use_container_width=True, hide_index=True)
     else:
-        st.info("Nenhum dado detalhado de precificação disponível para os concorrentes identificados no cluster.")
+        st.info("Nenhum dado detalhado de precificação encontrado para os concorrentes identificados.")
 
     st.markdown(f'<div style="text-align:center; padding:1rem; color:{COR_TEXTO_MUTED}; font-size:0.82rem;">Direcional Engenharia · Inteligência de Mercado · Fontes: BD GERAL & BD DETALHADA</div>', unsafe_allow_html=True)
 
