@@ -146,7 +146,7 @@ def parse_val(v):
 def geocode_address_precision(address: str) -> tuple[Optional[float], Optional[float]]:
     if not address or str(address).lower() == "nan": return None, None
     try:
-        geolocator = Nominatim(user_agent="direcional_precision_v4")
+        geolocator = Nominatim(user_agent="direcional_precision_v5")
         clean_addr = str(address).split("(")[0].strip()
         location = geolocator.geocode(clean_addr + ", Rio de Janeiro, RJ, Brasil", timeout=15)
         if location: return location.latitude, location.longitude
@@ -182,34 +182,40 @@ def process_pipeline():
     df_ref_dir = sheets.get("DADOS DIRECIONAL", pd.DataFrame())
     df_procv = sheets.get("PROCV", pd.DataFrame())
     
+    # Normalizar chaves para joins seguros
+    for df in [df_temp, df_det, df_ref_dir, df_procv]:
+        if "CHAVE" in df.columns: df["CHAVE"] = df["CHAVE"].astype(str).str.strip().str.upper()
+        elif "Chave" in df.columns: df["CHAVE"] = df["Chave"].astype(str).str.strip().str.upper()
+    
     # 1. Processamento BD DETALHADA (Contagem de Estoque Disponível)
     df_det["Preço_Unidade"] = df_det["PREÇO"].apply(parse_val)
-    df_det["Preço_m2_Det"] = df_det["PREÇO_M2"].apply(parse_val)
     
-    # Count de estoque disponível por Chave/Empreendimento
-    df_estoque_atual = df_det[df_det["DISPONIBILIDADE"].str.strip().str.upper() == "DISPONÍVEL"].copy()
+    # Count de estoque disponível por Chave
+    df_estoque_atual = df_det[df_det["DISPONIBILIDADE"].astype(str).str.strip().str.upper() == "DISPONÍVEL"].copy()
     df_estoque_count = df_estoque_atual.groupby("CHAVE").agg(
         Estoque_Count=("DISPONIBILIDADE", "count"),
-        VGV_Estoque=("Preço_Unidade", "sum"),
-        Tipologia_Det=("TIPOLOGIA", "first")
+        VGV_Estoque=("Preço_Unidade", "sum")
     ).reset_index()
     
     # 2. Processamento BD TEMPORAL
-    df_temp["VENDAS"] = pd.to_numeric(df_temp["VENDAS"], errors='coerce').fillna(0)
-    df_temp["ESTOQUE"] = pd.to_numeric(df_temp["ESTOQUE"], errors='coerce').fillna(0)
-    df_temp["ESTOQUE INICIAL"] = pd.to_numeric(df_temp["ESTOQUE INICIAL"], errors='coerce').fillna(0)
+    cols_num = ["VENDAS", "ESTOQUE", "ESTOQUE INICIAL"]
+    for col in cols_num:
+        df_temp[col] = pd.to_numeric(df_temp[col], errors='coerce').fillna(0)
+    
     df_temp["VGV_Vendido"] = df_temp["VGV"].apply(parse_val)
     df_temp["PREÇO MÉDIO"] = df_temp["PREÇO MÉDIO"].apply(parse_val)
     df_temp["DATA_DT"] = pd.to_datetime(df_temp["DATA"], dayfirst=True, errors='coerce')
     
-    df_temp = df_temp[df_temp["PREÇO MÉDIO"] > 0].copy()
-    df_temp = df_temp.sort_values(["CHAVE", "DATA_DT"])
+    # Limpeza e Ordenação
+    df_temp = df_temp[df_temp["DATA_DT"].notna()].sort_values(["CHAVE", "DATA_DT"])
     
-    # Cruzamento temporal com Tipologia da Detalhada
-    df_temp = df_temp.merge(df_det[["CHAVE", "TIPOLOGIA"]].drop_duplicates(), on="CHAVE", how="left")
+    # Cruzamento temporal com Tipologia da Detalhada (pegando a primeira ocorrência por chave)
+    df_tipologias = df_det[["CHAVE", "TIPOLOGIA"]].drop_duplicates(subset=["CHAVE"])
+    df_temp = df_temp.merge(df_tipologias, on="CHAVE", how="left")
     
-    # 3. Engenharia de Features
-    # Taxa de Absorção: Vendas / Estoque Inicial
+    # 3. Engenharia de Features (Cálculos de Indicadores)
+    # Taxa de Absorção: vendas_t / (estoque_t-1 + vendas_t) 
+    # Usamos ESTOQUE INICIAL como o estoque do início do mês (estoque_t-1 + vendas_t)
     df_temp["Absorcao"] = df_temp["VENDAS"] / df_temp["ESTOQUE INICIAL"].replace(0, np.nan)
     
     # Velocidade de Vendas
@@ -218,22 +224,21 @@ def process_pipeline():
     # Taxa de Escoamento
     df_temp["Escoamento"] = df_temp["ESTOQUE"] / df_temp["ESTOQUE INICIAL"].replace(0, np.nan)
     
-    # Indicador 7: VGV Realizado / VGV Total (Monetização)
-    # VGV Total = VGV Vendido + (Estoque Atual * Preço Médio)
-    df_temp["VGV_Potencial_Estoque"] = df_temp["ESTOQUE"] * df_temp["PREÇO MÉDIO"]
-    df_temp["VGV_Total_Projeto"] = df_temp["VGV_Vendido"] + df_temp["VGV_Potencial_Estoque"]
+    # VGV Rate: VGV Vendido / VGV Total do Projeto
+    df_temp["VGV_Total_Projeto"] = df_temp["VGV_Vendido"] + (df_temp["ESTOQUE"] * df_temp["PREÇO MÉDIO"])
     df_temp["VGV_Rate"] = df_temp["VGV_Vendido"] / df_temp["VGV_Total_Projeto"].replace(0, np.nan)
     
-    # Share de Vendas (Mensal)
-    total_vendas_mes = df_temp.groupby("DATA")["VENDAS"].transform("sum")
-    df_temp["Share_Vendas"] = df_temp["VENDAS"] / total_vendas_mes
+    # Share de Vendas Mensal
+    total_vendas_mes = df_temp.groupby("DATA_DT")["VENDAS"].transform("sum")
+    df_temp["Share_Vendas"] = df_temp["VENDAS"] / total_vendas_mes.replace(0, np.nan)
     
     # Identificar Direcional
     direcional_keys = [str(x).strip().upper() for x in df_ref_dir["Nome do Empreendimento (Chave)"].unique() if x]
-    df_temp["Is_Direcional"] = df_temp["CHAVE"].str.strip().str.upper().isin(direcional_keys)
+    df_temp["Is_Direcional"] = df_temp["CHAVE"].isin(direcional_keys)
     
-    # Cruzamento com Estoque Real da Detalhada
+    # Merge Final com estoque actual da Detalhada
     df_master = df_temp.merge(df_estoque_count, on="CHAVE", how="left")
+    df_master["Estoque_Count"] = df_master["Estoque_Count"].fillna(0)
     
     return df_master, df_ref_dir
 
@@ -247,7 +252,7 @@ def main():
     try:
         df_master, df_ref_dir = process_pipeline()
     except Exception as e:
-        st.error(f"Erro no pipeline: {e}")
+        st.error(f"Erro no processamento das bases: {e}")
         return
 
     # Filtros de Topo
@@ -256,7 +261,7 @@ def main():
     
     with c1:
         lista_alvos = sorted(df_ref_dir["Nome do Empreendimento (Chave)"].unique())
-        alvo_selecionado = st.selectbox("Selecione o Empreendimento Direcional para Estudo", lista_alvos)
+        alvo_selecionado = st.selectbox("Selecione o Empreendimento Direcional", lista_alvos)
         
     with c2:
         df_sorted_dates = df_master[["DATA", "DATA_DT"]].drop_duplicates().sort_values("DATA_DT")
@@ -267,32 +272,35 @@ def main():
         raio_estudo = st.slider("Raio de Atuação Dinâmico (km)", 1, 50, 15)
 
     # -------------------------------------------------------------------------
-    # Geocodificação e Raio Dinâmico
+    # Geocodificação e Cluster
     # -------------------------------------------------------------------------
-    info_alvo_rows = df_ref_dir[df_ref_dir["Nome do Empreendimento (Chave)"] == alvo_selecionado]
+    info_alvo_rows = df_ref_dir[df_ref_dir["Nome do Empreendimento (Chave)"].astype(str).str.strip().str.upper() == str(alvo_selecionado).strip().upper()]
     if info_alvo_rows.empty:
-        st.error("Empreendimento alvo não encontrado.")
+        st.error("Dados de referência do empreendimento não encontrados.")
         return
         
     info_alvo = info_alvo_rows.iloc[0]
     endereco_alvo = info_alvo["Endereço"]
     regiao_alvo = info_alvo["Região"]
     
-    with st.spinner("Processando geolocalização e histórico..."):
+    with st.spinner("Processando geolocalização e histórico de cluster..."):
         lat_alvo, lon_alvo = geocode_address_precision(endereco_alvo)
         
         if not lat_alvo:
-            st.error("Falha ao localizar centro do cluster.")
+            st.error(f"Localização não encontrada para o endereço: {endereco_alvo}")
             return
 
+        # Filtrar Cluster Regional
         df_regiao = df_master[df_master["REGIÃO"] == regiao_alvo].copy()
         
+        # Geocodificar vizinhos únicos no cluster
         addrs_conc = df_regiao["ENDEREÇO"].dropna().unique()
         coords_cache = {addr: geocode_address_precision(addr) for addr in addrs_conc}
         
         df_regiao["lat"] = df_regiao["ENDEREÇO"].map(lambda x: coords_cache.get(x, (None, None))[0])
         df_regiao["lon"] = df_regiao["ENDEREÇO"].map(lambda x: coords_cache.get(x, (None, None))[1])
         
+        # Calcular Distância Real
         df_regiao["Distancia_km"] = df_regiao.apply(
             lambda r: geodesic((lat_alvo, lon_alvo), (r["lat"], r["lon"])).km if pd.notna(r["lat"]) else 999, axis=1
         )
@@ -300,11 +308,11 @@ def main():
         df_cluster = df_regiao[df_regiao["Distancia_km"] <= raio_estudo].copy()
 
     # -------------------------------------------------------------------------
-    # KPIs Consolidados (Mês selecionado)
+    # KPIs Comparativos
     # -------------------------------------------------------------------------
     df_mes = df_cluster[df_cluster["DATA"] == mes_estudo]
-    df_alvo = df_mes[df_mes["CHAVE"] == alvo_selecionado]
-    df_vizinhos = df_mes[df_mes["CHAVE"] != alvo_selecionado]
+    df_alvo = df_mes[df_mes["CHAVE"] == str(alvo_selecionado).strip().upper()]
+    df_vizinhos = df_mes[df_mes["CHAVE"] != str(alvo_selecionado).strip().upper()]
     
     abs_alvo = df_alvo["Absorcao"].iloc[0] * 100 if not df_alvo.empty else 0
     abs_vizinhos = df_vizinhos["Absorcao"].mean() * 100 if not df_vizinhos.empty else 0
@@ -331,7 +339,7 @@ def main():
         "CONSTRUTORA": "first", "lat": "first", "lon": "first", "PREÇO MÉDIO": "mean", "Estoque_Count": "sum", "Is_Direcional": "first"
     }).reset_index()
     
-    # Tamanho = Estoque Disponível Real
+    # Tamanho da bolha pelo estoque, cor pelo preço
     df_map_points["Marker_Size"] = df_map_points["Estoque_Count"].fillna(0) + 15
     
     fig_map = px.scatter_mapbox(df_map_points, lat="lat", lon="lon", 
@@ -346,7 +354,7 @@ def main():
     st.plotly_chart(fig_map, use_container_width=True)
 
     # -------------------------------------------------------------------------
-    # GRÁFICOS DE INDICADORES AO LONGO DO TEMPO
+    # GRÁFICOS DE INDICADORES TEMPORAIS
     # -------------------------------------------------------------------------
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:2rem 0;'/>", unsafe_allow_html=True)
     st.subheader("Indicadores de Performance ao Longo do Tempo")
@@ -369,9 +377,8 @@ def main():
         st.plotly_chart(fig_vgv_r, use_container_width=True)
 
     with g2:
-        st.markdown("**Indicadores por Tipologia no Cluster**")
-        # Gráfico dinâmico por Tipologia
-        df_tipo = df_cluster.groupby(["DATA_DT", "TIPOLOGIA"]).agg({"Absorcao": "mean", "VGV_Rate": "mean"}).reset_index().sort_values("DATA_DT")
+        st.markdown("**Absorção por Tipologia no Cluster**")
+        df_tipo = df_cluster.groupby(["DATA_DT", "TIPOLOGIA"]).agg({"Absorcao": "mean"}).reset_index().sort_values("DATA_DT")
         df_tipo["DATA_STR"] = df_tipo["DATA_DT"].dt.strftime("%m/%Y")
         fig_tipo = px.line(df_tipo, x="DATA_STR", y="Absorcao", color="TIPOLOGIA", markers=True, color_discrete_sequence=px.colors.qualitative.Safe)
         fig_tipo.update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="", legend=dict(orientation="h", y=-0.2))
