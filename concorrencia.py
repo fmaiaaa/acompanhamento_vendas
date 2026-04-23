@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Análise de Concorrência — Inteligência Competitiva e Performance.
-Foco: Estudo Geográfico de Precisão via BD GERAL e Análise de Preços via BD DETALHADA.
+Foco: Comparação Direta entre Empreendimentos (BD GERAL e BD DETALHADA).
 """
 from __future__ import annotations
 
@@ -18,8 +18,6 @@ import streamlit as st
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from geopy.geocoders import Nominatim
-from geopy.distance import geodesic
 
 # -----------------------------------------------------------------------------
 # Identificação da planilha e Arquivos Visuais
@@ -125,8 +123,8 @@ def _cabecalho_pagina() -> None:
     st.markdown(
         f'<div class="ficha-hero-stack">'
         f'<div class="ficha-hero">'
-        f'<p class="ficha-title">Inteligencia Competitiva - Dashboard Estrategico</p>'
-        f'<p class="ficha-sub">Analise Regional de Performance e Precificacao Detalhada.</p>'
+        f'<p class="ficha-title">Inteligencia Competitiva - Estudo Comparativo</p>'
+        f'<p class="ficha-sub">Analise Direcional vs Concorrencia via BD GERAL e DETALHADA.</p>'
         f"</div>"
         f'<div class="ficha-hero-bar-wrap" aria-hidden="true"><div class="ficha-hero-bar"></div></div>'
         f"</div>",
@@ -134,7 +132,7 @@ def _cabecalho_pagina() -> None:
     )
 
 # -----------------------------------------------------------------------------
-# Pipeline de Dados e Geocodificacao
+# Pipeline de Dados
 # -----------------------------------------------------------------------------
 def parse_val(v):
     if not v: return 0.0
@@ -142,17 +140,6 @@ def parse_val(v):
     s = str(v).replace("R$", "").replace(".", "").replace(",", ".").replace(" ", "").strip()
     try: return float(re.sub(r'[^\d.]', '', s))
     except: return 0.0
-
-@st.cache_data(ttl=86400, show_spinner=False)
-def geocode_address_precision(address: str) -> tuple[Optional[float], Optional[float]]:
-    if not address or str(address).lower() == "nan": return None, None
-    try:
-        geolocator = Nominatim(user_agent="direcional_precision_v11")
-        clean_addr = str(address).split("(")[0].strip()
-        location = geolocator.geocode(clean_addr + ", Rio de Janeiro, RJ, Brasil", timeout=15)
-        if location: return location.latitude, location.longitude
-    except: pass
-    return None, None
 
 @st.cache_data(ttl=300, show_spinner=False)
 def load_base_master() -> dict[str, pd.DataFrame]:
@@ -168,7 +155,7 @@ def load_base_master() -> dict[str, pd.DataFrame]:
     
     dfs = {}
     for ws in sh.worksheets():
-        if ws.title in ["BD GERAL", "BD DETALHADA", "DADOS DIRECIONAL", "PROCV"]:
+        if ws.title in ["BD GERAL", "BD DETALHADA", "DADOS DIRECIONAL"]:
             data = ws.get_all_values()
             if data:
                 df = pd.DataFrame(data[1:], columns=data[0])
@@ -181,13 +168,12 @@ def process_pipeline():
     df_geral = sheets.get("BD GERAL", pd.DataFrame())
     df_det = sheets.get("BD DETALHADA", pd.DataFrame())
     df_ref_dir = sheets.get("DADOS DIRECIONAL", pd.DataFrame())
-    df_procv = sheets.get("PROCV", pd.DataFrame())
     
     if df_geral.empty:
         raise ValueError("A aba BD GERAL nao foi encontrada ou esta vazia.")
 
-    # Normalizar chaves para cruzamentos seguros
-    for df in [df_geral, df_det, df_ref_dir, df_procv]:
+    # Normalizar chaves
+    for df in [df_geral, df_det, df_ref_dir]:
         if "CHAVE" in df.columns: df["CHAVE"] = df["CHAVE"].astype(str).str.strip().str.upper()
         elif "Chave" in df.columns: df["CHAVE"] = df["Chave"].astype(str).str.strip().str.upper()
         elif "Nome do Empreendimento (Chave)" in df.columns: df["CHAVE"] = df["Nome do Empreendimento (Chave)"].astype(str).str.strip().str.upper()
@@ -212,22 +198,14 @@ def process_pipeline():
     df_det["DATA_DT"] = pd.to_datetime(df_det["DATA"], dayfirst=True, errors='coerce')
     df_det = df_det[df_det["DATA_DT"].notna()]
     
-    # 3. Identificar Direcional (CORRIGIDO: Agora verifica Construtora "DIRECIONAL" além das chaves de referência)
+    # 3. Identificar Direcional
     direcional_keys = [str(x).strip().upper() for x in df_ref_dir["CHAVE"].unique() if x]
     df_geral["Is_Direcional"] = (
         (df_geral["CONSTRUTORA"].astype(str).str.strip().str.upper() == "DIRECIONAL") |
         (df_geral["CHAVE"].isin(direcional_keys))
     )
     
-    # 4. Mapeamento de Enderecos Precisos
-    df_addr_dir = df_ref_dir[["CHAVE", "Endereço"]].rename(columns={"Endereço": "ENDERECO_REF"})
-    df_addr_conc = df_procv[["CHAVE", "Endereço"]].rename(columns={"Endereço": "ENDERECO_REF"})
-    df_all_addr = pd.concat([df_addr_dir, df_addr_conc]).drop_duplicates(subset=["CHAVE"])
-    
-    df_master_geral = df_geral.merge(df_all_addr, on="CHAVE", how="left")
-    df_master_geral["ENDERECO_REF"] = df_master_geral["ENDERECO_REF"].fillna(df_master_geral["ENDEREÇO"])
-    
-    return df_master_geral, df_det, df_ref_dir
+    return df_geral, df_det
 
 # -----------------------------------------------------------------------------
 # Main Application
@@ -237,129 +215,68 @@ def main():
     _cabecalho_pagina()
     
     try:
-        df_master, df_detalhada, df_ref_dir = process_pipeline()
+        df_master, df_detalhada = process_pipeline()
     except Exception as e:
         st.error(f"Erro no pipeline de dados: {e}")
         return
 
-    # Filtros de Topo
-    st.markdown("<div style='text-align: center; font-weight: bold; margin-bottom: 1rem;'>Cluster Regional e Parametros de Analise</div>", unsafe_allow_html=True)
-    c1, c2, c3 = st.columns([1.8, 1, 1.2])
+    # Filtros de Topo (Seleção Manual)
+    st.markdown("<div style='text-align: center; font-weight: bold; margin-bottom: 1rem;'>Configuracao da Analise Comparativa</div>", unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
     
     with c1:
-        # Pega lista de empreendimentos marcados como Direcional
+        # Seleção do empreendimento Direcional
         lista_direcional = sorted(df_master[df_master["Is_Direcional"]]["EMPREENDIMENTO"].unique())
         if not lista_direcional:
-            st.error("Nenhum empreendimento Direcional identificado. Verifique a coluna CONSTRUTORA na aba BD GERAL.")
-            # Fallback para permitir seleção manual de qualquer empreendimento se a lógica falhar
+            st.error("Nenhum empreendimento Direcional identificado.")
             lista_direcional = sorted(df_master["EMPREENDIMENTO"].unique())
-            
         alvo_selecionado = st.selectbox("Selecione o Empreendimento Direcional Alvo", lista_direcional)
         
     with c2:
-        df_sorted_dates = df_master[["DATA", "DATA_DT"]].drop_duplicates().sort_values("DATA_DT")
-        meses_disp = df_sorted_dates["DATA"].tolist()
-        mes_estudo = st.selectbox("Mes de Referencia para o Mapa", meses_disp, index=len(meses_disp)-1 if meses_disp else 0)
-        
-    with c3:
-        raio_estudo = st.slider("Raio de Atuacao do Cluster (km)", 1, 50, 15)
+        # Seleção de Concorrentes (Qualquer outro empreendimento)
+        lista_concorrentes = sorted(df_master[df_master["EMPREENDIMENTO"] != alvo_selecionado]["EMPREENDIMENTO"].unique())
+        concorrentes_selecionados = st.multiselect("Selecione Empreendimento(s) Concorrente(s)", lista_concorrentes)
 
-    # -------------------------------------------------------------------------
-    # Geocodificacao e Cluster
-    # -------------------------------------------------------------------------
-    # CORREÇÃO IndexError: Busca robusta do alvo
-    df_alvo_search = df_master[df_master["EMPREENDIMENTO"] == alvo_selecionado]
-    if df_alvo_search.empty:
-        st.error(f"O produto '{alvo_selecionado}' nao foi localizado na base temporal de dados.")
-        return
-        
-    df_alvo_info = df_alvo_search.iloc[0]
-    endereco_alvo = df_alvo_info["ENDERECO_REF"]
-    regiao_alvo = df_alvo_info["REGIÃO"]
-    chave_alvo = df_alvo_info["CHAVE"]
-    
-    with st.spinner("Processando geolocalizacao de precisao..."):
-        lat_alvo, lon_alvo = geocode_address_precision(endereco_alvo)
-        if not lat_alvo:
-            st.error("Nao foi possivel localizar o endereco central nas tabelas de referencia.")
-            return
+    # Consolidação da Seleção
+    nomes_selecionados = [alvo_selecionado] + concorrentes_selecionados
+    df_f = df_master[df_master["EMPREENDIMENTO"].isin(nomes_selecionados)].copy()
 
-        # Filtrar Cluster Regional
-        df_reg = df_master[df_master["REGIÃO"] == regiao_alvo].copy()
-        
-        # Geocodificar vizinhos unicos no raio
-        addrs_u = df_reg["ENDERECO_REF"].dropna().unique()
-        coords_cache = {addr: geocode_address_precision(addr) for addr in addrs_u}
-        
-        df_reg["lat"] = df_reg["ENDERECO_REF"].map(lambda x: coords_cache.get(x, (None, None))[0])
-        df_reg["lon"] = df_reg["ENDERECO_REF"].map(lambda x: coords_cache.get(x, (None, None))[1])
-        
-        # Distancia Real
-        df_reg["Distancia_km"] = df_reg.apply(
-            lambda r: geodesic((lat_alvo, lon_alvo), (r["lat"], r["lon"])).km if pd.notna(r["lat"]) else 999, axis=1
-        )
-        
-        df_cluster = df_reg[df_reg["Distancia_km"] <= raio_estudo].copy()
+    # Filtro de Mês para KPIs
+    df_sorted_dates = df_master[["DATA", "DATA_DT"]].drop_duplicates().sort_values("DATA_DT")
+    meses_disp = df_sorted_dates["DATA"].tolist()
+    mes_estudo = st.selectbox("Mes de Referencia para Resumo", meses_disp, index=len(meses_disp)-1)
+
+    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1.5rem 0;'/>", unsafe_allow_html=True)
 
     # -------------------------------------------------------------------------
     # KPIs Consolidados (Mês Selecionado)
     # -------------------------------------------------------------------------
-    df_mes = df_cluster[df_cluster["DATA"] == mes_estudo]
-    df_alvo_mes = df_mes[df_mes["CHAVE"] == chave_alvo]
-    df_viz_mes = df_mes[df_mes["CHAVE"] != chave_alvo]
+    df_mes = df_f[df_f["DATA"] == mes_estudo]
+    df_alvo_mes = df_mes[df_mes["EMPREENDIMENTO"] == alvo_selecionado]
+    df_conc_mes = df_mes[df_mes["EMPREENDIMENTO"] != alvo_selecionado]
     
     abs_alvo = df_alvo_mes["Absorcao"].iloc[0] * 100 if not df_alvo_mes.empty else 0
     m2_alvo = df_alvo_mes["PRECO_MEDIO"].iloc[0] if not df_alvo_mes.empty else 0
-    m2_viz = df_viz_mes["PRECO_MEDIO"].mean() if not df_viz_mes.empty else 0
+    m2_conc = df_conc_mes["PRECO_MEDIO"].mean() if not df_conc_mes.empty else 0
     vgv_rate_alvo = df_alvo_mes["VGV_Rate"].iloc[0] * 100 if not df_alvo_mes.empty else 0
 
     st.markdown(f"""
         <div class="vel-kpi-row">
-            <div class="vel-kpi"><div class="lbl">Preco Medio Cluster</div><div class="val">R$ {m2_viz:,.2f}</div></div>
+            <div class="vel-kpi"><div class="lbl">Preco Medio Concorrencia</div><div class="val">R$ {m2_conc:,.2f}</div></div>
             <div class="vel-kpi"><div class="lbl">Preco Medio Direcional</div><div class="val val--red">R$ {m2_alvo:,.2f}</div></div>
             <div class="vel-kpi"><div class="lbl">Absorcao Direcional</div><div class="val val--red">{abs_alvo:.1f}%</div></div>
             <div class="vel-kpi"><div class="lbl">VGV Rate (Monetizacao)</div><div class="val val--red">{vgv_rate_alvo:.1f}%</div></div>
-            <div class="vel-kpi"><div class="lbl">Concorrentes no Raio</div><div class="val">{df_mes["CHAVE"].nunique()}</div></div>
+            <div class="vel-kpi"><div class="lbl">Total Vendas Cluster</div><div class="val">{int(df_mes["VENDAS"].sum())}</div></div>
         </div>
     """, unsafe_allow_html=True)
 
     # -------------------------------------------------------------------------
-    # MAPA GEOGRAFICO
-    # -------------------------------------------------------------------------
-    st.subheader(f"Mapa Competitivo no Raio de {raio_estudo}km")
-    
-    df_map = df_mes.groupby("EMPREENDIMENTO").agg({
-        "CONSTRUTORA": "first", "lat": "first", "lon": "first", "PRECO_MEDIO": "mean", "ESTOQUE": "sum"
-    }).reset_index()
-    
-    df_map["Marker_Size"] = df_map["ESTOQUE"].fillna(0) + 15
-    
-    fig_map = px.scatter_mapbox(df_map, lat="lat", lon="lon", 
-                                color="PRECO_MEDIO", size="Marker_Size",
-                                hover_name="EMPREENDIMENTO", 
-                                hover_data={"PRECO_MEDIO": ":.2f", "ESTOQUE": True},
-                                color_continuous_scale="Reds", 
-                                zoom=12, height=500, center={"lat": lat_alvo, "lon": lon_alvo})
-    
-    fig_map.update_layout(mapbox_style="carto-positron", margin={"r":0,"t":0,"l":0,"b":0}, paper_bgcolor="rgba(0,0,0,0)")
-    st.plotly_chart(fig_map, use_container_width=True)
-
-    # -------------------------------------------------------------------------
     # GRAFICOS DE COLUNAS (BD GERAL)
     # -------------------------------------------------------------------------
-    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:2rem 0;'/>", unsafe_allow_html=True)
-    st.subheader("Indicadores de Performance (BD GERAL)")
+    st.subheader("Indicadores de Performance ao Longo do Tempo (BD GERAL)")
     
-    cluster_names = sorted(df_cluster["EMPREENDIMENTO"].unique())
-    selected_emps = st.multiselect(
-        "Selecione empreendimentos para comparar nos graficos de colunas",
-        cluster_names,
-        default=[alvo_selecionado] + cluster_names[:min(2, len(cluster_names))]
-    )
-    
-    if selected_emps:
-        df_trend = df_cluster[df_cluster["EMPREENDIMENTO"].isin(selected_emps)].copy()
-        df_trend = df_trend.sort_values("DATA_DT")
+    if not df_f.empty:
+        df_trend = df_f.sort_values("DATA_DT")
         df_trend["DATA_STR"] = df_trend["DATA_DT"].dt.strftime("%m/%Y")
 
         g1, g2 = st.columns(2)
@@ -391,55 +308,52 @@ def main():
             st.plotly_chart(fig_prc, use_container_width=True)
 
     # -------------------------------------------------------------------------
-    # TABELA DINAMICA DE PRECO POR TIPOLOGIA (BD DETALHADA)
+    # TABELAS DE PRECO (BD DETALHADA)
     # -------------------------------------------------------------------------
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:2rem 0;'/>", unsafe_allow_html=True)
-    st.subheader("Tabela Dinamica: Preco Medio por Tipologia ao Longo dos Meses (BD DETALHADA)")
     
-    # Filtrar BD Detalhada pelos empreendimentos do cluster
-    chaves_cluster = df_cluster["CHAVE"].unique()
-    df_det_f = df_detalhada[df_detalhada["CHAVE"].isin(chaves_cluster)].copy()
+    # Filtrar BD Detalhada pelos empreendimentos selecionados
+    df_det_f = df_detalhada[df_detalhada["EMPREENDIMENTO"].isin(nomes_selecionados)].copy()
     
     if not df_det_f.empty:
         df_det_f["Mes_Ano"] = df_det_f["DATA_DT"].dt.strftime("%m/%Y")
         
-        # Criar a Tabela Dinamica
-        pivot_table = pd.pivot_table(
+        # Tabela 1: Preço m2 MEDIANO por Empreendimento
+        st.subheader("Tabela 1: Preco m2 Mediano por Empreendimento (BD DETALHADA)")
+        pivot_mediano = pd.pivot_table(
             df_det_f, 
             values="Preco_m2", 
-            index=["EMPREENDIMENTO", "TIPOLOGIA"], 
+            index="EMPREENDIMENTO", 
+            columns="Mes_Ano", 
+            aggfunc="median"
+        ).reset_index()
+        
+        # Reordenar colunas cronologicamente
+        cols_datas = sorted([c for c in pivot_mediano.columns if c != "EMPREENDIMENTO"], 
+                           key=lambda x: datetime.strptime(x, "%m/%Y"))
+        pivot_mediano = pivot_mediano[["EMPREENDIMENTO"] + cols_datas]
+        st.dataframe(pivot_mediano.style.format({c: "R$ {:.2f}" for c in cols_datas}), 
+                     use_container_width=True, hide_index=True)
+
+        # Tabela 2: Preço m2 MÉDIO por Tipologia
+        st.subheader("Tabela 2: Preco m2 Medio por Tipologia (BD DETALHADA)")
+        pivot_medio = pd.pivot_table(
+            df_det_f, 
+            values="Preco_m2", 
+            index="TIPOLOGIA", 
             columns="Mes_Ano", 
             aggfunc="mean"
         ).reset_index()
         
-        # Reordenar colunas cronologicamente
-        cols_fixas = ["EMPREENDIMENTO", "TIPOLOGIA"]
-        cols_datas = sorted([c for c in pivot_table.columns if c not in cols_fixas], 
-                           key=lambda x: datetime.strptime(x, "%m/%Y"))
-        pivot_table = pivot_table[cols_fixas + cols_datas]
-        
-        st.dataframe(pivot_table.style.format({c: "R$ {:.2f}" for c in cols_datas}), 
+        cols_datas_2 = sorted([c for c in pivot_medio.columns if c != "TIPOLOGIA"], 
+                             key=lambda x: datetime.strptime(x, "%m/%Y"))
+        pivot_medio = pivot_medio[["TIPOLOGIA"] + cols_datas_2]
+        st.dataframe(pivot_medio.style.format({c: "R$ {:.2f}" for c in cols_datas_2}), 
                      use_container_width=True, hide_index=True)
     else:
-        st.info("Nenhum dado detalhado de tipologia encontrado para os empreendimentos deste cluster.")
+        st.info("Nenhum dado de precificacao detalhada encontrado para os empreendimentos selecionados.")
 
-    # -------------------------------------------------------------------------
-    # TABELA DE BENCHMARKING FINAL (BD GERAL)
-    # -------------------------------------------------------------------------
-    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:2rem 0;'/>", unsafe_allow_html=True)
-    st.markdown("### Ranking de Performance do Cluster")
-    
-    df_tab = df_mes.groupby("EMPREENDIMENTO").agg({
-        "CONSTRUTORA": "first", "PRECO_MEDIO": "mean", "VENDAS": "sum", "ESTOQUE": "sum", "Absorcao": "mean", "Distancia_km": "first"
-    }).reset_index().sort_values("Distancia_km", ascending=True)
-    
-    st.dataframe(df_tab.rename(columns={
-        "EMPREENDIMENTO": "Produto", "PRECO_MEDIO": "R$/m2", "ESTOQUE": "Estoque", "Absorcao": "Absorcao", "Distancia_km": "Distancia"
-    }).style.format({
-        "R$/m2": "R$ {:.2f}", "Absorcao": "{:.1%}", "Distancia": "{:.1f} km"
-    }), use_container_width=True, hide_index=True)
-
-    st.markdown(f'<div style="text-align:center; padding:1rem; color:{COR_TEXTO_MUTED}; font-size:0.82rem;">Direcional Engenharia · Inteligencia de Mercado · Fonte: BD GERAL & BD DETALHADA</div>', unsafe_allow_html=True)
+    st.markdown(f'<div style="text-align:center; padding:1rem; color:{COR_TEXTO_MUTED}; font-size:0.82rem;">Direcional Engenharia · Inteligencia de Mercado · Fontes: BD GERAL & BD DETALHADA</div>', unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
