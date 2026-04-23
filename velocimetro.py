@@ -28,8 +28,6 @@ import streamlit as st
 # Identificação da planilha e Arquivos Visuais
 # -----------------------------------------------------------------------------
 SPREADSHEET_ID = "1wpuNQvksot9CLhGgQRe7JlyDeRISEh_sc3-6VRDyQYk"
-SPREADSHEET_ID_PASTAS = "1GC6GQytaDhjVslJ7seNBRfuE9QKulOU8dCeZsDPy0_g"
-SPREADSHEET_ID_VISITAS = "1TE0J29jxASqd3MbgV6Frwn3kAzlCDf5gzX3I_tmVy1Y"
 
 WS_VENDAS = "BD Vendas Completa"
 WS_METAS = "Metas"
@@ -166,8 +164,7 @@ def _cabecalho_pagina() -> None:
         f'<div class="ficha-hero-stack">'
         f'<div class="ficha-hero">'
         f'<p class="ficha-title">Acompanhamento de metas de vendas</p>'
-        f'<p class="ficha-sub">Realizado vs metas por período — '
-        f'<strong>BD Vendas Completa e aba Metas</strong>.</p>'
+        f'<p class="ficha-sub">Realizado vs metas por período.</p>'
         f"</div>"
         f'<div class="ficha-hero-bar-wrap" aria-hidden="true">'
         f'<div class="ficha-hero-bar"></div>'
@@ -278,7 +275,7 @@ def aplicar_estilo() -> None:
             padding-bottom: 0.35rem !important;
         }}
         .block-container {{
-            max-width: 1550px !important;
+            max-width: 1700px !important;
             margin-left: auto !important;
             margin-right: auto !important;
             margin-top: clamp(4px, 1vh, 14px) !important;
@@ -299,6 +296,7 @@ def aplicar_estilo() -> None:
             font-family: 'Montserrat', sans-serif !important;
             color: {COR_AZUL_ESC} !important;
             font-weight: 800 !important;
+            text-align: center !important;
         }}
         .ficha-logo-wrap {{
             text-align: center;
@@ -797,22 +795,8 @@ def main() -> None:
         st.error(f"Erro ao ler a planilha principal: {str(e)}")
         return
 
-    try:
-        df_pastas_raw = ler_planilha_primeira_aba_df(SPREADSHEET_ID_PASTAS, cred_fp)
-    except Exception as e:
-        df_pastas_raw = pd.DataFrame()
-        st.warning(f"Não foi possível carregar a base de Pastas: {str(e)}")
-
-    try:
-        df_visitas_raw = ler_planilha_primeira_aba_df(SPREADSHEET_ID_VISITAS, cred_fp)
-    except Exception as e:
-        df_visitas_raw = pd.DataFrame()
-        st.warning(f"Não foi possível carregar a base de Agendamentos/Visitas: {str(e)}")
-
     df_vendas = normalizar_colunas(df_vendas)
     df_metas = melt_metas(df_metas_raw)
-    df_pastas_raw = normalizar_colunas(df_pastas_raw)
-    df_visitas_raw = normalizar_colunas(df_visitas_raw)
 
     if "Região" in df_metas.columns:
         df_metas = df_metas[~df_metas["Região"].astype(str).str.strip().str.lower().isin(["total", "geral", "não informado", "nao informado", "nan", "none", "null", ""])]
@@ -910,41 +894,6 @@ def main() -> None:
     df_vendas["Regiao_Meta"] = df_vendas["Empreendimento"].map(map_emp_regiao)
 
     # -------------------------------------------------------------------------
-    # Tratamento Pastas e Visitas (Funil Real) - Tratamento Robusto de Nomes
-    # -------------------------------------------------------------------------
-    col_pasta_data = achar_coluna(df_pastas_raw, ["Data Criação Pasta", "Data", "Data de Criação"])
-    col_pasta_fase = achar_coluna(df_pastas_raw, ["Avaliação de crédito : Oportunidade : Fase", "Fase", "Status"])
-    col_pasta_emp = achar_coluna(df_pastas_raw, ["Empreendimento", "Obra", "Nome do Empreendimento"])
-    
-    col_vis_data_agend = achar_coluna(df_visitas_raw, ["Data Agendamento", "Data de Agendamento"])
-    col_vis_data_visita = achar_coluna(df_visitas_raw, ["Data da visita", "Data Visita"])
-    col_vis_emp = achar_coluna(df_visitas_raw, ["PDV: Nome do Empreendimento", "Nome do empreendimento", "Empreendimento"])
-
-    if not df_visitas_raw.empty:
-        if col_vis_data_agend:
-            df_visitas_raw["_ano_agend"] = df_visitas_raw[col_vis_data_agend].apply(extrair_ano)
-            df_visitas_raw["_mes_agend"] = df_visitas_raw[col_vis_data_agend].apply(extrair_mes)
-        if col_vis_data_visita:
-            df_visitas_raw["_ano_visita"] = df_visitas_raw[col_vis_data_visita].apply(extrair_ano)
-            df_visitas_raw["_mes_visita"] = df_visitas_raw[col_vis_data_visita].apply(extrair_mes)
-        if col_vis_emp:
-            df_visitas_raw["Empreendimento_Norm"] = df_visitas_raw[col_vis_emp].astype(str).str.strip().str.upper()
-            
-    if not df_pastas_raw.empty:
-        if col_pasta_data:
-            df_pastas_raw["_ano_pasta"] = df_pastas_raw[col_pasta_data].apply(extrair_ano)
-            df_pastas_raw["_mes_pasta"] = df_pastas_raw[col_pasta_data].apply(extrair_mes)
-            df_pastas_raw["_tem_pasta"] = df_pastas_raw[col_pasta_data].notna() & (df_pastas_raw[col_pasta_data].astype(str).str.strip() != "")
-        if col_pasta_fase:
-            def is_aprovada(f: Any) -> bool:
-                if pd.isna(f): return False
-                f_str = str(f).strip().lower()
-                return "aprovado" in f_str or "fechado e ganho" in f_str
-            df_pastas_raw["_aprovada"] = df_pastas_raw[col_pasta_fase].apply(is_aprovada)
-        if col_pasta_emp:
-            df_pastas_raw["Empreendimento_Norm"] = df_pastas_raw[col_pasta_emp].astype(str).str.strip().str.upper()
-
-    # -------------------------------------------------------------------------
     # LINHA ÚNICA DE FILTROS (Múltipla Seleção)
     # -------------------------------------------------------------------------
     anos_disponiveis = sorted(int(x) for x in df_vendas["_ano"].dropna().unique().tolist() if pd.notna(x) and x > 2000)
@@ -962,7 +911,7 @@ def main() -> None:
         emps_metas = set(str(x).strip() for x in df_metas["Empreendimento"].dropna().unique() if str(x).strip())
         emps_comuns = sorted(list(emps_vendas & emps_metas))
 
-    st.markdown("<div style='margin-bottom:1rem;'><strong>Filtros</strong></div>", unsafe_allow_html=True)
+    st.markdown("<div style='margin-bottom:1rem; text-align: center;'><strong>Filtros</strong></div>", unsafe_allow_html=True)
     
     col_filtros = st.columns(5)
     with col_filtros[0]:
@@ -1198,66 +1147,12 @@ def main() -> None:
         st.warning("Coluna 'Ranking' não encontrada na base.")
 
     # -------------------------------------------------------------------------
-    # FUNIL IDEAL E REAL (ENGENHARIA REVERSA)
+    # FUNIL IDEAL E ENGENHARIA REVERSA
     # -------------------------------------------------------------------------
     st.markdown("<br><hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
-    st.subheader("Engenharia Reversa: Funil de Conversão")
-    st.caption("Comparativo entre a esteira de vendas Realizada e o volume Ideal para atingir a meta.")
+    st.subheader("Engenharia Reversa: Funil Ideal")
 
-    # Define os empreendimentos válidos atualmente (conforme filtros de dropdown aplicados)
-    if emps_sel:
-        valid_emps_funil = set(emps_sel)
-    elif regioes_sel:
-        valid_emps_funil = set(df_metas[df_metas["Região"].isin(regioes_sel)]["Empreendimento"].unique())
-    else:
-        valid_emps_funil = set(df_vendas["Empreendimento"].unique()) | set(df_metas["Empreendimento"].unique())
-        
-    valid_emps_upper = {str(e).strip().upper() for e in valid_emps_funil}
-
-    # --- 1. Cálculos Funil Real (Visitas e Pastas) ---
-    a_real = vi_real = p_real = pa_real = 0
-    if not df_visitas_raw.empty:
-        mask_agend = pd.Series(True, index=df_visitas_raw.index)
-        if "_ano_agend" in df_visitas_raw.columns and anos_sel:
-            mask_agend &= df_visitas_raw["_ano_agend"].isin(anos_sel)
-        if "_mes_agend" in df_visitas_raw.columns and meses_sel:
-            mask_agend &= df_visitas_raw["_mes_agend"].isin(meses_sel)
-        if "Empreendimento_Norm" in df_visitas_raw.columns and valid_emps_upper:
-            mask_agend &= df_visitas_raw["Empreendimento_Norm"].isin(valid_emps_upper)
-        if col_vis_data_agend:
-            mask_agend &= df_visitas_raw[col_vis_data_agend].notna() & (df_visitas_raw[col_vis_data_agend].astype(str).str.strip() != "")
-        a_real = len(df_visitas_raw[mask_agend])
-
-        mask_visita = pd.Series(True, index=df_visitas_raw.index)
-        if "_ano_visita" in df_visitas_raw.columns and anos_sel:
-            mask_visita &= df_visitas_raw["_ano_visita"].isin(anos_sel)
-        if "_mes_visita" in df_visitas_raw.columns and meses_sel:
-            mask_visita &= df_visitas_raw["_mes_visita"].isin(meses_sel)
-        if "Empreendimento_Norm" in df_visitas_raw.columns and valid_emps_upper:
-            mask_visita &= df_visitas_raw["Empreendimento_Norm"].isin(valid_emps_upper)
-        if col_vis_data_visita:
-            mask_visita &= df_visitas_raw[col_vis_data_visita].notna() & (df_visitas_raw[col_vis_data_visita].astype(str).str.strip() != "")
-        vi_real = len(df_visitas_raw[mask_visita])
-
-    if not df_pastas_raw.empty:
-        mask_pasta = pd.Series(True, index=df_pastas_raw.index)
-        if "_ano_pasta" in df_pastas_raw.columns and anos_sel:
-            mask_pasta &= df_pastas_raw["_ano_pasta"].isin(anos_sel)
-        if "_mes_pasta" in df_pastas_raw.columns and meses_sel:
-            mask_pasta &= df_pastas_raw["_mes_pasta"].isin(meses_sel)
-        if "Empreendimento_Norm" in df_pastas_raw.columns and valid_emps_upper:
-            mask_pasta &= df_pastas_raw["Empreendimento_Norm"].isin(valid_emps_upper)
-        if "_tem_pasta" in df_pastas_raw.columns:
-            mask_pasta &= df_pastas_raw["_tem_pasta"]
-            
-        df_p_filt = df_pastas_raw[mask_pasta]
-        p_real = len(df_p_filt)
-        if "_aprovada" in df_p_filt.columns:
-            pa_real = len(df_p_filt[df_p_filt["_aprovada"]])
-
-    v_real = total_realizado_qtd
-
-    # --- 2. Cálculos Funil Ideal (Engenharia Reversa) ---
+    # --- 1. Cálculos Funil Ideal (Engenharia Reversa) ---
     v_meta = math.floor(total_meta_qtd)
     pa_ideal = math.ceil(v_meta / 0.64) if v_meta > 0 else 0
     p_ideal = math.ceil(pa_ideal / 0.64) if pa_ideal > 0 else 0
@@ -1272,11 +1167,10 @@ def main() -> None:
     corretores_moderado = math.ceil(v_meta / 0.20) if v_meta > 0 else 0
     corretores_otimista = math.ceil(v_meta / 0.25) if v_meta > 0 else 0
 
-    # --- 3. Gráficos Plotly em Colunas (Funnels Principais) ---
-    col_f_meta, col_f_real = st.columns(2)
+    # --- 2. Gráfico Plotly (Funil Ideal) ---
+    col_f_meta_espaco, col_f_meta, col_f_meta_espaco2 = st.columns([1, 2, 1])
 
     with col_f_meta:
-        st.markdown("<h4 style='text-align: center; color: #04428f; font-size: 1.05rem; margin-bottom: 0px;'>Funil Ideal (Meta)</h4>", unsafe_allow_html=True)
         fig_ideal = go.Figure(go.Funnel(
             y=['Agendamentos', 'Visitas', 'Pastas', 'Past. Aprov.', 'Vendas (Meta)'],
             x=[a_ideal, vi_ideal, p_ideal, pa_ideal, v_meta],
@@ -1287,58 +1181,9 @@ def main() -> None:
         fig_ideal.update_layout(margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=350, font=dict(family="Inter", color=COR_TEXTO_LABEL))
         st.plotly_chart(fig_ideal, use_container_width=True, config={"displayModeBar": False})
 
-    with col_f_real:
-        st.markdown("<h4 style='text-align: center; color: #04428f; font-size: 1.05rem; margin-bottom: 0px;'>Funil Realizado</h4>", unsafe_allow_html=True)
-        fig_real = go.Figure(go.Funnel(
-            y=['Agendamentos', 'Visitas', 'Pastas', 'Past. Aprov.', 'Vendas Realiz.'],
-            x=[a_real, vi_real, p_real, pa_real, v_real],
-            textinfo="value",
-            marker={"color": ["#022654", "#04428f", "#1e60b3", "#cb0935", "#9e0828"]},
-            connector={"fillcolor": "rgba(4, 66, 143, 0.15)"}
-        ))
-        fig_real.update_layout(margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=350, font=dict(family="Inter", color=COR_TEXTO_LABEL))
-        st.plotly_chart(fig_real, use_container_width=True, config={"displayModeBar": False})
-
-    # --- 4. Estatísticas de Conversão (Em Etapas e Diretas) ---
-    conv_a_vi_real = (vi_real / a_real * 100.0) if a_real > 0 else 0.0
-    conv_vi_p_real = (p_real / vi_real * 100.0) if vi_real > 0 else 0.0
-    conv_p_pa_real = (pa_real / p_real * 100.0) if p_real > 0 else 0.0
-    conv_pa_v_real = (v_real / pa_real * 100.0) if pa_real > 0 else 0.0
-
-    conv_a_v_real = (v_real / a_real * 100.0) if a_real > 0 else 0.0
-    conv_vi_v_real = (v_real / vi_real * 100.0) if vi_real > 0 else 0.0
-    conv_p_v_real = (v_real / p_real * 100.0) if p_real > 0 else 0.0
-
-    st.markdown("<div style='margin-top: 0.5rem; margin-bottom: 0.85rem; text-align: center;'><strong>Estatísticas de Conversão em Etapas (Realizado)</strong></div>", unsafe_allow_html=True)
-    st.markdown(
-        f"""
-        <div class="vel-kpi-row" style="margin-bottom: 1rem;">
-            <div class="vel-kpi"><div class="lbl">Agend. ➔ Visita</div><div class="val">{conv_a_vi_real:.1f}% <br><span style="font-size:12px;color:#64748b;">(Ideal: 50%)</span></div></div>
-            <div class="vel-kpi"><div class="lbl">Visita ➔ Pasta</div><div class="val">{conv_vi_p_real:.1f}% <br><span style="font-size:12px;color:#64748b;">(Ideal: 25%)</span></div></div>
-            <div class="vel-kpi"><div class="lbl">Pasta ➔ Aprovada</div><div class="val">{conv_p_pa_real:.1f}% <br><span style="font-size:12px;color:#64748b;">(Ideal: 64%)</span></div></div>
-            <div class="vel-kpi"><div class="lbl">Aprovada ➔ Venda</div><div class="val">{conv_pa_v_real:.1f}% <br><span style="font-size:12px;color:#64748b;">(Ideal: 64%)</span></div></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.markdown("<div style='margin-top: 0.5rem; margin-bottom: 0.85rem; text-align: center;'><strong>Estatísticas de Conversão Diretas (Realizado até a Venda)</strong></div>", unsafe_allow_html=True)
-    st.markdown(
-        f"""
-        <div class="vel-kpi-row" style="margin-bottom: 1rem;">
-            <div class="vel-kpi"><div class="lbl">Agendamentos ➔ Vendas</div><div class="val">{conv_a_v_real:.1f}%</div></div>
-            <div class="vel-kpi"><div class="lbl">Visitas ➔ Vendas</div><div class="val">{conv_vi_v_real:.1f}%</div></div>
-            <div class="vel-kpi"><div class="lbl">Pastas ➔ Vendas</div><div class="val">{conv_p_v_real:.1f}%</div></div>
-            <div class="vel-kpi"><div class="lbl">Pastas Aprovadas ➔ Vendas</div><div class="val">{conv_pa_v_real:.1f}%</div></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # --- 5. Funil de Marketing Digital ---
+    # --- 3. Funil de Marketing Digital ---
     st.markdown("<br><hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
     st.subheader("Funil de Marketing Digital")
-    st.caption("Projeção necessária no meio digital para atingir 40% da Meta de Vendas.")
     
     # Layout centralizado usando colunas de espaçamento
     col_mkt_espaco, col_mkt_grafico, col_mkt_espaco2 = st.columns([1, 2, 1])
@@ -1353,11 +1198,13 @@ def main() -> None:
         fig_mkt.update_layout(margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=300, font=dict(family="Inter", color=COR_TEXTO_LABEL))
         st.plotly_chart(fig_mkt, use_container_width=True, config={"displayModeBar": False})
 
-    # --- 6. Cenários de Corretores ---
+    # --- 4. Cenários de Corretores ---
+    st.markdown("<br><hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
+    st.subheader("Cenários: Corretores Ativos (Necessários para bater a meta global)")
+
     st.markdown(
         f"""
-        <div style='margin-top: 1.5rem; margin-bottom: 0.85rem; text-align: center;'><strong>Cenários: Corretores Ativos (Necessários para bater a meta global)</strong></div>
-        <div class="vel-kpi-row" style="justify-content: center;">
+        <div class="vel-kpi-row" style="justify-content: center; margin-top: 1rem;">
             <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Pessimista (15% convert.)</div><div class="val">{corretores_pessimista}</div></div>
             <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Moderado (20% convert.)</div><div class="val">{corretores_moderado}</div></div>
             <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Otimista (25% convert.)</div><div class="val">{corretores_otimista}</div></div>
