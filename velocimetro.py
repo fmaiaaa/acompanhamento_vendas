@@ -580,6 +580,13 @@ def extrair_mes(val: Any) -> Optional[int]:
     v = str(val).strip().lower()
     if not v: return None
     v_date = v.split()[0]
+    if '-' in v_date:
+        p = v_date.split('-')
+        if len(p) == 3 and len(p[0]) == 4:
+            try:
+                m = int(p[1])
+                if 1 <= m <= 12: return m
+            except: pass
     for m_str, m_num in MESES_TEXTO_MAP.items():
         if m_str in v_date: return m_num
     try:
@@ -606,6 +613,13 @@ def extrair_ano(val: Any) -> Optional[int]:
     v = str(val).strip()
     if not v: return None
     v_date = v.split()[0]
+    if '-' in v_date:
+        p = v_date.split('-')
+        if len(p) == 3 and len(p[0]) == 4:
+            try:
+                ano = int(p[0])
+                if ano > 2000: return ano
+            except: pass
     try:
         ano = int(float(v_date))
         if ano > 2000: return ano
@@ -896,7 +910,7 @@ def main() -> None:
     df_vendas["Regiao_Meta"] = df_vendas["Empreendimento"].map(map_emp_regiao)
 
     # -------------------------------------------------------------------------
-    # Tratamento Pastas e Visitas (Funil Real)
+    # Tratamento Pastas e Visitas (Funil Real) - Tratamento Robusto de Nomes
     # -------------------------------------------------------------------------
     col_pasta_data = achar_coluna(df_pastas_raw, ["Data Criação Pasta", "Data", "Data de Criação"])
     col_pasta_fase = achar_coluna(df_pastas_raw, ["Avaliação de crédito : Oportunidade : Fase", "Fase", "Status"])
@@ -914,7 +928,7 @@ def main() -> None:
             df_visitas_raw["_ano_visita"] = df_visitas_raw[col_vis_data_visita].apply(extrair_ano)
             df_visitas_raw["_mes_visita"] = df_visitas_raw[col_vis_data_visita].apply(extrair_mes)
         if col_vis_emp:
-            df_visitas_raw["Empreendimento_Norm"] = df_visitas_raw[col_vis_emp].astype(str).str.strip()
+            df_visitas_raw["Empreendimento_Norm"] = df_visitas_raw[col_vis_emp].astype(str).str.strip().str.upper()
             
     if not df_pastas_raw.empty:
         if col_pasta_data:
@@ -928,7 +942,7 @@ def main() -> None:
                 return "aprovado" in f_str or "fechado e ganho" in f_str
             df_pastas_raw["_aprovada"] = df_pastas_raw[col_pasta_fase].apply(is_aprovada)
         if col_pasta_emp:
-            df_pastas_raw["Empreendimento_Norm"] = df_pastas_raw[col_pasta_emp].astype(str).str.strip()
+            df_pastas_raw["Empreendimento_Norm"] = df_pastas_raw[col_pasta_emp].astype(str).str.strip().str.upper()
 
     # -------------------------------------------------------------------------
     # LINHA ÚNICA DE FILTROS (Múltipla Seleção)
@@ -1187,8 +1201,8 @@ def main() -> None:
     # FUNIL IDEAL E REAL (ENGENHARIA REVERSA)
     # -------------------------------------------------------------------------
     st.markdown("<br><hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
-    st.subheader("Funil de Conversão e Marketing")
-    st.caption("Análise de conversão Ideal vs Realizada e projeção necessária no Marketing Digital para atingir as vendas.")
+    st.subheader("Engenharia Reversa: Funil de Conversão")
+    st.caption("Comparativo entre a esteira de vendas Realizada e o volume Ideal para atingir a meta.")
 
     # Define os empreendimentos válidos atualmente (conforme filtros de dropdown aplicados)
     if emps_sel:
@@ -1197,27 +1211,47 @@ def main() -> None:
         valid_emps_funil = set(df_metas[df_metas["Região"].isin(regioes_sel)]["Empreendimento"].unique())
     else:
         valid_emps_funil = set(df_vendas["Empreendimento"].unique()) | set(df_metas["Empreendimento"].unique())
+        
+    valid_emps_upper = {str(e).strip().upper() for e in valid_emps_funil}
 
     # --- 1. Cálculos Funil Real (Visitas e Pastas) ---
     a_real = vi_real = p_real = pa_real = 0
     if not df_visitas_raw.empty:
-        mask_agend = (df_visitas_raw["_ano_agend"].isin(anos_sel) if anos_sel else True) & \
-                     (df_visitas_raw["_mes_agend"].isin(meses_sel) if meses_sel else True) & \
-                     (df_visitas_raw["Empreendimento_Norm"].isin(valid_emps_funil) if valid_emps_funil else True)
+        mask_agend = pd.Series(True, index=df_visitas_raw.index)
+        if "_ano_agend" in df_visitas_raw.columns and anos_sel:
+            mask_agend &= df_visitas_raw["_ano_agend"].isin(anos_sel)
+        if "_mes_agend" in df_visitas_raw.columns and meses_sel:
+            mask_agend &= df_visitas_raw["_mes_agend"].isin(meses_sel)
+        if "Empreendimento_Norm" in df_visitas_raw.columns and valid_emps_upper:
+            mask_agend &= df_visitas_raw["Empreendimento_Norm"].isin(valid_emps_upper)
+        if col_vis_data_agend:
+            mask_agend &= df_visitas_raw[col_vis_data_agend].notna() & (df_visitas_raw[col_vis_data_agend].astype(str).str.strip() != "")
         a_real = len(df_visitas_raw[mask_agend])
 
-        mask_visita = (df_visitas_raw["_ano_visita"].isin(anos_sel) if anos_sel else True) & \
-                      (df_visitas_raw["_mes_visita"].isin(meses_sel) if meses_sel else True) & \
-                      (df_visitas_raw["Empreendimento_Norm"].isin(valid_emps_funil) if valid_emps_funil else True)
+        mask_visita = pd.Series(True, index=df_visitas_raw.index)
+        if "_ano_visita" in df_visitas_raw.columns and anos_sel:
+            mask_visita &= df_visitas_raw["_ano_visita"].isin(anos_sel)
+        if "_mes_visita" in df_visitas_raw.columns and meses_sel:
+            mask_visita &= df_visitas_raw["_mes_visita"].isin(meses_sel)
+        if "Empreendimento_Norm" in df_visitas_raw.columns and valid_emps_upper:
+            mask_visita &= df_visitas_raw["Empreendimento_Norm"].isin(valid_emps_upper)
+        if col_vis_data_visita:
+            mask_visita &= df_visitas_raw[col_vis_data_visita].notna() & (df_visitas_raw[col_vis_data_visita].astype(str).str.strip() != "")
         vi_real = len(df_visitas_raw[mask_visita])
 
     if not df_pastas_raw.empty:
-        mask_pasta = (df_pastas_raw["_ano_pasta"].isin(anos_sel) if anos_sel else True) & \
-                     (df_pastas_raw["_mes_pasta"].isin(meses_sel) if meses_sel else True) & \
-                     (df_pastas_raw["Empreendimento_Norm"].isin(valid_emps_funil) if valid_emps_funil else True)
+        mask_pasta = pd.Series(True, index=df_pastas_raw.index)
+        if "_ano_pasta" in df_pastas_raw.columns and anos_sel:
+            mask_pasta &= df_pastas_raw["_ano_pasta"].isin(anos_sel)
+        if "_mes_pasta" in df_pastas_raw.columns and meses_sel:
+            mask_pasta &= df_pastas_raw["_mes_pasta"].isin(meses_sel)
+        if "Empreendimento_Norm" in df_pastas_raw.columns and valid_emps_upper:
+            mask_pasta &= df_pastas_raw["Empreendimento_Norm"].isin(valid_emps_upper)
+        if "_tem_pasta" in df_pastas_raw.columns:
+            mask_pasta &= df_pastas_raw["_tem_pasta"]
+            
         df_p_filt = df_pastas_raw[mask_pasta]
-        if "_tem_pasta" in df_p_filt.columns:
-            p_real = len(df_p_filt[df_p_filt["_tem_pasta"]])
+        p_real = len(df_p_filt)
         if "_aprovada" in df_p_filt.columns:
             pa_real = len(df_p_filt[df_p_filt["_aprovada"]])
 
@@ -1238,8 +1272,8 @@ def main() -> None:
     corretores_moderado = math.ceil(v_meta / 0.20) if v_meta > 0 else 0
     corretores_otimista = math.ceil(v_meta / 0.25) if v_meta > 0 else 0
 
-    # --- 3. Gráficos Plotly em Colunas ---
-    col_f_meta, col_f_real, col_f_mkt = st.columns(3)
+    # --- 3. Gráficos Plotly em Colunas (Funnels Principais) ---
+    col_f_meta, col_f_real = st.columns(2)
 
     with col_f_meta:
         st.markdown("<h4 style='text-align: center; color: #04428f; font-size: 1.05rem; margin-bottom: 0px;'>Funil Ideal (Meta)</h4>", unsafe_allow_html=True)
@@ -1265,25 +1299,17 @@ def main() -> None:
         fig_real.update_layout(margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=350, font=dict(family="Inter", color=COR_TEXTO_LABEL))
         st.plotly_chart(fig_real, use_container_width=True, config={"displayModeBar": False})
 
-    with col_f_mkt:
-        st.markdown("<h4 style='text-align: center; color: #04428f; font-size: 1.05rem; margin-bottom: 0px;'>Funil Digital Ideal</h4>", unsafe_allow_html=True)
-        fig_mkt = go.Figure(go.Funnel(
-            y=['Leads Digitais', 'Oport. Digitais', 'Vendas Dig. (40%)'],
-            x=[ld_ideal, od_ideal, vd_ideal],
-            textinfo="value",
-            marker={"color": ["#022654", "#1e60b3", "#cb0935"]},
-            connector={"fillcolor": "rgba(4, 66, 143, 0.15)"}
-        ))
-        fig_mkt.update_layout(margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=350, font=dict(family="Inter", color=COR_TEXTO_LABEL))
-        st.plotly_chart(fig_mkt, use_container_width=True, config={"displayModeBar": False})
-
-    # --- 4. Estatísticas de Conversão Ideal vs Real ---
+    # --- 4. Estatísticas de Conversão (Em Etapas e Diretas) ---
     conv_a_vi_real = (vi_real / a_real * 100.0) if a_real > 0 else 0.0
     conv_vi_p_real = (p_real / vi_real * 100.0) if vi_real > 0 else 0.0
     conv_p_pa_real = (pa_real / p_real * 100.0) if p_real > 0 else 0.0
     conv_pa_v_real = (v_real / pa_real * 100.0) if pa_real > 0 else 0.0
 
-    st.markdown("<div style='margin-top: 0.5rem; margin-bottom: 0.85rem; text-align: center;'><strong>Estatísticas de Conversão (Ideal vs Realizada)</strong></div>", unsafe_allow_html=True)
+    conv_a_v_real = (v_real / a_real * 100.0) if a_real > 0 else 0.0
+    conv_vi_v_real = (v_real / vi_real * 100.0) if vi_real > 0 else 0.0
+    conv_p_v_real = (v_real / p_real * 100.0) if p_real > 0 else 0.0
+
+    st.markdown("<div style='margin-top: 0.5rem; margin-bottom: 0.85rem; text-align: center;'><strong>Estatísticas de Conversão em Etapas (Realizado)</strong></div>", unsafe_allow_html=True)
     st.markdown(
         f"""
         <div class="vel-kpi-row" style="margin-bottom: 1rem;">
@@ -1292,7 +1318,45 @@ def main() -> None:
             <div class="vel-kpi"><div class="lbl">Pasta ➔ Aprovada</div><div class="val">{conv_p_pa_real:.1f}% <br><span style="font-size:12px;color:#64748b;">(Ideal: 64%)</span></div></div>
             <div class="vel-kpi"><div class="lbl">Aprovada ➔ Venda</div><div class="val">{conv_pa_v_real:.1f}% <br><span style="font-size:12px;color:#64748b;">(Ideal: 64%)</span></div></div>
         </div>
-        <div style='margin-top: 1.5rem; margin-bottom: 0.85rem; text-align: center;'><strong>Cenários: Corretores Ativos (Necessários)</strong></div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.markdown("<div style='margin-top: 0.5rem; margin-bottom: 0.85rem; text-align: center;'><strong>Estatísticas de Conversão Diretas (Realizado até a Venda)</strong></div>", unsafe_allow_html=True)
+    st.markdown(
+        f"""
+        <div class="vel-kpi-row" style="margin-bottom: 1rem;">
+            <div class="vel-kpi"><div class="lbl">Agendamentos ➔ Vendas</div><div class="val">{conv_a_v_real:.1f}%</div></div>
+            <div class="vel-kpi"><div class="lbl">Visitas ➔ Vendas</div><div class="val">{conv_vi_v_real:.1f}%</div></div>
+            <div class="vel-kpi"><div class="lbl">Pastas ➔ Vendas</div><div class="val">{conv_p_v_real:.1f}%</div></div>
+            <div class="vel-kpi"><div class="lbl">Pastas Aprovadas ➔ Vendas</div><div class="val">{conv_pa_v_real:.1f}%</div></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # --- 5. Funil de Marketing Digital ---
+    st.markdown("<br><hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
+    st.subheader("Funil de Marketing Digital")
+    st.caption("Projeção necessária no meio digital para atingir 40% da Meta de Vendas.")
+    
+    # Layout centralizado usando colunas de espaçamento
+    col_mkt_espaco, col_mkt_grafico, col_mkt_espaco2 = st.columns([1, 2, 1])
+    with col_mkt_grafico:
+        fig_mkt = go.Figure(go.Funnel(
+            y=['Leads Digitais', 'Oport. Digitais', 'Vendas Dig. (40%)'],
+            x=[ld_ideal, od_ideal, vd_ideal],
+            textinfo="value",
+            marker={"color": ["#022654", "#1e60b3", "#cb0935"]},
+            connector={"fillcolor": "rgba(4, 66, 143, 0.15)"}
+        ))
+        fig_mkt.update_layout(margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=300, font=dict(family="Inter", color=COR_TEXTO_LABEL))
+        st.plotly_chart(fig_mkt, use_container_width=True, config={"displayModeBar": False})
+
+    # --- 6. Cenários de Corretores ---
+    st.markdown(
+        f"""
+        <div style='margin-top: 1.5rem; margin-bottom: 0.85rem; text-align: center;'><strong>Cenários: Corretores Ativos (Necessários para bater a meta global)</strong></div>
         <div class="vel-kpi-row" style="justify-content: center;">
             <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Pessimista (15% convert.)</div><div class="val">{corretores_pessimista}</div></div>
             <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Moderado (20% convert.)</div><div class="val">{corretores_moderado}</div></div>
