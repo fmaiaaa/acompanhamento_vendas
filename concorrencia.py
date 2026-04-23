@@ -51,17 +51,15 @@ RGB_AZUL_CSS = _hex_rgb_triplet(COR_AZUL_ESC)
 RGB_VERMELHO_CSS = _hex_rgb_triplet(COR_VERMELHO)
 
 # -----------------------------------------------------------------------------
-# Funções de Design (Padrão Premium)
+# Funções de Design (Padrão Premium Gaps)
 # -----------------------------------------------------------------------------
 def _resolver_png_raiz(nome: str) -> Path | None:
-    """Procura o PNG na pasta do app e na pasta pai."""
     for base in (_DIR_APP, _DIR_APP.parent):
         p = base / nome
         if p.is_file(): return p
     return None
 
 def _css_url_fundo_cadastro() -> str:
-    """String para `url(...)` no CSS: data-URL ou URL https (fallback)."""
     p = _resolver_png_raiz(FUNDO_CADASTRO_ARQUIVO)
     if p and p.is_file():
         b64 = base64.b64encode(p.read_bytes()).decode("ascii")
@@ -69,7 +67,6 @@ def _css_url_fundo_cadastro() -> str:
     return "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1920&q=80"
 
 def aplicar_estilo() -> None:
-    """Aplica o CSS customizado com suporte a levitação e glassmorphism."""
     bg_url = _css_url_fundo_cadastro()
     st.markdown(f"""
         <style>
@@ -85,6 +82,7 @@ def aplicar_estilo() -> None:
         }}
         [data-testid="stAppViewContainer"] {{ background: transparent !important; }}
         header[data-testid="stHeader"] {{ background: transparent !important; border: none !important; box-shadow: none !important; }}
+        [data-testid="stSidebar"] {{ display: none !important; }}
         [data-testid="stMain"] {{
             padding-left: clamp(14px, 5vw, 56px) !important; padding-right: clamp(14px, 5vw, 56px) !important;
             padding-top: clamp(12px, 3.5vh, 40px) !important; padding-bottom: clamp(14px, 4vh, 44px) !important;
@@ -101,14 +99,14 @@ def aplicar_estilo() -> None:
         .ficha-logo-wrap {{ text-align: center; padding: 0.1rem 0 0.45rem 0; }}
         .ficha-logo-wrap img {{ max-height: 72px; width: auto; max-width: min(280px, 85vw); object-fit: contain; }}
         .ficha-hero-stack {{ width: 100%; margin-bottom: 0.35rem; }}
-        .ficha-hero {{ text-align: center; padding: 0.5rem 0 0 0; max-width: 640px; margin: 0 auto; animation: fichaFadeIn 0.85s both; }}
+        .ficha-hero {{ text-align: center; padding: 0.5rem 0 0 0; max-width: 640px; margin: 0 auto; }}
         .ficha-hero .ficha-title {{ font-family: 'Montserrat', sans-serif; font-size: clamp(1.35rem, 3.5vw, 1.75rem); font-weight: 900; color: {COR_AZUL_ESC}; margin: 0; }}
         .ficha-hero .ficha-sub {{ color: #475569; font-size: 0.95rem; margin: 0.45rem 0 0 0; }}
         .ficha-hero-bar-wrap {{ width: 100%; margin: clamp(0.85rem, 2.4vw, 1.2rem) 0; }}
         .ficha-hero-bar {{ height: 4px; border-radius: 999px; background: linear-gradient(90deg, {COR_AZUL_ESC}, {COR_VERMELHO}, {COR_AZUL_ESC}); background-size: 200% 100%; animation: fichaShimmer 4s infinite alternate; }}
         .vel-kpi-row {{ display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 1.25rem; }}
         .vel-kpi {{
-            flex: 1 1 20%; background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,251,252,0.82) 100%);
+            flex: 1 1 18%; background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,251,252,0.82) 100%);
             border: 1px solid rgba(226, 232, 240, 0.9); border-radius: 14px; padding: 14px 16px; text-align: center;
             box-shadow: 0 2px 8px rgba({RGB_AZUL_CSS}, 0.06); transition: transform 0.3s ease, box-shadow 0.3s ease;
         }}
@@ -121,26 +119,8 @@ def aplicar_estilo() -> None:
         </style>
         """, unsafe_allow_html=True)
 
-def _logo_arquivo_local() -> str | None:
-    p_topo = _resolver_png_raiz(LOGO_TOPO_ARQUIVO)
-    if p_topo: return str(p_topo)
-    return None
-
-def _logo_url_secrets() -> str | None:
-    try:
-        if hasattr(st, "secrets") and isinstance(st.secrets.get("branding"), dict):
-            return (st.secrets["branding"].get("LOGO_URL") or "").strip() or None
-    except Exception: pass
-    return None
-
-def _logo_url_drive_por_id_arquivo() -> str | None:
-    fid = (os.environ.get("DIRECIONAL_LOGO_FILE_ID") or "").strip()
-    if len(fid) < 10: return None
-    return f"https://drive.google.com/uc?export=view&id={fid}"
-
 def _exibir_logo_topo() -> None:
-    """Exibe o logotipo da Direcional no topo da aplicação."""
-    path = _logo_arquivo_local()
+    path = _resolver_png_raiz(LOGO_TOPO_ARQUIVO)
     url = _logo_url_secrets() or _logo_url_drive_por_id_arquivo()
     try:
         if path:
@@ -155,7 +135,6 @@ def _exibir_logo_topo() -> None:
     except Exception: pass
 
 def _cabecalho_pagina() -> None:
-    """Exibe o título centralizado e as barras animadas."""
     _exibir_logo_topo()
     st.markdown(
         f'<div class="ficha-hero-stack">'
@@ -167,6 +146,18 @@ def _cabecalho_pagina() -> None:
         f"</div>",
         unsafe_allow_html=True,
     )
+
+def _logo_url_secrets() -> str | None:
+    try:
+        if hasattr(st, "secrets") and isinstance(st.secrets.get("branding"), dict):
+            return (st.secrets["branding"].get("LOGO_URL") or "").strip() or None
+    except Exception: pass
+    return None
+
+def _logo_url_drive_por_id_arquivo() -> str | None:
+    fid = (os.environ.get("DIRECIONAL_LOGO_FILE_ID") or "").strip()
+    if len(fid) < 10: return None
+    return f"https://drive.google.com/uc?export=view&id={fid}"
 
 # -----------------------------------------------------------------------------
 # Pipeline de Dados (Pandas)
@@ -210,18 +201,15 @@ def parse_val(v):
     except: return 0.0
 
 def process_data() -> pd.DataFrame:
-    """Pipeline de limpeza e engenharia de features focada em REGIÃO."""
     df_det = ler_aba(SPREADSHEET_ID_CONC, "BD DETALHADA")
     df_ger = ler_aba(SPREADSHEET_ID_CONC, "BD GERAL")
     df_men = ler_aba(SPREADSHEET_ID_CONC, "Abr/2026")
     df_dados_dir = ler_aba(SPREADSHEET_ID_CONC, "DADOS DIRECIONAL")
     
-    # 1. Limpeza Concorrentes
     df_det["Preço_Float"] = df_det["PREÇO"].apply(parse_val)
     df_det["Metragem_Float"] = df_det["METRAGEM"].apply(parse_val)
     df_det["Preço_m2"] = df_det["PREÇO_M2"].apply(parse_val)
     
-    # Recalcular Preço_m2 se for zero mas tiver metragem
     df_det["Preço_m2"] = np.where(
         (df_det["Preço_m2"] == 0) & (df_det["Metragem_Float"] > 0),
         df_det["Preço_Float"] / df_det["Metragem_Float"],
@@ -230,21 +218,9 @@ def process_data() -> pd.DataFrame:
     
     df_ger["Preço_Min"] = df_ger["Venda a Partir"].apply(parse_val)
     
-    # 2. Merge Master
-    df_master = df_det.merge(
-        df_men[["CHAVE", "Vendas (Qnt.)", "Estoque (Qnt.)", "VGV (R$)", "PREÇO MÉDIO"]], 
-        on="CHAVE", 
-        how="left"
-    )
+    df_master = df_det.merge(df_men[["CHAVE", "Vendas (Qnt.)", "Estoque (Qnt.)", "VGV (R$)", "PREÇO MÉDIO"]], on="CHAVE", how="left")
+    df_master = df_master.merge(df_ger[["Empreendimento", "Preço_Min", "Previsão"]], left_on="EMPREENDIMENTO", right_on="Empreendimento", how="left")
     
-    df_master = df_master.merge(
-        df_ger[["Empreendimento", "Preço_Min", "Previsão"]], 
-        left_on="EMPREENDIMENTO", 
-        right_on="Empreendimento", 
-        how="left"
-    )
-    
-    # 3. Feature Engineering (Foco Regional)
     vendas = pd.to_numeric(df_master["Vendas (Qnt.)"], errors='coerce').fillna(0)
     estoque = pd.to_numeric(df_master["Estoque (Qnt.)"], errors='coerce').fillna(0)
     df_master["Absorcao"] = vendas / (vendas + estoque)
@@ -253,14 +229,10 @@ def process_data() -> pd.DataFrame:
     df_master["Desconto"] = (df_master["Preço_Float"] - df_master["Preço_Min"]) / df_master["Preço_Min"]
     df_master["Desconto"] = df_master["Desconto"].fillna(0)
     
-    # Posicionamento Relativo (Preço m2 vs Média da Região)
     medias_regiao = df_master.groupby("REGIÃO")["Preço_m2"].transform("mean")
     df_master["Posicionamento_Rel_Regiao"] = df_master["Preço_m2"] - medias_regiao
-    
-    # Densidade Competitiva por Região
     df_master["Densidade_Regiao"] = df_master.groupby("REGIÃO")["CHAVE"].transform("nunique")
     
-    # 4. Identificar Direcional (Filtro por Endereço/Chave)
     allowed_addresses = [str(x).strip().upper() for x in df_dados_dir["Endereço"].unique() if x]
     allowed_keys = [str(x).strip().upper() for x in df_dados_dir["Nome do Empreendimento (Chave)"].unique() if x]
     
@@ -272,7 +244,7 @@ def process_data() -> pd.DataFrame:
     return df_master
 
 # -----------------------------------------------------------------------------
-# Interface e Páginas
+# Interface Principal
 # -----------------------------------------------------------------------------
 def main():
     aplicar_estilo()
@@ -284,16 +256,22 @@ def main():
         st.error(f"Erro no Pipeline de Dados: {e}")
         return
 
-    # Navegação na Sidebar
-    st.sidebar.markdown(f"<h3 style='color:{COR_AZUL_ESC};'>Menu Estratégico</h3>", unsafe_allow_html=True)
-    page = st.sidebar.radio("Analítica", ["Visão Geral", "Mapa Competitivo", "Produto Ideal", "Pricing & Demanda", "Ranking Concorrentes", "Matriz de Oportunidades"])
+    # Filtros e Navegação Centralizados (Substituindo Sidebar)
+    st.markdown("<div style='margin-bottom:1.5rem; text-align: center;'><strong>Filtros de Análise e Navegação</strong></div>", unsafe_allow_html=True)
     
-    # Filtros Globais na Sidebar (Exclusivamente por Região)
-    st.sidebar.markdown("---")
-    f_regiao = st.sidebar.multiselect("Filtrar por Região", sorted(df_master["REGIÃO"].dropna().unique()))
+    nav_col1, nav_col2, nav_col3 = st.columns([1.5, 2, 1.5])
+    with nav_col1:
+        f_regiao = st.multiselect("Filtrar por Região", sorted(df_master["REGIÃO"].dropna().unique()))
+    with nav_col2:
+        page = st.selectbox("Seleccione a Página de Análise", ["Visão Geral", "Mapa Competitivo", "Produto Ideal", "Pricing & Demanda", "Ranking Concorrentes", "Matriz de Oportunidades"])
+    with nav_col3:
+        f_concorrente = st.multiselect("Filtrar por Concorrente", sorted(df_master["CONCORRENTE"].dropna().unique()))
     
     df_f = df_master.copy()
     if f_regiao: df_f = df_f[df_f["REGIÃO"].isin(f_regiao)]
+    if f_concorrente: df_f = df_f[df_f["CONCORRENTE"].isin(f_concorrente)]
+
+    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
 
     if page == "Visão Geral":
         st.markdown("## Visão Geral do Mercado Regional")
@@ -319,7 +297,7 @@ def main():
         
         col1, col2 = st.columns(2)
         with col1:
-            st.subheader("VGV por Concorrente na Região")
+            st.subheader("Market Share por VGV (Mercado)")
             df_gv = df_f.groupby("CONCORRENTE")["Preço_Float"].sum().reset_index()
             fig = px.pie(df_gv, values='Preço_Float', names='CONCORRENTE', hole=.4, color_discrete_sequence=px.colors.sequential.Blues_r)
             fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", legend=dict(orientation="h", y=-0.1))
@@ -351,10 +329,10 @@ def main():
             st.dataframe(df_met.rename(columns={"Metragem_Float": "m² Médio"}), use_container_width=True, hide_index=True)
 
     elif page == "Produto Ideal":
-        st.markdown("## O que as regiões estão absorvendo?")
+        st.markdown("## Inteligência de Produto: Absorção Regional")
         col1, col2 = st.columns(2)
         with col1:
-            st.subheader("Absorção por Tipologia")
+            st.subheader("O que o mercado está absorvendo? (Tipologia)")
             df_tipo = df_f.groupby("TIPOLOGIA")["Absorcao"].mean().reset_index().sort_values("Absorcao", ascending=False)
             fig = px.bar(df_tipo, x="Absorcao", y="TIPOLOGIA", orientation='h', color_discrete_sequence=[COR_AZUL_ESC])
             st.plotly_chart(fig, use_container_width=True)
@@ -374,7 +352,7 @@ def main():
                          labels={"Preço_m2": "R$ / m²", "Absorcao": "Taxa de Absorção"})
         fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(fig, use_container_width=True)
-        st.info("💡 Produtos acima da linha vendem mais do que o esperado regionalmente. Produtos abaixo podem estar sobre-precificados.")
+        st.info("💡 Produtos acima da linha de tendência vendem mais do que o esperado para o seu preço. Produtos abaixo podem estar sobre-precificados em relação à concorrência local.")
 
     elif page == "Ranking Concorrentes":
         st.markdown("## Eficiência Competitiva por Concorrente")
@@ -409,7 +387,7 @@ def main():
             
             def strategic_action(row):
                 if row['Abs_Media'] > avg_mkt_abs and row['Qtd_Projetos'] <= med_mkt_projects:
-                    return "🔥 ALTA DEMANDA: Pouca oferta regional e alta velocidade. Oportunidade Crítica."
+                    return "🔥 ALTA DEMANDA: Pouca oferta regional e alta velocidade. Oportunidade de Lançamento."
                 if row['Abs_Media'] < avg_mkt_abs and row['Qtd_Projetos'] > med_mkt_projects:
                     return "⚠️ SATURAÇÃO: Muitos players e baixa velocidade. Risco de estoque parado."
                 if row['Preco_m2'] < df_insight['Preco_m2'].mean() * 0.85:
