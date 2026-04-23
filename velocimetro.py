@@ -11,8 +11,12 @@ sender_password) — lida pelo app mas não usada na leitura da planilha.
 """
 from __future__ import annotations
 
+import base64
+import html
 import math
+import os
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
@@ -20,11 +24,17 @@ import plotly.graph_objects as go
 import streamlit as st
 
 # -----------------------------------------------------------------------------
-# Identificação da planilha (ID extraído da URL)
+# Identificação da planilha e Arquivos Visuais
 # -----------------------------------------------------------------------------
 SPREADSHEET_ID = "1wpuNQvksot9CLhGgQRe7JlyDeRISEh_sc3-6VRDyQYk"
 WS_VENDAS = "BD Vendas Completa"
 WS_METAS = "Metas"
+
+_DIR_APP = Path(__file__).resolve().parent
+LOGO_TOPO_ARQUIVO = "502.57_LOGO DIRECIONAL_V2F-01.png"
+FAVICON_ARQUIVO = "502.57_LOGO D_COR_V3F.png"
+FUNDO_CADASTRO_ARQUIVO = "fundo_cadastrorh.jpg"
+URL_LOGO_DIRECIONAL_EMAIL = "https://logodownload.org/wp-content/uploads/2021/04/direcional-engenharia-logo.png"
 
 # Paleta alinhada à Ficha Credenciamento / Vendas RJ
 COR_AZUL_ESC = "#04428f"
@@ -34,6 +44,7 @@ COR_FUNDO_CARD = "rgba(255, 255, 255, 0.78)"
 COR_BORDA = "#eef2f6"
 COR_TEXTO_MUTED = "#64748b"
 COR_TEXTO_LABEL = "#1e293b"
+COR_INPUT_BG = "#f0f2f6"
 
 MESES_TEXTO_MAP = {
     "jan": 1, "fev": 2, "mar": 3, "abr": 4, "mai": 5, "jun": 6,
@@ -41,351 +52,306 @@ MESES_TEXTO_MAP = {
 }
 
 
-def _secrets_connections_gsheets() -> Dict[str, Any]:
-    """Lê `[connections.gsheets]` do secrets.toml → dict."""
-    try:
-        sec = st.secrets
-        if hasattr(sec, "get") and sec.get("connections"):
-            g = sec["connections"].get("gsheets")
-            if g is not None:
-                return dict(g)
-    except Exception:
-        pass
-    return {}
-
-
-def _normalizar_private_key_toml(pk: str) -> str:
-    """Chave PEM colada no TOML com \\n literais vira quebras reais."""
-    s = (pk or "").strip()
-    if not s:
-        return s
-    if "\\n" in s and "\n" not in s:
-        s = s.replace("\\n", "\n")
-    return s
-
-
-def montar_service_account_info(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """
-    Monta o dict esperado por `google.oauth2.service_account.Credentials.from_service_account_info`.
-    Aceita `type` vazio nos secrets — assume service_account se houver private_key + client_email.
-    """
-    if not raw:
-        return None
-    chaves = (
-        "type",
-        "project_id",
-        "private_key_id",
-        "private_key",
-        "client_email",
-        "client_id",
-        "auth_uri",
-        "token_uri",
-        "auth_provider_x509_cert_url",
-        "client_x509_cert_url",
-    )
-    out: Dict[str, Any] = {}
-    for k in chaves:
-        v = raw.get(k)
-        if v is None:
-            continue
-        if isinstance(v, str):
-            v = v.strip()
-        if v == "":
-            continue
-        out[k] = v
-    if "private_key" in out:
-        out["private_key"] = _normalizar_private_key_toml(str(out["private_key"]))
-    if "private_key" not in out or "client_email" not in out:
-        return None
-    typ = str(out.get("type") or "").strip()
-    if not typ:
-        out["type"] = "service_account"
-    if "token_uri" not in out:
-        out["token_uri"] = "https://oauth2.googleapis.com/token"
-    if "auth_uri" not in out:
-        out["auth_uri"] = "https://accounts.google.com/o/oauth2/auth"
-    return out
-
-
-def spreadsheet_id_de_secrets(cfg: Dict[str, Any]) -> str:
-    for k in ("spreadsheet_id", "SPREADSHEET_ID", "spreadsheet", "planilha_id"):
-        v = str(cfg.get(k) or "").strip()
-        if v:
-            return v
-    return SPREADSHEET_ID
-
-
-def valores_para_dataframe(rows: List[List[str]]) -> pd.DataFrame:
-    """Primeira linha = cabeçalho; alinha largura das linhas."""
-    if not rows:
-        return pd.DataFrame()
-    header = [str(c).strip() for c in rows[0]]
-    w = len(header)
-    if w == 0:
-        return pd.DataFrame()
-    body = rows[1:]
-    if not body:
-        return pd.DataFrame(columns=header)
-    norm: List[List[str]] = []
-    for r in body:
-        cells = [str(c) for c in r]
-        if len(cells) < w:
-            cells = cells + [""] * (w - len(cells))
-        else:
-            cells = cells[:w]
-        norm.append(cells)
-    return pd.DataFrame(norm, columns=header)
-
-
-def ler_aba_gsheets(
-    service_account_info: Dict[str, Any],
-    spreadsheet_id: str,
-    worksheet: str,
-) -> pd.DataFrame:
-    import gspread
-    from google.oauth2.service_account import Credentials
-
-    scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-    creds = Credentials.from_service_account_info(service_account_info, scopes=scopes)
-    gc = gspread.authorize(creds)
-    sh = gc.open_by_key(spreadsheet_id.strip())
-    nome = worksheet.strip()
-
-    def _abrir() -> Any:
-        try:
-            return sh.worksheet(nome)
-        except gspread.WorksheetNotFound:
-            for w in sh.worksheets():
-                if w.title.strip() == nome:
-                    return w
-            for w in sh.worksheets():
-                if w.title.strip().lower() == nome.lower():
-                    return w
-            titulos = [w.title for w in sh.worksheets()]
-            raise gspread.WorksheetNotFound(
-                f"Aba {nome!r} não encontrada. Abas: {titulos}"
-            ) from None
-
-    ws = _abrir()
-    return valores_para_dataframe(ws.get_all_values())
-
-
-def _fingerprint_credenciais(info: Dict[str, Any]) -> str:
-    pk = str(info.get("private_key") or "")
-    return str(hash(pk))[-12:] if pk else "0"
-
-
-@st.cache_data(ttl=300, show_spinner=False)
-def ler_planilha_aba_df(spreadsheet_id: str, worksheet: str, _cred_fp: str) -> pd.DataFrame:
-    """Lê uma aba via gspread. `_cred_fp` deve ser o fingerprint da private_key."""
-    raw = _secrets_connections_gsheets()
-    info = montar_service_account_info(raw)
-    if not info:
-        raise ValueError("Credenciais [connections.gsheets] ausentes ou incompletas.")
-    return ler_aba_gsheets(info, spreadsheet_id, worksheet)
-
-
-def _hex_rgb(hex_color: str) -> str:
+def _hex_rgb_triplet(hex_color: str) -> str:
+    """Converte #RRGGBB em 'r, g, b' para uso em rgba(...)."""
     x = (hex_color or "").strip().lstrip("#")
     if len(x) != 6:
-        return "4, 66, 143"
+        return "0, 0, 0"
     return f"{int(x[0:2], 16)}, {int(x[2:4], 16)}, {int(x[4:6], 16)}"
 
 
-RGB_AZUL = _hex_rgb(COR_AZUL_ESC)
-RGB_VERM = _hex_rgb(COR_VERMELHO)
+RGB_AZUL_CSS = _hex_rgb_triplet(COR_AZUL_ESC)
+RGB_VERMELHO_CSS = _hex_rgb_triplet(COR_VERMELHO)
 
 
-def parse_valor_br(val: Any) -> float:
-    """Converte valores como 215.625,50 ou 247072,61 para float."""
-    if val is None or (isinstance(val, float) and pd.isna(val)):
-        return 0.0
-    if isinstance(val, (int, float)):
-        return float(val)
-    s = str(val).strip().replace("R$", "").replace(" ", "").replace("\xa0", "")
-    if not s or s.lower() == "nan":
-        return 0.0
-    s = re.sub(r"[^\d.,\-]", "", s)
-    if not s:
-        return 0.0
-    if "," in s and "." in s:
-        if s.rfind(",") > s.rfind("."):
-            s = s.replace(".", "").replace(",", ".")
-        else:
-            s = s.replace(",", "")
-    elif "," in s:
-        s = s.replace(",", ".")
-    try:
-        return float(s)
-    except ValueError:
-        return 0.0
-
-
-def extrair_mes(val: Any) -> Optional[int]:
-    """Extrai mês numérico com alta precisão."""
-    if pd.isna(val): return None
-    v = str(val).strip().lower()
-    if not v: return None
-    for m_str, m_num in MESES_TEXTO_MAP.items():
-        if m_str in v:
-            return m_num
-    try:
-        m = int(float(v))
-        if 1 <= m <= 12: return m
-    except ValueError:
-        pass
-    if '/' in v:
-        p = v.split('/')
-        if len(p) == 3: 
-            try:
-                m = int(p[1])
-                if 1 <= m <= 12: return m
-            except: pass
-        elif len(p) == 2: 
-            try:
-                m = int(p[0])
-                if 1 <= m <= 12: return m
-            except: pass
+# -----------------------------------------------------------------------------
+# Funções de Design (Ficha Direcional)
+# -----------------------------------------------------------------------------
+def _resolver_png_raiz(nome: str) -> Path | None:
+    """Procura o PNG na pasta do app e na pasta pai."""
+    for base in (_DIR_APP, _DIR_APP.parent):
+        p = base / nome
+        if p.is_file():
+            return p
     return None
 
+def _resolver_imagem_fundo_local(nome: str) -> Path | None:
+    """Imagem JPG/PNG na pasta do app ou na pasta pai."""
+    for base in (_DIR_APP, _DIR_APP.parent):
+        for ext in (".jpg", ".jpeg", ".JPG", ".JPEG", ".png", ".PNG"):
+            stem = Path(nome).stem
+            p = base / f"{stem}{ext}"
+            if p.is_file():
+                return p
+        p = base / nome
+        if p.is_file():
+            return p
+    return None
 
-def extrair_ano(val: Any) -> Optional[int]:
-    """Extrai ano numérico de strings complexas."""
-    if pd.isna(val): return None
-    v = str(val).strip()
-    if not v: return None
-    try:
-        ano = int(float(v))
-        if ano > 2000: return ano
-    except ValueError:
-        pass
-    if '/' in v:
-        p = v.split('/')
+def _css_url_fundo_cadastro() -> str:
+    """String para `url(...)` no CSS: data-URL ou URL https (fallback)."""
+    p = _resolver_imagem_fundo_local(FUNDO_CADASTRO_ARQUIVO)
+    if p and p.is_file():
         try:
-            ano = int(p[-1])
-            if ano > 2000: return ano
-        except: pass
+            raw = p.read_bytes()
+            suf = p.suffix.lower()
+            mime = "image/jpeg" if suf in (".jpg", ".jpeg") else "image/png"
+            b64 = base64.b64encode(raw).decode("ascii")
+            return f"data:{mime};base64,{b64}"
+        except OSError:
+            pass
+    return (
+        "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab"
+        "?auto=format&fit=crop&w=1920&q=80"
+    )
+
+def _logo_arquivo_local() -> str | None:
+    p_topo = _resolver_png_raiz(LOGO_TOPO_ARQUIVO)
+    if p_topo:
+        return str(p_topo)
+    for name in ("logo_direcional.png", "logo_direcional.jpg", "logo_direcional.jpeg", "logo.png"):
+        p = _DIR_APP / "assets" / name
+        if p.is_file():
+            return str(p)
     return None
 
-
-def achar_coluna(df: pd.DataFrame, aliases: List[str]) -> Optional[str]:
-    """Busca uma coluna no DataFrame por uma lista de aliases."""
-    for a in aliases:
-        for c in df.columns:
-            if a.lower() == str(c).strip().lower():
-                return c
-    for a in aliases:
-        for c in df.columns:
-            if a.lower() in str(c).strip().lower():
-                return c
+def _logo_url_secrets() -> str | None:
+    try:
+        if hasattr(st, "secrets"):
+            b = st.secrets.get("branding")
+            if isinstance(b, dict):
+                u = (b.get("LOGO_URL") or "").strip()
+                if u:
+                    return u
+    except Exception:
+        pass
     return None
 
+def _logo_url_drive_por_id_arquivo() -> str | None:
+    fid = (os.environ.get("DIRECIONAL_LOGO_FILE_ID") or "").strip()
+    if len(fid) < 10:
+        return None
+    return f"https://drive.google.com/uc?export=view&id={fid}"
 
-def normalizar_colunas(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df.columns = [str(c).strip() for c in df.columns]
-    return df
+def _exibir_logo_topo() -> None:
+    """Logo centralizada no topo."""
+    path = _logo_arquivo_local()
+    url = _logo_url_secrets() or _logo_url_drive_por_id_arquivo()
+    try:
+        if path:
+            ext = Path(path).suffix.lower().lstrip(".")
+            mime = "image/png" if ext == "png" else "image/jpeg" if ext in ("jpg", "jpeg") else "image/png"
+            with open(path, "rb") as f:
+                b64 = base64.b64encode(f.read()).decode("ascii")
+            st.markdown(
+                f'<div class="ficha-logo-wrap"><img src="data:{mime};base64,{b64}" alt="Direcional" /></div>',
+                unsafe_allow_html=True,
+            )
+            return
+        if url:
+            st.markdown(
+                f'<div class="ficha-logo-wrap"><img src="{html.escape(url)}" alt="Direcional" /></div>',
+                unsafe_allow_html=True,
+            )
+    except Exception:
+        pass
 
-
-def coluna_existe(df: pd.DataFrame, nome: str) -> bool:
-    return nome in df.columns
-
-
-def melt_metas(df_metas_raw: pd.DataFrame) -> pd.DataFrame:
-    """Transforma Metas QTD e VGV largas em longas (mês numérico + meta_qtd + meta_vgv)."""
-    df = normalizar_colunas(df_metas_raw)
-    
-    # Adicionamos um ID para evitar produto cartesiano se houver linhas duplicadas
-    df["_row_id"] = range(len(df))
-    
-    id_vars = [c for c in df.columns if str(c).lower() in ["empreendimento", "região", "regiao", "obra"]]
-    id_vars_merge = id_vars + ["_row_id"]
-    
-    # Limpa valores NaN para garantir consistência no merge
-    for c in id_vars:
-        df[c] = df[c].fillna("Não Informado").astype(str).str.strip()
-        df.loc[df[c] == "", c] = "Não Informado"
-        df.loc[df[c].str.lower() == "nan", c] = "Não Informado"
-
-    # Regex ignora espaços, aceitando "QTD 1" ou "QTD1" e isolando 1-12 (ignora QTDTOTAL)
-    cols_qtd = [c for c in df.columns if re.match(r'^qtd\s*(1[0-2]|[1-9])$', str(c).lower().strip())]
-    cols_vgv = [c for c in df.columns if re.match(r'^vgv\s*(1[0-2]|[1-9])$', str(c).lower().strip())]
-
-    if not id_vars or not cols_qtd:
-        return pd.DataFrame(columns=["Empreendimento", "Região", "Mes_Num", "Meta_Qtd", "Meta_VGV"])
-
-    # Melt de QTD
-    df_qtd = df.melt(id_vars=id_vars_merge, value_vars=cols_qtd, var_name="Mes_Str", value_name="Meta_Qtd")
-    # Extrai o numero isolado independentemente de espaços ("QTD 1" -> 1)
-    df_qtd["Mes_Num"] = df_qtd["Mes_Str"].str.extract(r'(\d+)')[0].astype(int)
-    df_qtd.drop(columns=["Mes_Str"], inplace=True)
-    df_qtd["Meta_Qtd"] = pd.to_numeric(df_qtd["Meta_Qtd"], errors="coerce").fillna(0)
-
-    # Melt de VGV (se existir)
-    if cols_vgv:
-        df_vgv = df.melt(id_vars=id_vars_merge, value_vars=cols_vgv, var_name="Mes_Str", value_name="Meta_VGV")
-        df_vgv["Mes_Num"] = df_vgv["Mes_Str"].str.extract(r'(\d+)')[0].astype(int)
-        df_vgv.drop(columns=["Mes_Str"], inplace=True)
-        # Usa parse_valor_br para converter a moeda formatada BR
-        df_vgv["Meta_VGV"] = df_vgv["Meta_VGV"].apply(parse_valor_br)
-        
-        # Junta QTD e VGV usando as chaves únicas
-        out = pd.merge(df_qtd, df_vgv, on=id_vars_merge + ["Mes_Num"], how="outer").fillna(0)
-    else:
-        out = df_qtd.copy()
-        out["Meta_VGV"] = 0.0
-
-    out.drop(columns=["_row_id"], inplace=True, errors="ignore")
-
-    # Normaliza colunas ID
-    for c in out.columns:
-        if str(c).lower() in ["empreendimento", "obra"]:
-            out.rename(columns={c: "Empreendimento"}, inplace=True)
-        elif str(c).lower() in ["região", "regiao"]:
-            out.rename(columns={c: "Região"}, inplace=True)
-            
-    return out
+def _cabecalho_pagina() -> None:
+    _exibir_logo_topo()
+    st.markdown(
+        f'<div class="ficha-hero-stack">'
+        f'<div class="ficha-hero">'
+        f'<p class="ficha-title">Acompanhamento de metas de vendas</p>'
+        f'<p class="ficha-sub">Realizado vs metas por período — '
+        f'<strong>BD Vendas Completa e aba Metas</strong>.</p>'
+        f"</div>"
+        f'<div class="ficha-hero-bar-wrap" aria-hidden="true">'
+        f'<div class="ficha-hero-bar"></div>'
+        f"</div>"
+        f"</div>",
+        unsafe_allow_html=True,
+    )
 
 
 def aplicar_estilo() -> None:
+    bg_url = _css_url_fundo_cadastro()
     st.markdown(
         f"""
         <style>
-        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@600;700;800;900&family=Inter:wght@400;500;600;700&display=swap');
-        html, body, [data-testid="stAppViewContainer"] {{
+        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800;900&family=Inter:wght@400;500;600;700&display=swap');
+        @keyframes fichaFadeIn {{
+            from {{ opacity: 0; transform: translateY(18px); }}
+            to {{ opacity: 1; transform: translateY(0); }}
+        }}
+        @keyframes fichaShimmer {{
+            0% {{ background-position: 0% 50%; }}
+            100% {{ background-position: 200% 50%; }}
+        }}
+        html, body, :root, [data-testid="stApp"] {{
+            color-scheme: light !important;
+        }}
+        html, body {{
             font-family: 'Inter', sans-serif;
             color: {COR_TEXTO_LABEL};
+            background: transparent !important;
+            background-color: transparent !important;
         }}
-        .stApp {{
-            background: linear-gradient(135deg, rgba({RGB_AZUL}, 0.88) 0%, rgba(30, 58, 95, 0.55) 45%,
-                rgba({RGB_VERM}, 0.18) 72%, rgba(15, 23, 42, 0.42) 100%) !important;
+        .stApp,
+        [data-testid="stApp"] {{
+            background:
+                linear-gradient(135deg, rgba({RGB_AZUL_CSS}, 0.82) 0%, rgba(30, 58, 95, 0.55) 38%, rgba({RGB_VERMELHO_CSS}, 0.22) 72%, rgba(15, 23, 42, 0.45) 100%),
+                url("{bg_url}") center / cover no-repeat !important;
+            background-attachment: scroll !important;
+            background-color: transparent !important;
         }}
-        [data-testid="stAppViewContainer"] {{ background: transparent !important; }}
+        [data-testid="stAppViewContainer"] {{
+            background: transparent !important;
+            background-color: transparent !important;
+        }}
+        header[data-testid="stHeader"],
         [data-testid="stHeader"] {{
             background: transparent !important;
+            background-color: transparent !important;
+            background-image: none !important;
+            border: none !important;
+            box-shadow: none !important;
+            backdrop-filter: none !important;
+            -webkit-backdrop-filter: none !important;
+        }}
+        [data-testid="stHeader"] > div,
+        [data-testid="stHeader"] header {{
+            background: transparent !important;
+            background-color: transparent !important;
+            background-image: none !important;
+            box-shadow: none !important;
+        }}
+        [data-testid="stDecoration"] {{
+            background: transparent !important;
+            background-color: transparent !important;
+        }}
+        [data-testid="stSidebar"] {{ display: none !important; }}
+        [data-testid="stSidebarCollapsedControl"] {{ display: none !important; }}
+        [data-testid="stToolbar"] {{
+            background: transparent !important;
+            background-color: transparent !important;
+            background-image: none !important;
+            border: none !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
+            color: rgba(255, 255, 255, 0.92) !important;
+        }}
+        [data-testid="stToolbar"] button,
+        [data-testid="stToolbar"] a {{
+            color: rgba(255, 255, 255, 0.92) !important;
+            background: transparent !important;
+            background-color: transparent !important;
+        }}
+        [data-testid="stHeader"] button {{
+            background: transparent !important;
+            background-color: transparent !important;
+        }}
+        [data-testid="stToolbar"] svg {{
+            fill: currentColor !important;
+            color: inherit !important;
+        }}
+        [data-testid="stToolbar"] svg path[stroke] {{
+            stroke: currentColor !important;
+        }}
+        [data-testid="stToolbar"] button:hover,
+        [data-testid="stToolbar"] a:hover,
+        [data-testid="stHeader"] button:hover {{
+            background: rgba(255, 255, 255, 0.12) !important;
+        }}
+        [data-testid="stMain"] {{
+            padding-left: clamp(14px, 5vw, 56px) !important;
+            padding-right: clamp(14px, 5vw, 56px) !important;
+            padding-top: clamp(12px, 3.5vh, 40px) !important;
+            padding-bottom: clamp(14px, 4vh, 44px) !important;
+            box-sizing: border-box !important;
+        }}
+        section.main > div {{
+            padding-top: 0.25rem !important;
+            padding-bottom: 0.35rem !important;
         }}
         .block-container {{
             max-width: 1300px !important;
-            padding: 1.5rem 2rem 2rem 2rem !important;
-            background: {COR_FUNDO_CARD} !important;
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
+            margin-left: auto !important;
+            margin-right: auto !important;
+            margin-top: clamp(4px, 1vh, 14px) !important;
+            margin-bottom: clamp(4px, 1vh, 14px) !important;
+            padding: 1.45rem 2.25rem 1.55rem 2.25rem !important;
+            background: rgba(255, 255, 255, 0.78) !important;
+            backdrop-filter: blur(18px) saturate(1.15);
+            -webkit-backdrop-filter: blur(18px) saturate(1.15);
             border-radius: 24px !important;
             border: 1px solid rgba(255, 255, 255, 0.45) !important;
-            box-shadow: 0 24px 48px -12px rgba({RGB_AZUL}, 0.2) !important;
+            box-shadow:
+                0 4px 6px -1px rgba({RGB_AZUL_CSS}, 0.06),
+                0 24px 48px -12px rgba({RGB_AZUL_CSS}, 0.18),
+                inset 0 1px 0 rgba(255, 255, 255, 0.55) !important;
+            animation: fichaFadeIn 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
         }}
         h1, h2, h3 {{
             font-family: 'Montserrat', sans-serif !important;
             color: {COR_AZUL_ESC} !important;
             font-weight: 800 !important;
         }}
-        .vel-hero-bar {{
+        .ficha-logo-wrap {{
+            text-align: center;
+            padding: 0.1rem 0 0.45rem 0;
+        }}
+        .ficha-logo-wrap img {{
+            max-height: 72px;
+            width: auto;
+            max-width: min(280px, 85vw);
+            height: auto;
+            object-fit: contain;
+            display: inline-block;
+            vertical-align: middle;
+        }}
+        .ficha-hero-stack {{
+            width: 100%;
+            max-width: 100%;
+            margin-bottom: 0.35rem;
+            box-sizing: border-box;
+        }}
+        .ficha-hero {{
+            text-align: center;
+            padding: 0.5rem 0 0 0;
+            margin: 0 auto 0 auto;
+            max-width: 640px;
+            animation: fichaFadeIn 0.85s cubic-bezier(0.22, 1, 0.36, 1) 0.1s both;
+        }}
+        .ficha-hero .ficha-title {{
+            font-family: 'Montserrat', sans-serif;
+            font-size: clamp(1.35rem, 3.5vw, 1.75rem);
+            font-weight: 900;
+            color: {COR_AZUL_ESC};
+            margin: 0;
+            line-height: 1.25;
+            letter-spacing: -0.02em;
+        }}
+        .ficha-hero .ficha-sub {{
+            color: #475569;
+            font-size: 0.95rem;
+            margin: 0.45rem 0 0 0;
+            line-height: 1.45;
+        }}
+        .ficha-hero-bar-wrap {{
+            width: 100%;
+            max-width: 100%;
+            margin: clamp(0.85rem, 2.4vw, 1.2rem) 0;
+            padding: 0;
+            box-sizing: border-box;
+        }}
+        .ficha-hero-bar {{
             height: 4px;
             width: 100%;
+            margin: 0;
             border-radius: 999px;
-            margin: 0.75rem 0 1.25rem 0;
             background: linear-gradient(90deg, {COR_AZUL_ESC}, {COR_VERMELHO}, {COR_AZUL_ESC});
             background-size: 200% 100%;
+            animation: fichaShimmer 4s ease-in-out infinite alternate;
         }}
         .vel-kpi-row {{
             display: flex;
@@ -394,13 +360,13 @@ def aplicar_estilo() -> None:
             margin-bottom: 1.25rem;
         }}
         .vel-kpi {{
-            flex: 1 1 30%; /* Ajustado para se espalhar perfeitamente quando houver 3 elementos */
+            flex: 1 1 30%;
             background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,251,252,0.9) 100%);
             border: 1px solid rgba(226, 232, 240, 0.9);
             border-radius: 14px;
             padding: 14px 16px;
             text-align: center;
-            box-shadow: 0 2px 8px rgba({RGB_AZUL}, 0.06);
+            box-shadow: 0 2px 8px rgba({RGB_AZUL_CSS}, 0.06);
         }}
         .vel-kpi .lbl {{
             font-size: 0.72rem;
@@ -424,54 +390,294 @@ def aplicar_estilo() -> None:
             border-radius: 12px;
             border: 1px solid {COR_BORDA};
         }}
+        div[data-baseweb="input"] {{
+            border-radius: 10px !important;
+            border: 1px solid #e2e8f0 !important;
+            background-color: {COR_INPUT_BG} !important;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
+        }}
+        div[data-baseweb="input"]:focus-within {{
+            border-color: rgba({RGB_AZUL_CSS}, 0.35) !important;
+            box-shadow: 0 0 0 3px rgba({RGB_AZUL_CSS}, 0.08) !important;
+        }}
         </style>
         """,
         unsafe_allow_html=True,
     )
 
 
+# -----------------------------------------------------------------------------
+# Lógicas de Integração e Gsheets
+# -----------------------------------------------------------------------------
+
+def _secrets_connections_gsheets() -> Dict[str, Any]:
+    try:
+        sec = st.secrets
+        if hasattr(sec, "get") and sec.get("connections"):
+            g = sec["connections"].get("gsheets")
+            if g is not None:
+                return dict(g)
+    except Exception:
+        pass
+    return {}
+
+
+def _normalizar_private_key_toml(pk: str) -> str:
+    s = (pk or "").strip()
+    if not s:
+        return s
+    if "\\n" in s and "\n" not in s:
+        s = s.replace("\\n", "\n")
+    return s
+
+
+def montar_service_account_info(raw: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    if not raw:
+        return None
+    chaves = (
+        "type", "project_id", "private_key_id", "private_key",
+        "client_email", "client_id", "auth_uri", "token_uri",
+        "auth_provider_x509_cert_url", "client_x509_cert_url",
+    )
+    out: Dict[str, Any] = {}
+    for k in chaves:
+        v = raw.get(k)
+        if v is None: continue
+        if isinstance(v, str): v = v.strip()
+        if v == "": continue
+        out[k] = v
+    if "private_key" in out:
+        out["private_key"] = _normalizar_private_key_toml(str(out["private_key"]))
+    if "private_key" not in out or "client_email" not in out:
+        return None
+    typ = str(out.get("type") or "").strip()
+    if not typ:
+        out["type"] = "service_account"
+    if "token_uri" not in out:
+        out["token_uri"] = "https://oauth2.googleapis.com/token"
+    if "auth_uri" not in out:
+        out["auth_uri"] = "https://accounts.google.com/o/oauth2/auth"
+    return out
+
+
+def spreadsheet_id_de_secrets(cfg: Dict[str, Any]) -> str:
+    for k in ("spreadsheet_id", "SPREADSHEET_ID", "spreadsheet", "planilha_id"):
+        v = str(cfg.get(k) or "").strip()
+        if v: return v
+    return SPREADSHEET_ID
+
+
+def valores_para_dataframe(rows: List[List[str]]) -> pd.DataFrame:
+    if not rows: return pd.DataFrame()
+    header = [str(c).strip() for c in rows[0]]
+    w = len(header)
+    if w == 0: return pd.DataFrame()
+    body = rows[1:]
+    if not body: return pd.DataFrame(columns=header)
+    norm: List[List[str]] = []
+    for r in body:
+        cells = [str(c) for c in r]
+        if len(cells) < w: cells = cells + [""] * (w - len(cells))
+        else: cells = cells[:w]
+        norm.append(cells)
+    return pd.DataFrame(norm, columns=header)
+
+
+def ler_aba_gsheets(
+    service_account_info: Dict[str, Any],
+    spreadsheet_id: str,
+    worksheet: str,
+) -> pd.DataFrame:
+    import gspread
+    from google.oauth2.service_account import Credentials
+
+    scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+    creds = Credentials.from_service_account_info(service_account_info, scopes=scopes)
+    gc = gspread.authorize(creds)
+    sh = gc.open_by_key(spreadsheet_id.strip())
+    nome = worksheet.strip()
+
+    def _abrir() -> Any:
+        try:
+            return sh.worksheet(nome)
+        except gspread.WorksheetNotFound:
+            for w in sh.worksheets():
+                if w.title.strip() == nome: return w
+            for w in sh.worksheets():
+                if w.title.strip().lower() == nome.lower(): return w
+            titulos = [w.title for w in sh.worksheets()]
+            raise gspread.WorksheetNotFound(
+                f"Aba {nome!r} não encontrada. Abas: {titulos}"
+            ) from None
+
+    ws = _abrir()
+    return valores_para_dataframe(ws.get_all_values())
+
+
+def _fingerprint_credenciais(info: Dict[str, Any]) -> str:
+    pk = str(info.get("private_key") or "")
+    return str(hash(pk))[-12:] if pk else "0"
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def ler_planilha_aba_df(spreadsheet_id: str, worksheet: str, _cred_fp: str) -> pd.DataFrame:
+    raw = _secrets_connections_gsheets()
+    info = montar_service_account_info(raw)
+    if not info: raise ValueError("Credenciais [connections.gsheets] ausentes ou incompletas.")
+    return ler_aba_gsheets(info, spreadsheet_id, worksheet)
+
+
+def parse_valor_br(val: Any) -> float:
+    if val is None or (isinstance(val, float) and pd.isna(val)): return 0.0
+    if isinstance(val, (int, float)): return float(val)
+    s = str(val).strip().replace("R$", "").replace(" ", "").replace("\xa0", "")
+    if not s or s.lower() == "nan": return 0.0
+    s = re.sub(r"[^\d.,\-]", "", s)
+    if not s: return 0.0
+    if "," in s and "." in s:
+        if s.rfind(",") > s.rfind("."): s = s.replace(".", "").replace(",", ".")
+        else: s = s.replace(",", "")
+    elif "," in s:
+        s = s.replace(",", ".")
+    try: return float(s)
+    except ValueError: return 0.0
+
+
+def extrair_mes(val: Any) -> Optional[int]:
+    if pd.isna(val): return None
+    v = str(val).strip().lower()
+    if not v: return None
+    for m_str, m_num in MESES_TEXTO_MAP.items():
+        if m_str in v: return m_num
+    try:
+        m = int(float(v))
+        if 1 <= m <= 12: return m
+    except ValueError: pass
+    if '/' in v:
+        p = v.split('/')
+        if len(p) == 3: 
+            try:
+                m = int(p[1])
+                if 1 <= m <= 12: return m
+            except: pass
+        elif len(p) == 2: 
+            try:
+                m = int(p[0])
+                if 1 <= m <= 12: return m
+            except: pass
+    return None
+
+
+def extrair_ano(val: Any) -> Optional[int]:
+    if pd.isna(val): return None
+    v = str(val).strip()
+    if not v: return None
+    try:
+        ano = int(float(v))
+        if ano > 2000: return ano
+    except ValueError: pass
+    if '/' in v:
+        p = v.split('/')
+        try:
+            ano = int(p[-1])
+            if ano > 2000: return ano
+        except: pass
+    return None
+
+
+def achar_coluna(df: pd.DataFrame, aliases: List[str]) -> Optional[str]:
+    for a in aliases:
+        for c in df.columns:
+            if a.lower() == str(c).strip().lower(): return c
+    for a in aliases:
+        for c in df.columns:
+            if a.lower() in str(c).strip().lower(): return c
+    return None
+
+
+def normalizar_colunas(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+    return df
+
+
+def coluna_existe(df: pd.DataFrame, nome: str) -> bool:
+    return nome in df.columns
+
+
+def melt_metas(df_metas_raw: pd.DataFrame) -> pd.DataFrame:
+    df = normalizar_colunas(df_metas_raw)
+    df["_row_id"] = range(len(df))
+    
+    id_vars = [c for c in df.columns if str(c).lower() in ["empreendimento", "região", "regiao", "obra"]]
+    id_vars_merge = id_vars + ["_row_id"]
+    
+    for c in id_vars:
+        df[c] = df[c].fillna("Não Informado").astype(str).str.strip()
+        df.loc[df[c] == "", c] = "Não Informado"
+        df.loc[df[c].str.lower() == "nan", c] = "Não Informado"
+
+    cols_qtd = [c for c in df.columns if re.match(r'^qtd\s*(1[0-2]|[1-9])$', str(c).lower().strip())]
+    cols_vgv = [c for c in df.columns if re.match(r'^vgv\s*(1[0-2]|[1-9])$', str(c).lower().strip())]
+
+    if not id_vars or not cols_qtd:
+        return pd.DataFrame(columns=["Empreendimento", "Região", "Mes_Num", "Meta_Qtd", "Meta_VGV"])
+
+    df_qtd = df.melt(id_vars=id_vars_merge, value_vars=cols_qtd, var_name="Mes_Str", value_name="Meta_Qtd")
+    df_qtd["Mes_Num"] = df_qtd["Mes_Str"].str.extract(r'(\d+)')[0].astype(int)
+    df_qtd.drop(columns=["Mes_Str"], inplace=True)
+    df_qtd["Meta_Qtd"] = pd.to_numeric(df_qtd["Meta_Qtd"], errors="coerce").fillna(0)
+
+    if cols_vgv:
+        df_vgv = df.melt(id_vars=id_vars_merge, value_vars=cols_vgv, var_name="Mes_Str", value_name="Meta_VGV")
+        df_vgv["Mes_Num"] = df_vgv["Mes_Str"].str.extract(r'(\d+)')[0].astype(int)
+        df_vgv.drop(columns=["Mes_Str"], inplace=True)
+        df_vgv["Meta_VGV"] = df_vgv["Meta_VGV"].apply(parse_valor_br)
+        out = pd.merge(df_qtd, df_vgv, on=id_vars_merge + ["Mes_Num"], how="outer").fillna(0)
+    else:
+        out = df_qtd.copy()
+        out["Meta_VGV"] = 0.0
+
+    out.drop(columns=["_row_id"], inplace=True, errors="ignore")
+
+    for c in out.columns:
+        if str(c).lower() in ["empreendimento", "obra"]:
+            out.rename(columns={c: "Empreendimento"}, inplace=True)
+        elif str(c).lower() in ["região", "regiao"]:
+            out.rename(columns={c: "Região"}, inplace=True)
+            
+    return out
+
+
 def fmt_br_milhoes(v: float) -> str:
-    if v >= 1e6:
-        return f"R$ {v / 1e6:.2f} mi"
-    if v >= 1e3:
-        return f"R$ {v / 1e3:.1f} mil"
+    if v >= 1e6: return f"R$ {v / 1e6:.2f} mi"
+    if v >= 1e3: return f"R$ {v / 1e3:.1f} mil"
     return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
 def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_vgv: float, vendas_qtd: int) -> None:
-    """Gauge estilo velocímetro com gradiente do vermelho ao azul."""
     meta_f = float(meta) if meta and meta > 0 else 0.0
-    
-    # Porcentagem real sem limite (ex: 120%) para exibir o número correto na interface
     true_perc = (realizado / meta_f * 100.0) if meta_f > 0 else 0.0
-    
     axis_max = 100
     fill_limit = min(true_perc, axis_max)
 
-    # --- Lógica do Gradiente (Vermelho #cb0935 ao Azul #04428f) ---
     gradient_steps = []
     for i in range(100):
-        if i >= fill_limit:
-            break
-        
-        # Interpolação linear da cor Vermelho (203, 9, 53) para Azul (4, 66, 143)
+        if i >= fill_limit: break
         ratio = i / 100.0
         r = int(203 + (4 - 203) * ratio)
         g = int(9 + (66 - 9) * ratio)
         b = int(53 + (143 - 53) * ratio)
-        
         end_val = min(i + 1.0, fill_limit)
         gradient_steps.append({"range": [i, end_val], "color": f"rgba({r}, {g}, {b}, 0.9)"})
         
-    # Preenche o restante vazio do arco com um cinza claro
     if fill_limit < 100:
         gradient_steps.append({"range": [fill_limit, 100], "color": "rgba(226, 232, 240, 0.4)"})
-    # -------------------------------------------------------------
 
     fig = go.Figure(
         go.Indicator(
             mode="gauge+number",
-            value=true_perc, # Colocado true_perc para que o número exibido seja o real, mesmo acima de 100%
+            value=true_perc,
             number={
                 "suffix": "%",
                 "font": {"size": 26, "family": "Montserrat", "color": COR_AZUL_ESC},
@@ -483,7 +689,7 @@ def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_v
             },
             gauge={
                 "axis": {"range": [0, axis_max], "tickwidth": 1, "tickcolor": COR_TEXTO_MUTED},
-                "bar": {"color": "rgba(0,0,0,0)"}, # Barra transparente para mostrar os steps coloridos
+                "bar": {"color": "rgba(0,0,0,0)"},
                 "bgcolor": "white",
                 "borderwidth": 2,
                 "bordercolor": COR_BORDA,
@@ -491,7 +697,7 @@ def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_v
                 "threshold": {
                     "line": {"color": COR_AZUL_ESC, "width": 3},
                     "thickness": 0.8,
-                    "value": 100, # Mantém um marcador sutil no objetivo de 100%
+                    "value": 100,
                 },
             },
         )
@@ -518,32 +724,19 @@ def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_v
 
 
 def main() -> None:
+    fav = _resolver_png_raiz(FAVICON_ARQUIVO)
     st.set_page_config(
         page_title="Acompanhamento de Vendas | Direcional",
+        page_icon=str(fav) if fav else None,
         layout="wide",
     )
     aplicar_estilo()
-
-    st.markdown(
-        f"""
-        <div style="text-align:center;padding:0.25rem 0 0 0;">
-            <h1 style="margin:0;font-size:clamp(1.35rem,3vw,1.85rem);">Acompanhamento de metas de vendas</h1>
-            <p style="color:{COR_TEXTO_MUTED};margin:0.5rem 0 0 0;font-size:0.95rem;">
-                Realizado vs metas por período — BD Vendas Completa e aba Metas
-            </p>
-            <div class="vel-hero-bar"></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    _cabecalho_pagina()
 
     raw_gs = _secrets_connections_gsheets()
     info = montar_service_account_info(raw_gs)
     if not info:
-        st.error(
-            "Credenciais Google em **[connections.gsheets]** incompletas. "
-            "Preencha pelo menos **private_key** e **client_email**."
-        )
+        st.error("Credenciais Google em **[connections.gsheets]** incompletas. Preencha pelo menos **private_key** e **client_email**.")
         return
 
     sid = spreadsheet_id_de_secrets(raw_gs)
@@ -559,15 +752,11 @@ def main() -> None:
     df_vendas = normalizar_colunas(df_vendas)
     df_metas = melt_metas(df_metas_raw)
 
-    # Ignora os empreendimentos que nao possuem regiao na coluna metas (incluindo o Total)
     if "Região" in df_metas.columns:
         df_metas = df_metas[~df_metas["Região"].astype(str).str.strip().str.lower().isin(["total", "geral", "não informado", "nao informado", "nan", "none", "null", ""])]
     if "Empreendimento" in df_metas.columns:
         df_metas = df_metas[~df_metas["Empreendimento"].astype(str).str.strip().str.lower().isin(["total", "geral", "não informado", "nao informado", "nan", "none", "null", ""])]
 
-    # -------------------------------------------------------------------------
-    # Mapeamento Inteligente de Colunas
-    # -------------------------------------------------------------------------
     col_ano = achar_coluna(df_vendas, ["Ano da Venda", "Ano Venda", "Ano"])
     col_mes = achar_coluna(df_vendas, ["Mês da Venda - Looker", "Mês da Venda", "Mês Venda", "Mes Venda", "Mês", "Mes"])
     col_regiao = achar_coluna(df_vendas, ["Região", "Regiao"])
@@ -593,7 +782,6 @@ def main() -> None:
     if col_emp:
         df_vendas = df_vendas[~df_vendas[col_emp].astype(str).str.strip().str.lower().isin(["total", "geral", ""])]
 
-    # Filtro Obrigatório: Apenas Venda Comercial == 1 (com suporte a formatos lógicos/texto variados)
     if col_venda_comercial:
         mask_venda = (
             (pd.to_numeric(df_vendas[col_venda_comercial], errors='coerce') == 1) |
@@ -604,7 +792,6 @@ def main() -> None:
     else:
         st.warning("Coluna 'Venda Comercial?' não encontrada na base.")
 
-    # Resgate seguro de Mês e Ano (Fallback para Data da Venda se o campo principal estiver corrompido/vazio)
     df_vendas["_mes_raw"] = df_vendas[col_mes].apply(extrair_mes) if col_mes else None
     def aplicar_fallback_mes(row: pd.Series) -> Optional[int]:
         m = row["_mes_raw"]
@@ -642,7 +829,6 @@ def main() -> None:
     else:
         df_vendas['Canal_Agrupado'] = 'DV RJ'
 
-    # Mapear a Região oficial da Venda com base na tabela de Metas
     map_emp_regiao = df_metas.drop_duplicates("Empreendimento").set_index("Empreendimento")["Região"].to_dict()
     df_vendas["Regiao_Meta"] = df_vendas["Empreendimento"].map(map_emp_regiao)
 
@@ -650,13 +836,9 @@ def main() -> None:
     # LINHA ÚNICA DE FILTROS (Múltipla Seleção)
     # -------------------------------------------------------------------------
     anos_disponiveis = sorted(int(x) for x in df_vendas["_ano"].dropna().unique().tolist() if pd.notna(x) and x > 2000)
-    
-    # Ao invez de restringir o filtro pelos meses da venda, exibe 1 a 12 sempre.
     meses_no_ano = list(range(1, 13))
-    # Pega o último mês com vendas apenas como valor default da tela:
     meses_vendas = sorted(int(x) for x in df_vendas["_mes"].dropna().unique().tolist() if pd.notna(x) and 1 <= int(x) <= 12)
     mes_padrao = meses_vendas[-1] if meses_vendas else 1
-
     regioes_disponiveis = sorted(set(str(x).strip() for x in df_metas["Região"].dropna().unique() if str(x).strip()))
     
     emps_comuns = []
@@ -685,21 +867,17 @@ def main() -> None:
     vendas_f = df_vendas.copy()
     metas_f = df_metas.copy()
 
-    if anos_sel:
-        vendas_f = vendas_f[vendas_f["_ano"].isin(anos_sel)]
+    if anos_sel: vendas_f = vendas_f[vendas_f["_ano"].isin(anos_sel)]
     if meses_sel:
         vendas_f = vendas_f[vendas_f["_mes"].isin(meses_sel)]
         metas_f = metas_f[metas_f["Mes_Num"].isin(meses_sel)]
-
     if regioes_sel:
         metas_f = metas_f[metas_f["Região"].isin(regioes_sel)]
         vendas_f = vendas_f[vendas_f["Regiao_Meta"].isin(regioes_sel)]
-
     if emps_sel:
         metas_f = metas_f[metas_f["Empreendimento"].isin(emps_sel)]
         vendas_f = vendas_f[vendas_f["Empreendimento"].isin(emps_sel)]
 
-    # Lógica de Canal
     fator_meta = 0.0
     mask_vendas = pd.Series(False, index=vendas_f.index)
 
@@ -720,7 +898,6 @@ def main() -> None:
     fator_meta = min(1.0, fator_meta)
     vendas_f = vendas_f[mask_vendas]
 
-    # Arredonda a Meta_Qtd para baixo (floor) após multiplicar pelo fator do canal
     metas_f["Meta_Qtd"] = (metas_f["Meta_Qtd"] * fator_meta).apply(math.floor)
     metas_f["Meta_VGV"] = metas_f["Meta_VGV"] * fator_meta
 
@@ -756,7 +933,6 @@ def main() -> None:
     st.subheader("Por região")
     if "Região" in metas_f.columns and "Empreendimento" in metas_f.columns:
         regioes_m = sorted(str(x).strip() for x in metas_f["Região"].dropna().unique() if str(x).strip())
-
         if not regioes_m:
             st.info("Não há região definida nas metas do período filtrado.")
         else:
@@ -782,7 +958,7 @@ def main() -> None:
         st.warning("As colunas **Região** e/ou **Empreendimento** não foram encontradas para cruzar as regiões.")
 
     # -------------------------------------------------------------------------
-    # TABELA POR REGIÃO
+    # TABELAS
     # -------------------------------------------------------------------------
     st.subheader("Tabela Resumo: Por Região")
     if "Região" in metas_f.columns:
@@ -796,26 +972,19 @@ def main() -> None:
             .agg(meta_qtd=("Meta_Qtd", "sum"), meta_vgv=("Meta_VGV", "sum"))
         )
         tab_reg = vg_reg.merge(mg_reg, on="Região", how="outer").fillna(0)
-        
         tab_reg["% Qtd"] = tab_reg.apply(lambda r: (r["real_qtd"] / r["meta_qtd"] * 100.0) if r["meta_qtd"] > 0 else 0.0, axis=1)
         tab_reg["% VGV"] = tab_reg.apply(lambda r: (r["real_vgv"] / r["meta_vgv"] * 100.0) if r["meta_vgv"] > 0 else 0.0, axis=1)
-        
         tab_reg = tab_reg.sort_values(["meta_qtd", "real_qtd"], ascending=False)
         show_reg = tab_reg.rename(columns={
             "meta_qtd": "Meta Qtd (un.)", "real_qtd": "Realizado Qtd (un.)",
             "meta_vgv": "Meta VGV (R$)", "real_vgv": "Realizado VGV (R$)"
         })
-        
         show_reg["Realizado VGV (R$)"] = show_reg["Realizado VGV (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
         show_reg["Meta VGV (R$)"] = show_reg["Meta VGV (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
         show_reg["% Qtd"] = show_reg["% Qtd"].map(lambda x: f"{x:.1f}%")
         show_reg["% VGV"] = show_reg["% VGV"].map(lambda x: f"{x:.1f}%")
-        
         st.dataframe(show_reg, use_container_width=True, hide_index=True)
 
-    # -------------------------------------------------------------------------
-    # TABELA POR EMPREENDIMENTO
-    # -------------------------------------------------------------------------
     st.subheader("Tabela Resumo: Por Empreendimento")
     if coluna_existe(df_vendas, "Empreendimento") and coluna_existe(metas_f, "Empreendimento"):
         emp_v = vendas_f.assign(_emp=vendas_f["Empreendimento"].astype(str).str.strip())
@@ -831,31 +1000,23 @@ def main() -> None:
             .rename(columns={"_emp": "Empreendimento"})
         )
         tab_emp = vg_emp.merge(mg_emp, on="Empreendimento", how="outer").fillna(0)
-        
         tab_emp["% Qtd"] = tab_emp.apply(lambda r: (r["real_qtd"] / r["meta_qtd"] * 100.0) if r["meta_qtd"] > 0 else 0.0, axis=1)
         tab_emp["% VGV"] = tab_emp.apply(lambda r: (r["real_vgv"] / r["meta_vgv"] * 100.0) if r["meta_vgv"] > 0 else 0.0, axis=1)
-        
         tab_emp = tab_emp.sort_values(["meta_qtd", "real_qtd"], ascending=False)
         show_emp = tab_emp.rename(columns={
             "meta_qtd": "Meta Qtd (un.)", "real_qtd": "Realizado Qtd (un.)",
             "meta_vgv": "Meta VGV (R$)", "real_vgv": "Realizado VGV (R$)"
         })
-        
         show_emp["Realizado VGV (R$)"] = show_emp["Realizado VGV (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
         show_emp["Meta VGV (R$)"] = show_emp["Meta VGV (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
         show_emp["% Qtd"] = show_emp["% Qtd"].map(lambda x: f"{x:.1f}%")
         show_emp["% VGV"] = show_emp["% VGV"].map(lambda x: f"{x:.1f}%")
-        
         st.dataframe(show_emp, use_container_width=True, hide_index=True)
     else:
         st.info("Para ver o cruzamento por empreendimento, as duas abas precisam da coluna **Empreendimento**.")
 
-    # -------------------------------------------------------------------------
-    # TABELAS DE VENDAS (IMOB E REGIONAL)
-    # -------------------------------------------------------------------------
     if col_proprietario:
         c_imob, c_reg = st.columns(2)
-        
         with c_imob:
             st.subheader("Vendas por IMOB")
             df_imob = vendas_f[vendas_f["Canal_Agrupado"] == "IMOB"].copy()
@@ -870,7 +1031,6 @@ def main() -> None:
                 st.dataframe(tab_imob, use_container_width=True, hide_index=True)
             else:
                 st.info("Nenhuma venda IMOB encontrada com os filtros atuais.")
-                
         with c_reg:
             st.subheader("Vendas por Regional")
             df_regional = vendas_f[vendas_f["Canal_Agrupado"] == "DV RJ"].copy()
@@ -888,9 +1048,6 @@ def main() -> None:
     else:
         st.warning("Coluna 'Proprietário da oportunidade' não encontrada na base.")
 
-    # -------------------------------------------------------------------------
-    # TABELA DE VENDAS POR RANKING
-    # -------------------------------------------------------------------------
     st.subheader("Vendas por Ranking")
     if col_ranking:
         if not vendas_f.empty:
