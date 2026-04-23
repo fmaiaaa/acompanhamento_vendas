@@ -228,6 +228,7 @@ def process_pipeline():
     df_geral["DATA_DT"] = pd.to_datetime(df_geral["DATA"], dayfirst=True, errors='coerce')
     df_geral = df_geral[df_geral["DATA_DT"].notna()].sort_values(["CHAVE", "DATA_DT"])
     
+    # Cálculos dos Indicadores (Fórmulas solicitadas)
     df_geral["Absorcao"] = df_geral["VENDAS"] / df_geral["ESTOQUE INICIAL"].replace(0, np.nan)
     df_geral["Velocidade"] = df_geral["VENDAS"] / (df_geral["ESTOQUE INICIAL"] - df_geral["VENDAS"]).replace(0, np.nan)
     df_geral["Escoamento"] = df_geral["ESTOQUE"] / df_geral["ESTOQUE INICIAL"].replace(0, np.nan)
@@ -297,11 +298,15 @@ def main():
         
         g1, g2 = st.columns(2)
         with g1:
-            st.markdown("**Taxa de Absorção**")
+            st.markdown("**Taxa de Absorção (Vendas / Inicial)**")
             st.plotly_chart(px.bar(df_trend, x="DATA_STR", y="Absorcao", color="EMPREENDIMENTO", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism).update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title=""), use_container_width=True)
+            st.markdown("**Taxa de Escoamento (Estoque Atual / Inicial)**")
+            st.plotly_chart(px.bar(df_trend, x="DATA_STR", y="Escoamento", color="EMPREENDIMENTO", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism).update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title=""), use_container_width=True)
         with g2:
-            st.markdown("**Velocidade de Vendas**")
+            st.markdown("**Velocidade de Vendas (Vendas / Estoque Anterior)**")
             st.plotly_chart(px.bar(df_trend, x="DATA_STR", y="Velocidade", color="EMPREENDIMENTO", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism).update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title=""), use_container_width=True)
+            st.markdown("**Variação de Preço (Dinâmica MoM)**")
+            st.plotly_chart(px.bar(df_trend, x="DATA_STR", y="Delta_Preco", color="EMPREENDIMENTO", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism).update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title=""), use_container_width=True)
 
     # -------------------------------------------------------------------------
     # NOVO GRÁFICO: EVOLUÇÃO PREÇO M2 VS ESTOQUE
