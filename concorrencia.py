@@ -172,10 +172,11 @@ def process_pipeline():
     if df_geral.empty:
         raise ValueError("A aba BD GERAL não foi encontrada.")
 
-    # Normalização
+    # Normalização GLOBAL para garantir que filtros e comparativos funcionem
     for df in [df_geral, df_det]:
         if "CHAVE" in df.columns: df["CHAVE"] = df["CHAVE"].astype(str).str.strip().str.upper()
         if "CONSTRUTORA" in df.columns: df["CONSTRUTORA"] = df["CONSTRUTORA"].astype(str).str.strip().str.upper()
+        if "EMPREENDIMENTO" in df.columns: df["EMPREENDIMENTO"] = df["EMPREENDIMENTO"].astype(str).str.strip().str.upper()
 
     # 1. Processamento BD GERAL
     cols_num = ["VENDAS", "ESTOQUE", "ESTOQUE INICIAL"]
@@ -188,7 +189,7 @@ def process_pipeline():
     df_geral = df_geral[df_geral["DATA_DT"].notna()].sort_values(["CHAVE", "DATA_DT"])
     
     # Cálculos Solicitados
-    # Absorção: Vendas / (Estoque Anterior + Vendas) -> BD GERAL já traz o ESTOQUE INICIAL
+    # Absorção: Vendas / Estoque Inicial (anterior + vendas)
     df_geral["Absorcao"] = df_geral["VENDAS"] / df_geral["ESTOQUE INICIAL"].replace(0, np.nan)
     # Velocidade: Vendas / Estoque Anterior
     df_geral["Velocidade"] = df_geral["VENDAS"] / (df_geral["ESTOQUE INICIAL"] - df_geral["VENDAS"]).replace(0, np.nan)
@@ -222,7 +223,7 @@ def main():
     # Filtro de Empreendimento Direcional
     st.markdown("<div style='text-align: center; font-weight: bold; margin-bottom: 1rem;'>Seleção de Estudo de Caso</div>", unsafe_allow_html=True)
     
-    # Filtro Construtora Direcional
+    # Filtro Construtora Direcional (Com normalização já aplicada no pipeline)
     df_direcional = df_master[df_master["CONSTRUTORA"] == "DIRECIONAL"]
     lista_direcional = sorted(df_direcional["EMPREENDIMENTO"].unique())
     
@@ -233,17 +234,16 @@ def main():
     alvo_selecionado = st.selectbox("Selecione o Empreendimento Direcional Alvo", lista_direcional)
 
     # Identificar Concorrentes automáticos via coluna 'CONCORRE COM'
-    # Pega o primeiro registro do alvo para ler a coluna de concorrência
     df_alvo_info = df_direcional[df_direcional["EMPREENDIMENTO"] == alvo_selecionado].iloc[0]
     string_concorrentes = str(df_alvo_info.get("CONCORRE COM", ""))
     
-    # Processa a string: "Emp 1, Emp 2" -> ["EMP 1", "EMP 2"]
+    # Normalização rigorosa dos nomes de concorrentes
     nomes_concorrentes = [x.strip().upper() for x in string_concorrentes.split(",") if x.strip()]
     
     # Filtrar DF para o cluster (Alvo + Concorrentes identificados)
     df_cluster = df_master[
         (df_master["EMPREENDIMENTO"] == alvo_selecionado) | 
-        (df_master["EMPREENDIMENTO"].str.upper().isin(nomes_concorrentes))
+        (df_master["EMPREENDIMENTO"].isin(nomes_concorrentes))
     ].copy()
 
     # Filtro de Mês para Resumo KPIs
@@ -270,7 +270,7 @@ def main():
             <div class="vel-kpi"><div class="lbl">Taxa de Absorção</div><div class="val val--red">{abs_alvo:.1f}%</div></div>
             <div class="vel-kpi"><div class="lbl">Velocidade de Vendas</div><div class="val val--red">{vel_alvo:.1f}%</div></div>
             <div class="vel-kpi"><div class="lbl">Monetização (VGV Rate)</div><div class="val val--red">{vgv_rate_alvo:.1f}%</div></div>
-            <div class="vel-kpi"><div class="lbl">Total Concorrentes no Estudo</div><div class="val">{len(nomes_concorrentes)}</div></div>
+            <div class="vel-kpi"><div class="lbl">Total Concorrentes Ativos</div><div class="val">{df_mes[df_mes["EMPREENDIMENTO"] != alvo_selecionado]["EMPREENDIMENTO"].nunique()}</div></div>
         </div>
     """, unsafe_allow_html=True)
 
@@ -316,7 +316,7 @@ def main():
     # -------------------------------------------------------------------------
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:2rem 0;'/>", unsafe_allow_html=True)
     
-    # Filtrar BD Detalhada pelos empreendimentos do cluster
+    # Filtrar BD Detalhada pelos empreendimentos do cluster identificado
     cluster_names_all = df_cluster["EMPREENDIMENTO"].unique()
     df_det_f = df_detalhada[df_detalhada["EMPREENDIMENTO"].isin(cluster_names_all)].copy()
     
@@ -356,7 +356,7 @@ def main():
         st.dataframe(pivot_medio.style.format({c: "R$ {:.2f}" for c in cols_datas_2}), 
                      use_container_width=True, hide_index=True)
     else:
-        st.info("Nenhum dado detalhado de precificação disponível para os concorrentes identificados.")
+        st.info("Nenhum dado detalhado de precificação disponível para os concorrentes identificados no cluster.")
 
     st.markdown(f'<div style="text-align:center; padding:1rem; color:{COR_TEXTO_MUTED}; font-size:0.82rem;">Direcional Engenharia · Inteligência de Mercado · Fontes: BD GERAL & BD DETALHADA</div>', unsafe_allow_html=True)
 
