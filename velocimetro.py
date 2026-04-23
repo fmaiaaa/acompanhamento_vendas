@@ -278,7 +278,7 @@ def aplicar_estilo() -> None:
             padding-bottom: 0.35rem !important;
         }}
         .block-container {{
-            max-width: 1400px !important;
+            max-width: 1550px !important;
             margin-left: auto !important;
             margin-right: auto !important;
             margin-top: clamp(4px, 1vh, 14px) !important;
@@ -1234,7 +1234,9 @@ def main() -> None:
     od_ideal = math.ceil(vd_ideal / 0.044) if vd_ideal > 0 else 0
     ld_ideal = math.ceil(od_ideal / 0.50) if od_ideal > 0 else 0
     
-    corretores_ideal = math.ceil(v_meta / 0.20) if v_meta > 0 else 0
+    corretores_pessimista = math.ceil(v_meta / 0.15) if v_meta > 0 else 0
+    corretores_moderado = math.ceil(v_meta / 0.20) if v_meta > 0 else 0
+    corretores_otimista = math.ceil(v_meta / 0.25) if v_meta > 0 else 0
 
     # --- 3. Gráficos Plotly em Colunas ---
     col_f_meta, col_f_real, col_f_mkt = st.columns(3)
@@ -1290,8 +1292,11 @@ def main() -> None:
             <div class="vel-kpi"><div class="lbl">Pasta ➔ Aprovada</div><div class="val">{conv_p_pa_real:.1f}% <br><span style="font-size:12px;color:#64748b;">(Ideal: 64%)</span></div></div>
             <div class="vel-kpi"><div class="lbl">Aprovada ➔ Venda</div><div class="val">{conv_pa_v_real:.1f}% <br><span style="font-size:12px;color:#64748b;">(Ideal: 64%)</span></div></div>
         </div>
+        <div style='margin-top: 1.5rem; margin-bottom: 0.85rem; text-align: center;'><strong>Cenários: Corretores Ativos (Necessários)</strong></div>
         <div class="vel-kpi-row" style="justify-content: center;">
-            <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Corretores Ativos (Necessários)</div><div class="val">{corretores_ideal}</div></div>
+            <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Pessimista (15% convert.)</div><div class="val">{corretores_pessimista}</div></div>
+            <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Moderado (20% convert.)</div><div class="val">{corretores_moderado}</div></div>
+            <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Otimista (25% convert.)</div><div class="val">{corretores_otimista}</div></div>
         </div>
         """,
         unsafe_allow_html=True,
