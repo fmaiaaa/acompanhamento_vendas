@@ -764,6 +764,7 @@ def main() -> None:
     col_valor = achar_coluna(df_vendas, ["Valor Real de Venda", "Valor Real", "Valor"])
     col_emp = achar_coluna(df_vendas, ["Empreendimento", "Obra", "Nome do Empreendimento"])
     col_venda_comercial = achar_coluna(df_vendas, ["Venda Comercial?", "Venda Comercial"])
+    col_venda_facilitada = achar_coluna(df_vendas, ["Venda facilitada", "Venda Facilitada", "Venda Facilitada?"])
     col_proprietario = achar_coluna(df_vendas, ["Proprietário da oportunidade", "Proprietario da oportunidade", "Nome da conta", "Proprietario", "Corretor"])
     col_ranking = achar_coluna(df_vendas, ["Ranking"])
     col_data_venda = achar_coluna(df_vendas, ["Data da venda", "Data Venda", "Data de venda", "Data"])
@@ -791,6 +792,21 @@ def main() -> None:
         df_vendas = df_vendas[mask_venda]
     else:
         st.warning("Coluna 'Venda Comercial?' não encontrada na base.")
+
+    # -------------------------------------------------------------------------
+    # Classificação de Venda Facilitada vs Normal
+    # -------------------------------------------------------------------------
+    if col_venda_facilitada:
+        def check_facilitada(val: Any) -> str:
+            if pd.isna(val):
+                return "Normal"
+            v_str = str(val).strip().upper()
+            if v_str in ("1", "1.0", "SIM", "TRUE"):
+                return "Facilitada"
+            return "Normal"
+        df_vendas["Tipo_Venda"] = df_vendas[col_venda_facilitada].apply(check_facilitada)
+    else:
+        df_vendas["Tipo_Venda"] = "Normal"
 
     df_vendas["_mes_raw"] = df_vendas[col_mes].apply(extrair_mes) if col_mes else None
     def aplicar_fallback_mes(row: pd.Series) -> Optional[int]:
@@ -920,6 +936,23 @@ def main() -> None:
             <div class="vel-kpi"><div class="lbl">VGV Meta</div><div class="val">{fmt_br_milhoes(total_meta_vgv)}</div></div>
             <div class="vel-kpi"><div class="lbl">VGV Realizado</div><div class="val val--red">{fmt_br_milhoes(total_vgv_realizado)}</div></div>
             <div class="vel-kpi"><div class="lbl">% VGV</div><div class="val">{pct_vgv:.1f}%</div></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # -------------------------------------------------------------------------
+    # KPIs: Perfil das Vendas (Facilitada vs Normal)
+    # -------------------------------------------------------------------------
+    qtd_facilitada = len(vendas_f[vendas_f["Tipo_Venda"] == "Facilitada"])
+    qtd_normal = len(vendas_f[vendas_f["Tipo_Venda"] == "Normal"])
+
+    st.subheader("Perfil das Vendas")
+    st.markdown(
+        f"""
+        <div class="vel-kpi-row">
+            <div class="vel-kpi"><div class="lbl">Vendas Facilitadas</div><div class="val">{qtd_facilitada}</div></div>
+            <div class="vel-kpi"><div class="lbl">Vendas Normais</div><div class="val">{qtd_normal}</div></div>
         </div>
         """,
         unsafe_allow_html=True,
