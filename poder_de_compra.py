@@ -116,7 +116,7 @@ def _exibir_logo_topo() -> None:
     try:
         if path:
             ext = Path(path).suffix.lower().lstrip(".")
-            mime = "image/jpeg" if ext in ("jpg", "jpeg") else "image/png"
+            mime = "image/png" if ext == "png" else "image/jpeg" if ext in ("jpg", "jpeg") else "image/png"
             with open(path, "rb") as f:
                 b64 = base64.b64encode(f.read()).decode("ascii")
             st.markdown(f'<div class="ficha-logo-wrap"><img src="data:{mime};base64,{b64}" alt="Direcional" /></div>', unsafe_allow_html=True)
@@ -316,7 +316,7 @@ def achar_coluna(df: pd.DataFrame, aliases: List[str]) -> Optional[str]:
 def fmt_br_milhoes(v: float) -> str:
     if v == 0: return "R$ 0,00"
     if v >= 1e6: return f"R$ {v / 1e6:.2f} mi"
-    if v >= 1e3: return f"R$ {v / 1e3:.2f} mil"
+    if v >= 1e3: return f"R$ {v / 1e3:.1f} mil"
     return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 def fmt_br_porcentagem(v: float) -> str:
@@ -362,14 +362,28 @@ def main() -> None:
     c_v_dir = achar_coluna(df, ["VALOR DIRECIONAL DE VENDA"])
     c_v_emc = achar_coluna(df, ["VALOR EMCASH DE VENDA"])
 
+    # Colunas de Limpeza solicitadas
+    c_ps_dir = achar_coluna(df, ["PS DIRECIONAL"])
+    c_ps_emc = achar_coluna(df, ["PS EMCASH"])
+    c_renda = achar_coluna(df, ["RENDA APURADA"])
+    c_finan = achar_coluna(df, ["FINANCIAMENTO MÁXIMO"])
+    c_subsi = achar_coluna(df, ["SUBSÍDIO DISPONÍVEL"])
+
     if not all([c_v_real, c_v_dir, c_v_emc]):
         st.error("Colunas essenciais de valores (VALOR REAL DE VENDA, VALOR DIRECIONAL DE VENDA, VALOR EMCASH DE VENDA) não encontradas.")
-        st.write("Colunas encontradas:", list(df.columns))
         return
 
     if not c_data:
         st.error("Coluna de Data (CONTRATO GERADO EM) não encontrada para gerar a linha do tempo.")
         return
+
+    # -------------------------------------------------------------------------
+    # Limpeza de Dados: Ignorar linhas com colunas vazias
+    # -------------------------------------------------------------------------
+    cols_limpeza = [c for c in [c_ps_dir, c_ps_emc, c_renda, c_finan, c_subsi] if c]
+    if cols_limpeza:
+        for col in cols_limpeza:
+            df = df[df[col].notna() & (df[col].astype(str).str.strip() != "")]
 
     # Tratamento de Dados e Datas
     df["Data_Formatada"] = pd.to_datetime(df[c_data], dayfirst=True, errors="coerce")
@@ -461,7 +475,6 @@ def main() -> None:
     st.subheader("Evolução Mensal do Dinheiro na Mesa")
     
     if not df_f.empty:
-        # Agrupar dados por ano/mês para o gráfico
         df_chart = df_f.groupby(["_ano", "_mes"], as_index=False).agg(
             Gap_Dir=("Gap_Dir", "sum"),
             Gap_Emc=("Gap_Emc", "sum")
@@ -526,20 +539,15 @@ def main() -> None:
         st.dataframe(show, use_container_width=True, hide_index=True)
 
     # -------------------------------------------------------------------------
-    # Renderização de Tabelas
+    # Renderização de Tabelas (Uma por linha)
     # -------------------------------------------------------------------------
-    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1.5rem 0;'/>", unsafe_allow_html=True)
+    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
     
     if c_emp: gerar_tabela_gap(c_emp, "Empreendimento")
     if c_reg: gerar_tabela_gap(c_reg, "Regional ou Imob")
-    
-    # Exibe lado a lado Imobiliaria, Canal e Ranking caso existam
-    col_t1, col_t2 = st.columns(2)
-    with col_t1:
-        if c_imob: gerar_tabela_gap(c_imob, "Imobiliária")
-        if c_rank: gerar_tabela_gap(c_rank, "Ranking")
-    with col_t2:
-        if c_canal: gerar_tabela_gap(c_canal, "Canal")
+    if c_imob: gerar_tabela_gap(c_imob, "Imobiliária")
+    if c_rank: gerar_tabela_gap(c_rank, "Ranking")
+    if c_canal: gerar_tabela_gap(c_canal, "Canal")
 
     st.markdown(
         f'<div class="footer" style="text-align:center;padding:1rem 0;color:{COR_TEXTO_MUTED};font-size:0.82rem;">'
