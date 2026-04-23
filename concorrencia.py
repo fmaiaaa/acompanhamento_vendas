@@ -189,19 +189,17 @@ def process_pipeline():
     df_temp["PREÇO MÉDIO"] = df_temp["PREÇO MÉDIO"].apply(parse_val)
     df_temp["DATA_DT"] = pd.to_datetime(df_temp["DATA"], dayfirst=True, errors='coerce')
     
-    # Filtro: Preço/m2 (Simulação caso não tenha metragem, usaremos PREÇO MÉDIO como proxy se necessário)
     # Por segurança, mantemos apenas registros válidos
     df_temp = df_temp[df_temp["PREÇO MÉDIO"] > 0].copy()
     
     # 2. Engenharia de Features Temporais
     df_temp = df_temp.sort_values(["CHAVE", "DATA_DT"])
     
-    # Taxa de Absorção: Vendas / Estoque Inicial
+    # Taxa de Absorção: Vendas / (Estoque_t-1 + Vendas_t) -> Note: Estoque Inicial já é o estoque do início do mês
     df_temp["Absorcao"] = df_temp["VENDAS"] / df_temp["ESTOQUE INICIAL"]
     
-    # Velocidade de Vendas: Vendas / Estoque Anterior (Aqui usamos o Inicial do período)
-    # velocidade_t = vendas_t / estoque_{t-1}
-    df_temp["Velocidade"] = df_temp["VENDAS"] / (df_temp["ESTOQUE INICIAL"] - df_temp["VENDAS"])
+    # Velocidade de Vendas: Vendas / Estoque Inicial (anterior ao fechamento do mês)
+    df_temp["Velocidade"] = df_temp["VENDAS"] / (df_temp["ESTOQUE INICIAL"].replace(0, np.nan))
     
     # Taxa de Escoamento: Estoque Atual / Estoque Inicial
     df_temp["Escoamento"] = df_temp["ESTOQUE"] / df_temp["ESTOQUE INICIAL"]
@@ -218,7 +216,6 @@ def process_pipeline():
     df_temp["Is_Direcional"] = df_temp["CHAVE"].str.strip().str.upper().isin(direcional_keys)
     
     # 3. Cruzamento de Endereços para o Mapa
-    # Pegamos endereços da PROCV ou DADOS DIRECIONAL para garantir precisão
     df_temp_map = df_temp.merge(df_procv[["Chave", "Endereço"]].drop_duplicates().rename(columns={"Chave": "CHAVE", "Endereço": "Endereço_Ref"}), on="CHAVE", how="left")
     
     return df_temp_map, df_ref_dir
@@ -245,8 +242,10 @@ def main():
         alvo_selecionado = st.selectbox("Selecione o Empreendimento Direcional para Estudo", lista_alvos)
         
     with c2:
-        meses_disp = sorted(df_master["DATA"].unique(), key=lambda x: datetime.strptime(x, "%d/%m/%Y") if "/" in x else x)
-        mes_estudo = st.selectbox("Mês para Visão de Mapa", meses_disp, index=len(meses_disp)-1)
+        # CORREÇÃO DO ValueError: Ordenação baseada na coluna DATA_DT (datetime) em vez de strptime manual
+        df_sorted_dates = df_master[["DATA", "DATA_DT"]].drop_duplicates().sort_values("DATA_DT")
+        meses_disp = df_sorted_dates["DATA"].tolist()
+        mes_estudo = st.selectbox("Mês para Visão de Mapa", meses_disp, index=len(meses_disp)-1 if meses_disp else 0)
         
     with c3:
         raio_estudo = st.slider("Raio de Atuação Dinâmico (km)", 1, 50, 15)
@@ -254,7 +253,12 @@ def main():
     # -------------------------------------------------------------------------
     # Geocodificação e Raio Dinâmico
     # -------------------------------------------------------------------------
-    info_alvo = df_ref_dir[df_ref_dir["Nome do Empreendimento (Chave)"] == alvo_selecionado].iloc[0]
+    info_alvo_rows = df_ref_dir[df_ref_dir["Nome do Empreendimento (Chave)"] == alvo_selecionado]
+    if info_alvo_rows.empty:
+        st.error("Empreendimento alvo não encontrado nos dados de referência.")
+        return
+        
+    info_alvo = info_alvo_rows.iloc[0]
     endereco_alvo = info_alvo["Endereço"]
     regiao_alvo = info_alvo["Região"]
     
@@ -307,7 +311,7 @@ def main():
     """, unsafe_allow_html=True)
 
     # -------------------------------------------------------------------------
-    # MAPA GEOGRÁFICO (REQUISITOS ESPECÍFICOS)
+    # MAPA GEOGRÁFICO
     # -------------------------------------------------------------------------
     st.subheader(f"Mapa do Cluster Competitivo (Raio {raio_estudo}km)")
     
@@ -317,7 +321,6 @@ def main():
     
     # Tamanho = Estoque
     df_map_points["Marker_Size"] = df_map_points["ESTOQUE"].fillna(0) + 15
-    # Cor = Preço_m2 (Vermelho se for caro)
     
     fig_map = px.scatter_mapbox(df_map_points, lat="lat", lon="lon", 
                                 color="PREÇO MÉDIO", 
@@ -344,6 +347,8 @@ def main():
         "PREÇO MÉDIO": "mean",
         "Share_Vendas": "sum"
     }).reset_index()
+    # Para o eixo X ficar limpo
+    df_trend = df_trend.sort_values("DATA_DT")
     df_trend["DATA_STR"] = df_trend["DATA_DT"].dt.strftime("%m/%Y")
 
     g1, g2 = st.columns(2)
@@ -362,7 +367,7 @@ def main():
         st.plotly_chart(fig_esc, use_container_width=True)
 
     with g2:
-        st.markdown("**Velocidade de Vendas (Vendas / Estoque Anterior)**")
+        st.markdown("**Velocidade de Vendas (Vendas / Estoque Inicial)**")
         fig_vel = px.line(df_trend, x="DATA_STR", y="Velocidade", color="Is_Direcional",
                           color_discrete_map={True: COR_VERMELHO, False: COR_AZUL_ESC}, markers=True)
         fig_vel.update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
