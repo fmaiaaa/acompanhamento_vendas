@@ -34,21 +34,6 @@ COR_BORDA = "#eef2f6"
 COR_TEXTO_MUTED = "#64748b"
 COR_TEXTO_LABEL = "#1e293b"
 
-MESES_COL_MAP = {
-    "jan./1": 1,
-    "fev./1": 2,
-    "mar./1": 3,
-    "abr./1": 4,
-    "mai./1": 5,
-    "jun./1": 6,
-    "jul./1": 7,
-    "ago./1": 8,
-    "set./1": 9,
-    "out./1": 10,
-    "nov./1": 11,
-    "dez./1": 12,
-}
-
 MESES_TEXTO_MAP = {
     "jan": 1, "fev": 2, "mar": 3, "abr": 4, "mai": 5, "jun": 6,
     "jul": 7, "ago": 8, "set": 9, "out": 10, "nov": 11, "dez": 12
@@ -129,27 +114,6 @@ def spreadsheet_id_de_secrets(cfg: Dict[str, Any]) -> str:
     return SPREADSHEET_ID
 
 
-def email_config_de_secrets() -> Dict[str, Any]:
-    """Lê `[email]` — SMTP (reservado para alertas futuros; não usado no fluxo atual)."""
-    try:
-        e = st.secrets.get("email", {})
-        if not isinstance(e, dict):
-            return {}
-        port_raw = e.get("smtp_port", 587)
-        try:
-            port = int(port_raw) if port_raw not in (None, "") else 587
-        except (TypeError, ValueError):
-            port = 587
-        return {
-            "smtp_server": str(e.get("smtp_server") or "").strip(),
-            "smtp_port": port,
-            "sender_email": str(e.get("sender_email") or "").strip(),
-            "sender_password": str(e.get("sender_password") or "").strip(),
-        }
-    except Exception:
-        return {}
-
-
 def valores_para_dataframe(rows: List[List[str]]) -> pd.DataFrame:
     """Primeira linha = cabeçalho; alinha largura das linhas."""
     if not rows:
@@ -212,10 +176,7 @@ def _fingerprint_credenciais(info: Dict[str, Any]) -> str:
 
 @st.cache_data(ttl=300, show_spinner=False)
 def ler_planilha_aba_df(spreadsheet_id: str, worksheet: str, _cred_fp: str) -> pd.DataFrame:
-    """
-    Lê uma aba via gspread. `_cred_fp` deve ser o fingerprint da private_key nos secrets
-    para invalidar o cache quando a chave mudar.
-    """
+    """Lê uma aba via gspread. `_cred_fp` deve ser o fingerprint da private_key."""
     raw = _secrets_connections_gsheets()
     info = montar_service_account_info(raw)
     if not info:
@@ -243,12 +204,10 @@ def parse_valor_br(val: Any) -> float:
     s = str(val).strip().replace("R$", "").replace(" ", "")
     if not s or s.lower() == "nan":
         return 0.0
-    # Emoji / texto colado no ranking (ex.: Ouro🥇) — ignora sufixo
     s = re.sub(r"[^\d.,\-]", "", s)
     if not s:
         return 0.0
     if "," in s and "." in s:
-        # BR: milhar com ponto, decimal com vírgula
         if s.rfind(",") > s.rfind("."):
             s = s.replace(".", "").replace(",", ".")
         else:
@@ -262,37 +221,30 @@ def parse_valor_br(val: Any) -> float:
 
 
 def extrair_mes(val: Any) -> Optional[int]:
-    """Extrai mês numérico com alta precisão para diferentes formatações (ex: Maio/2026, 05/2026)."""
+    """Extrai mês numérico com alta precisão."""
     if pd.isna(val): return None
     v = str(val).strip().lower()
     if not v: return None
-    
-    # 1. Busca por nome do mês dentro da string
     for m_str, m_num in MESES_TEXTO_MAP.items():
         if m_str in v:
             return m_num
-            
-    # 2. Busca por número solto (ex: 5 ou 05)
     try:
         m = int(float(v))
         if 1 <= m <= 12: return m
     except ValueError:
         pass
-        
-    # 3. Busca em formatos de data com barra (dd/mm/yyyy ou mm/yyyy)
     if '/' in v:
         p = v.split('/')
-        if len(p) == 3:  # dd/mm/yyyy
+        if len(p) == 3: 
             try:
                 m = int(p[1])
                 if 1 <= m <= 12: return m
             except: pass
-        elif len(p) == 2:  # mm/yyyy
+        elif len(p) == 2: 
             try:
                 m = int(p[0])
                 if 1 <= m <= 12: return m
             except: pass
-            
     return None
 
 
@@ -301,27 +253,22 @@ def extrair_ano(val: Any) -> Optional[int]:
     if pd.isna(val): return None
     v = str(val).strip()
     if not v: return None
-    
-    # 1. Ano direto como número
     try:
         ano = int(float(v))
         if ano > 2000: return ano
     except ValueError:
         pass
-        
-    # 2. Ano presente após a última barra
     if '/' in v:
         p = v.split('/')
         try:
             ano = int(p[-1])
             if ano > 2000: return ano
         except: pass
-        
     return None
 
 
 def achar_coluna(df: pd.DataFrame, aliases: List[str]) -> Optional[str]:
-    """Busca uma coluna no DataFrame por uma lista de aliases (busca exata ou parcial)."""
+    """Busca uma coluna no DataFrame por uma lista de aliases."""
     for a in aliases:
         for c in df.columns:
             if a.lower() == str(c).strip().lower():
@@ -344,38 +291,41 @@ def coluna_existe(df: pd.DataFrame, nome: str) -> bool:
 
 
 def melt_metas(df_metas_raw: pd.DataFrame) -> pd.DataFrame:
-    """Transforma Metas largas em longas (mês numérico + meta quantidade)."""
+    """Transforma Metas QTD e VGV largas em longas (mês numérico + meta_qtd + meta_vgv)."""
     df = normalizar_colunas(df_metas_raw)
-    cols_mes = [c for c in df.columns if c in MESES_COL_MAP]
-    if not cols_mes:
-        # tenta casar variações com espaço
-        alt = {}
-        for c in df.columns:
-            c0 = c.strip().lower().replace(" ", "")
-            for k, v in MESES_COL_MAP.items():
-                if k.replace("/", "").replace(".", "") in c0 or k in c:
-                    alt[c] = v
-                    break
-        cols_mes = [c for c in df.columns if c in alt]
-        if not cols_mes:
-            return pd.DataFrame(columns=["Empreendimento", "Região", "Mes_Num", "Meta_Qtd"])
-
-    id_vars = [c for c in df.columns if c.lower() in ["empreendimento", "região", "regiao", "obra"]]
-    if not id_vars:
-        return pd.DataFrame(columns=["Empreendimento", "Região", "Mes_Num", "Meta_Qtd"])
-
-    out = df.melt(
-        id_vars=id_vars,
-        value_vars=cols_mes,
-        var_name="Mes_Texto",
-        value_name="Meta_Qtd",
-    )
-    out["Mes_Num"] = out["Mes_Texto"].map(lambda x: MESES_COL_MAP.get(x, MESES_COL_MAP.get(str(x).strip(), None)))
-    out = out.dropna(subset=["Mes_Num"])
-    out["Mes_Num"] = out["Mes_Num"].astype(int)
-    out["Meta_Qtd"] = pd.to_numeric(out["Meta_Qtd"], errors="coerce").fillna(0)
     
-    # Normaliza colunas ID para garantir consistência
+    # Identifica as colunas padrão
+    id_vars = [c for c in df.columns if c.lower() in ["empreendimento", "região", "regiao", "obra"]]
+    
+    # Identifica colunas QTD1 a QTD12
+    cols_qtd = [c for c in df.columns if re.match(r'^qtd(1[0-2]|[1-9])$', c.lower().strip())]
+    # Identifica colunas VGV1 a VGV12
+    cols_vgv = [c for c in df.columns if re.match(r'^vgv(1[0-2]|[1-9])$', c.lower().strip())]
+
+    if not id_vars or not cols_qtd:
+        return pd.DataFrame(columns=["Empreendimento", "Região", "Mes_Num", "Meta_Qtd", "Meta_VGV"])
+
+    # Melt de QTD
+    df_qtd = df.melt(id_vars=id_vars, value_vars=cols_qtd, var_name="Mes_Str", value_name="Meta_Qtd")
+    df_qtd["Mes_Num"] = df_qtd["Mes_Str"].str.upper().str.replace("QTD", "").astype(int)
+    df_qtd.drop(columns=["Mes_Str"], inplace=True)
+    df_qtd["Meta_Qtd"] = pd.to_numeric(df_qtd["Meta_Qtd"], errors="coerce").fillna(0)
+
+    # Melt de VGV (se existir)
+    if cols_vgv:
+        df_vgv = df.melt(id_vars=id_vars, value_vars=cols_vgv, var_name="Mes_Str", value_name="Meta_VGV")
+        df_vgv["Mes_Num"] = df_vgv["Mes_Str"].str.upper().str.replace("VGV", "").astype(int)
+        df_vgv.drop(columns=["Mes_Str"], inplace=True)
+        # Usa parse_valor_br caso o usuário tenha formatado como R$ 2.000.000,00
+        df_vgv["Meta_VGV"] = df_vgv["Meta_VGV"].apply(parse_valor_br)
+        
+        # Junta QTD e VGV
+        out = pd.merge(df_qtd, df_vgv, on=id_vars + ["Mes_Num"], how="outer").fillna(0)
+    else:
+        out = df_qtd.copy()
+        out["Meta_VGV"] = 0.0
+
+    # Normaliza colunas ID
     for c in out.columns:
         if c.lower() in ["empreendimento", "obra"]:
             out.rename(columns={c: "Empreendimento"}, inplace=True)
@@ -401,14 +351,9 @@ def aplicar_estilo() -> None:
         [data-testid="stAppViewContainer"] {{ background: transparent !important; }}
         [data-testid="stHeader"] {{
             background: transparent !important;
-            background-color: transparent !important;
-        }}
-        [data-testid="stSidebar"] {{
-            background: rgba(255, 255, 255, 0.92) !important;
-            border-right: 1px solid {COR_BORDA} !important;
         }}
         .block-container {{
-            max-width: 1200px !important;
+            max-width: 1300px !important;
             padding: 1.5rem 2rem 2rem 2rem !important;
             background: {COR_FUNDO_CARD} !important;
             backdrop-filter: blur(16px);
@@ -437,7 +382,7 @@ def aplicar_estilo() -> None:
             margin-bottom: 1.25rem;
         }}
         .vel-kpi {{
-            flex: 1 1 160px;
+            flex: 1 1 16%;
             background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,251,252,0.9) 100%);
             border: 1px solid rgba(226, 232, 240, 0.9);
             border-radius: 14px;
@@ -481,11 +426,10 @@ def fmt_br_milhoes(v: float) -> str:
     return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 
-def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, vendas_qtd: int) -> None:
+def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_vgv: float, vendas_qtd: int) -> None:
     """Gauge estilo velocímetro com cores da marca."""
     meta_f = float(meta) if meta and meta > 0 else 0.0
     perc = min(150.0, (realizado / meta_f * 100.0)) if meta_f > 0 else 0.0
-    # Eixo até 100% para leitura; valores >100% ainda aparecem no número
     axis_max = 100
     val_display = min(perc, axis_max) if perc <= axis_max else axis_max
 
@@ -546,9 +490,9 @@ def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, vendas
 
     st.markdown(
         f"""
-        <div style="text-align:center;font-size:0.9rem;color:{COR_TEXTO_LABEL};margin-top:-8px;">
-            <strong>{int(vendas_qtd)}</strong> vendas · VGV <strong>{fmt_br_milhoes(float(vgv))}</strong> · 
-            Meta <strong>{meta_f:g}</strong> un.
+        <div style="text-align:center;font-size:0.85rem;color:{COR_TEXTO_LABEL};margin-top:-8px;line-height:1.4;">
+            <strong>Qtd:</strong> {int(vendas_qtd)} / {meta_f:g} <br/>
+            <strong>VGV:</strong> {fmt_br_milhoes(float(vgv))} / {fmt_br_milhoes(float(meta_vgv))}
         </div>
         """,
         unsafe_allow_html=True,
@@ -560,7 +504,6 @@ def main() -> None:
     st.set_page_config(
         page_title="Acompanhamento de Vendas | Direcional",
         layout="wide",
-        initial_sidebar_state="expanded",
     )
     aplicar_estilo()
 
@@ -582,8 +525,7 @@ def main() -> None:
     if not info:
         st.error(
             "Credenciais Google em **[connections.gsheets]** incompletas. "
-            "Preencha pelo menos **private_key** e **client_email** (JSON da conta de serviço). "
-            "O campo **type** pode ser `service_account` ou ficar vazio."
+            "Preencha pelo menos **private_key** e **client_email**."
         )
         return
 
@@ -594,25 +536,18 @@ def main() -> None:
         df_vendas = ler_planilha_aba_df(sid, WS_VENDAS, cred_fp)
         df_metas_raw = ler_planilha_aba_df(sid, WS_METAS, cred_fp)
     except Exception as e:
-        err = str(e)
-        st.error(f"Erro ao ler a planilha: {err}")
-        st.info(
-            f"**ID:** `{sid}`  \n"
-            f"**Abas:** `{WS_VENDAS}`, `{WS_METAS}`  \n"
-            f"**Service account:** `{info.get('client_email', '')}`"
-        )
+        st.error(f"Erro ao ler a planilha: {str(e)}")
         return
 
     df_vendas = normalizar_colunas(df_vendas)
     df_metas = melt_metas(df_metas_raw)
 
-    # -------------------------------------------------------------------------
-    # Filtra as linhas de TOTAL que vem das planilhas para não duplicar somas
-    # -------------------------------------------------------------------------
+    # Ignora os empreendimentos que nao possuem regiao na coluna metas
+    if "Região" in df_metas.columns:
+        df_metas = df_metas[df_metas["Região"].astype(str).str.strip().replace('nan', '') != ""]
+        df_metas = df_metas[~df_metas["Região"].astype(str).str.strip().str.lower().isin(["total", "geral"])]
     if "Empreendimento" in df_metas.columns:
         df_metas = df_metas[~df_metas["Empreendimento"].astype(str).str.strip().str.lower().isin(["total", "geral", ""])]
-    if "Região" in df_metas.columns:
-        df_metas = df_metas[~df_metas["Região"].astype(str).str.strip().str.lower().isin(["total", "geral"])]
 
     # -------------------------------------------------------------------------
     # Mapeamento Inteligente de Colunas
@@ -626,13 +561,9 @@ def main() -> None:
     col_venda_comercial = achar_coluna(df_vendas, ["Venda Comercial?", "Venda Comercial"])
 
     if not col_ano and not col_mes:
-        st.error(
-            "Não foi possível encontrar as colunas de Ano e Mês na aba de vendas. "
-            f"Colunas disponíveis: {', '.join(df_vendas.columns[:25].tolist())}"
-        )
+        st.error("Não foi possível encontrar as colunas de Ano e Mês na aba de vendas.")
         return
 
-    # Padroniza as colunas de Vendas para baterem com as das Metas
     if col_emp and col_emp != "Empreendimento":
         df_vendas.rename(columns={col_emp: "Empreendimento"}, inplace=True)
         col_emp = "Empreendimento"
@@ -640,24 +571,16 @@ def main() -> None:
         df_vendas.rename(columns={col_regiao: "Região"}, inplace=True)
         col_regiao = "Região"
 
-    # Remove também eventuais linhas de "Total" na aba de vendas
     if col_emp:
         df_vendas = df_vendas[~df_vendas[col_emp].astype(str).str.strip().str.lower().isin(["total", "geral", ""])]
 
-    # -------------------------------------------------------------------------
     # Filtro Obrigatório: Apenas Venda Comercial == 1
-    # -------------------------------------------------------------------------
     if col_venda_comercial:
-        # Usa pd.to_numeric com coerce para forçar tudo que não for número virar NaN
-        # Depois filtra onde o valor numérico é igual a 1
         df_vendas = df_vendas[pd.to_numeric(df_vendas[col_venda_comercial], errors='coerce') == 1]
     else:
-        st.warning("Coluna 'Venda Comercial?' não encontrada na base. O filtro de venda comercial não foi aplicado.")
+        st.warning("Coluna 'Venda Comercial?' não encontrada na base.")
 
-    # Extração de Mês
     df_vendas["_mes"] = df_vendas[col_mes].apply(extrair_mes) if col_mes else None
-    
-    # Extração de Ano e Fallback: Se o Ano da Venda estiver zoado/zerado, tenta extrair de dentro da coluna Mês
     df_vendas["_ano"] = df_vendas[col_ano].apply(extrair_ano) if col_ano else None
     
     def aplicar_fallback_ano(row: pd.Series) -> Optional[int]:
@@ -668,138 +591,112 @@ def main() -> None:
         return ano
         
     df_vendas["_ano"] = df_vendas.apply(aplicar_fallback_ano, axis=1)
+    df_vendas["_vgv"] = df_vendas[col_valor].map(parse_valor_br) if col_valor else 0.0
 
-    if col_valor:
-        df_vendas["_vgv"] = df_vendas[col_valor].map(parse_valor_br)
-    else:
-        df_vendas["_vgv"] = 0.0
-        st.warning("Coluna de Valor (VGV) não encontrada — o financeiro ficará zerado.")
-
-    # Nova regra de criação do Canal Agrupado
     if col_canal:
         def agrupar_canal(c: Any) -> str:
             c_str = str(c).strip().upper()
             prefixo = c_str.split('-')[0].strip()
-            # Se a coluna Canal for RJ ou RJG (ou começar com isso), o valor é IMOB.
             if prefixo in ['RJ', 'RJG'] or c_str in ['RJ', 'RJG']:
                 return 'IMOB'
             return 'DV RJ'
-        
         df_vendas['Canal_Agrupado'] = df_vendas[col_canal].apply(agrupar_canal)
     else:
         df_vendas['Canal_Agrupado'] = 'DV RJ'
-        st.warning("Coluna **Canal** não encontrada na aba de vendas — assumindo tudo como DV RJ.")
+
+    # Mapear a Região oficial da Venda com base na tabela de Metas
+    map_emp_regiao = df_metas.drop_duplicates("Empreendimento").set_index("Empreendimento")["Região"].to_dict()
+    df_vendas["Regiao_Meta"] = df_vendas["Empreendimento"].map(map_emp_regiao)
 
     # -------------------------------------------------------------------------
-    # Sidebar - Filtros
+    # LINHA ÚNICA DE FILTROS (Múltipla Seleção)
     # -------------------------------------------------------------------------
-    st.sidebar.markdown("### Filtros")
+    anos_disponiveis = sorted(int(x) for x in df_vendas["_ano"].dropna().unique().tolist() if pd.notna(x) and x > 2000)
+    meses_no_ano = sorted(int(x) for x in df_vendas["_mes"].dropna().unique().tolist() if pd.notna(x) and 1 <= int(x) <= 12)
+    regioes_disponiveis = sorted(set(str(x).strip() for x in df_metas["Região"].dropna().unique() if str(x).strip()))
     
-    # Filtro principal do Canal
-    filtro_canal = st.sidebar.selectbox(
-        "Canal da Meta",
-        ["RIO", "DIR", "PARC", "RJ"],
-        index=0,
-        help="RIO (100% da Meta, Todas as Vendas) | DIR (50% Meta, Vendas DV RJ) | PARC (25% Meta, Vendas RJG) | RJ (25% Meta, Vendas RJ)"
-    )
-
-    # Identifica apenas anos válidos (> 2000)
-    anos_disponiveis: List[int] = sorted(
-        int(x) for x in df_vendas["_ano"].dropna().unique().tolist() if pd.notna(x) and x > 2000
-    )
-    if not anos_disponiveis:
-        st.warning("Nenhum ano numérico válido (> 2000) foi encontrado na base de vendas (ou todas as vendas comerciais = 1 foram filtradas para fora).")
-        return
-
-    ano_sel = st.sidebar.selectbox("Ano", anos_disponiveis, index=len(anos_disponiveis) - 1)
-
-    # Identifica apenas meses válidos (1 a 12)
-    meses_no_ano = sorted(
-        int(x)
-        for x in df_vendas.loc[df_vendas["_ano"] == ano_sel, "_mes"].dropna().unique().tolist()
-        if pd.notna(x) and 1 <= int(x) <= 12
-    )
-    if not meses_no_ano:
-        meses_no_ano = list(range(1, 13))
-
-    idx_mes_padrao = max(0, len(meses_no_ano) - 1) if meses_no_ano else 0
-    mes_sel = st.sidebar.selectbox("Mês", meses_no_ano, index=idx_mes_padrao)
-
-    # Preparar listas para os novos filtros de Região e Empreendimento
-    regioes_disponiveis = []
-    if coluna_existe(df_metas, "Região"):
-        regioes_disponiveis = sorted(set(str(x).strip() for x in df_metas["Região"].dropna().unique() if str(x).strip()))
-
     emps_comuns = []
     if coluna_existe(df_vendas, "Empreendimento") and coluna_existe(df_metas, "Empreendimento"):
         emps_vendas = set(str(x).strip() for x in df_vendas["Empreendimento"].dropna().unique() if str(x).strip())
         emps_metas = set(str(x).strip() for x in df_metas["Empreendimento"].dropna().unique() if str(x).strip())
-        # Interseção: só empreendimentos que existem em ambas as abas
         emps_comuns = sorted(list(emps_vendas & emps_metas))
 
-    filtro_regiao = st.sidebar.selectbox("Região (Metas)", ["Todas"] + regioes_disponiveis)
-    filtro_emp = st.sidebar.selectbox("Empreendimento", ["Todos"] + emps_comuns)
+    st.markdown("<div style='margin-bottom:1rem;'><strong>Filtros</strong></div>", unsafe_allow_html=True)
+    
+    col_filtros = st.columns(5)
+    with col_filtros[0]:
+        canais_sel = st.multiselect("Canal da Meta", ["RIO", "DIR", "PARC", "RJ"], default=["RIO"])
+    with col_filtros[1]:
+        anos_sel = st.multiselect("Ano", anos_disponiveis, default=[anos_disponiveis[-1]] if anos_disponiveis else [])
+    with col_filtros[2]:
+        mes_padrao = max(0, len(meses_no_ano) - 1) if meses_no_ano else []
+        meses_sel = st.multiselect("Mês", meses_no_ano, default=[meses_no_ano[mes_padrao]] if meses_no_ano else [])
+    with col_filtros[3]:
+        regioes_sel = st.multiselect("Região", regioes_disponiveis, default=[])
+    with col_filtros[4]:
+        emps_sel = st.multiselect("Empreendimento", emps_comuns, default=[])
 
     # -------------------------------------------------------------------------
-    # Aplicação de Filtros
+    # Aplicação de Filtros (Listas)
     # -------------------------------------------------------------------------
-    vendas_f = df_vendas[(df_vendas["_ano"] == ano_sel) & (df_vendas["_mes"] == mes_sel)].copy()
-    metas_f = df_metas[df_metas["Mes_Num"] == mes_sel].copy()
+    vendas_f = df_vendas.copy()
+    metas_f = df_metas.copy()
 
-    # 1. Aplica lógica do canal escolhido na Venda
-    fator_meta = 1.0
-    if filtro_canal == "RIO":
+    if anos_sel:
+        vendas_f = vendas_f[vendas_f["_ano"].isin(anos_sel)]
+    if meses_sel:
+        vendas_f = vendas_f[vendas_f["_mes"].isin(meses_sel)]
+        metas_f = metas_f[metas_f["Mes_Num"].isin(meses_sel)]
+
+    if regioes_sel:
+        metas_f = metas_f[metas_f["Região"].isin(regioes_sel)]
+        vendas_f = vendas_f[vendas_f["Regiao_Meta"].isin(regioes_sel)]
+
+    if emps_sel:
+        metas_f = metas_f[metas_f["Empreendimento"].isin(emps_sel)]
+        vendas_f = vendas_f[vendas_f["Empreendimento"].isin(emps_sel)]
+
+    # Lógica de Canal
+    fator_meta = 0.0
+    mask_vendas = pd.Series(False, index=vendas_f.index)
+
+    if not canais_sel or "RIO" in canais_sel:
         fator_meta = 1.0
-        # vendas_f se mantém com todos os dados
-    elif filtro_canal == "DIR":
-        fator_meta = 0.50
-        vendas_f = vendas_f[vendas_f["Canal_Agrupado"] == "DV RJ"]
-    elif filtro_canal == "PARC":
-        fator_meta = 0.25
-        if col_canal:
-            vendas_f = vendas_f[vendas_f[col_canal].astype(str).str.upper().str.strip().apply(
-                lambda x: x.split('-')[0].strip() == 'RJG' or x == 'RJG'
-            )]
-    elif filtro_canal == "RJ":
-        fator_meta = 0.25
-        if col_canal:
-            vendas_f = vendas_f[vendas_f[col_canal].astype(str).str.upper().str.strip().apply(
-                lambda x: x.split('-')[0].strip() == 'RJ' or x == 'RJ'
-            )]
+        mask_vendas = pd.Series(True, index=vendas_f.index)
+    else:
+        if "DIR" in canais_sel:
+            fator_meta += 0.50
+            mask_vendas |= (vendas_f["Canal_Agrupado"] == "DV RJ")
+        if "PARC" in canais_sel and col_canal:
+            fator_meta += 0.25
+            mask_vendas |= vendas_f[col_canal].astype(str).str.upper().str.strip().apply(lambda x: x.split('-')[0].strip() == 'RJG' or x == 'RJG')
+        if "RJ" in canais_sel and col_canal:
+            fator_meta += 0.25
+            mask_vendas |= vendas_f[col_canal].astype(str).str.upper().str.strip().apply(lambda x: x.split('-')[0].strip() == 'RJ' or x == 'RJ')
 
-    # 2. Aplica filtro de Região (baseado na aba de Metas)
-    if filtro_regiao != "Todas" and coluna_existe(metas_f, "Região"):
-        metas_f = metas_f[metas_f["Região"].astype(str).str.strip() == filtro_regiao]
-        # Filtra a aba de vendas usando os empreendimentos vinculados a essa região nas metas
-        emps_da_regiao = metas_f["Empreendimento"].astype(str).str.strip().unique()
-        if coluna_existe(vendas_f, "Empreendimento"):
-            vendas_f = vendas_f[vendas_f["Empreendimento"].astype(str).str.strip().isin(emps_da_regiao)]
+    fator_meta = min(1.0, fator_meta)
+    vendas_f = vendas_f[mask_vendas]
 
-    # 3. Aplica filtro de Empreendimento
-    if filtro_emp != "Todos":
-        if coluna_existe(vendas_f, "Empreendimento"):
-            vendas_f = vendas_f[vendas_f["Empreendimento"].astype(str).str.strip() == filtro_emp]
-        if coluna_existe(metas_f, "Empreendimento"):
-            metas_f = metas_f[metas_f["Empreendimento"].astype(str).str.strip() == filtro_emp]
-
-    # Ajusta as metas proporcionalmente ao canal escolhido (50%, 25%, etc)
     metas_f["Meta_Qtd"] = metas_f["Meta_Qtd"] * fator_meta
+    metas_f["Meta_VGV"] = metas_f["Meta_VGV"] * fator_meta
 
-    total_realizado = int(vendas_f.shape[0])
-    total_meta = float(metas_f["Meta_Qtd"].sum()) if not metas_f.empty else 0.0
-    total_vgv = float(vendas_f["_vgv"].sum())
+    total_realizado_qtd = int(vendas_f.shape[0])
+    total_meta_qtd = float(metas_f["Meta_Qtd"].sum()) if not metas_f.empty else 0.0
+    total_vgv_realizado = float(vendas_f["_vgv"].sum())
+    total_meta_vgv = float(metas_f["Meta_VGV"].sum()) if not metas_f.empty else 0.0
 
-    pct_ating = (total_realizado / total_meta * 100.0) if total_meta > 0 else 0.0
+    pct_qtd = (total_realizado_qtd / total_meta_qtd * 100.0) if total_meta_qtd > 0 else 0.0
+    pct_vgv = (total_vgv_realizado / total_meta_vgv * 100.0) if total_meta_vgv > 0 else 0.0
 
     st.markdown(
         f"""
-        <div class="vel-kpi-row">
-            <div class="vel-kpi"><div class="lbl">Período</div><div class="val">{mes_sel:02d}/{ano_sel}</div></div>
-            <div class="vel-kpi"><div class="lbl">Canal Filtro</div><div class="val">{filtro_canal}</div></div>
-            <div class="vel-kpi"><div class="lbl">Vendas realizadas</div><div class="val">{total_realizado}</div></div>
-            <div class="vel-kpi"><div class="lbl">Meta Ajustada (un.)</div><div class="val">{total_meta:g}</div></div>
-            <div class="vel-kpi"><div class="lbl">VGV no mês</div><div class="val val--red">{fmt_br_milhoes(total_vgv)}</div></div>
-            <div class="vel-kpi"><div class="lbl">% da meta</div><div class="val">{pct_ating:.1f}%</div></div>
+        <div class="vel-kpi-row" style="margin-top: 1rem;">
+            <div class="vel-kpi"><div class="lbl">Qtd Meta</div><div class="val">{total_meta_qtd:g}</div></div>
+            <div class="vel-kpi"><div class="lbl">Qtd Realizado</div><div class="val">{total_realizado_qtd}</div></div>
+            <div class="vel-kpi"><div class="lbl">% Qtd</div><div class="val">{pct_qtd:.1f}%</div></div>
+            <div class="vel-kpi"><div class="lbl">VGV Meta</div><div class="val">{fmt_br_milhoes(total_meta_vgv)}</div></div>
+            <div class="vel-kpi"><div class="lbl">VGV Realizado</div><div class="val val--red">{fmt_br_milhoes(total_vgv_realizado)}</div></div>
+            <div class="vel-kpi"><div class="lbl">% VGV</div><div class="val">{pct_vgv:.1f}%</div></div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -808,81 +705,105 @@ def main() -> None:
     st.subheader("Visão geral")
     c1, c2, c3 = st.columns([1, 2, 1])
     with c2:
-        criar_medidor("Geral — quantidade vs meta", float(total_realizado), total_meta, total_vgv, total_realizado)
+        criar_medidor("Geral — quantidade vs meta", float(total_realizado_qtd), total_meta_qtd, total_vgv_realizado, total_meta_vgv, total_realizado_qtd)
 
     st.subheader("Por região")
-    if "Região" in metas_f.columns and "Empreendimento" in metas_f.columns and "Empreendimento" in vendas_f.columns:
+    if "Região" in metas_f.columns and "Empreendimento" in metas_f.columns:
         regioes_m = sorted(str(x).strip() for x in metas_f["Região"].dropna().unique() if str(x).strip())
 
         if not regioes_m:
-            st.info("Não há região definida nas metas deste mês.")
+            st.info("Não há região definida nas metas do período filtrado.")
         else:
             cols = st.columns(min(3, len(regioes_m)) or 1)
             for i, regiao in enumerate(regioes_m):
                 with cols[i % len(cols)]:
-                    # 1. Filtra metas para esta região e soma a meta
                     metas_regiao = metas_f[metas_f["Região"].astype(str).str.strip() == regiao]
-                    m_reg = float(metas_regiao["Meta_Qtd"].sum())
+                    m_reg_qtd = float(metas_regiao["Meta_Qtd"].sum())
+                    m_reg_vgv = float(metas_regiao["Meta_VGV"].sum())
 
-                    # 2. Identifica os empreendimentos vinculados a esta região na aba de metas
                     emps_da_regiao = metas_regiao["Empreendimento"].astype(str).str.strip().unique()
-
-                    # 3. Conta as vendas cruzando apenas os empreendimentos correspondentes
                     v_reg = vendas_f[vendas_f["Empreendimento"].astype(str).str.strip().isin(emps_da_regiao)]
 
                     criar_medidor(
                         regiao,
                         float(v_reg.shape[0]),
-                        m_reg,
+                        m_reg_qtd,
                         float(v_reg["_vgv"].sum()),
+                        m_reg_vgv,
                         int(v_reg.shape[0]),
                     )
     else:
         st.warning("As colunas **Região** e/ou **Empreendimento** não foram encontradas para cruzar as regiões.")
 
-    st.caption(
-        "Nota: O agrupamento por região utiliza automaticamente o mapeamento de **Empreendimentos** "
-        "definido na aba de **Metas** para buscar as vendas correspondentes na base completa."
-    )
-
-    if coluna_existe(df_vendas, "Empreendimento") and coluna_existe(metas_f, "Empreendimento"):
-        st.subheader("Por empreendimento")
-        emp_v = vendas_f.assign(
-            _emp=vendas_f["Empreendimento"].astype(str).str.strip()
+    # -------------------------------------------------------------------------
+    # TABELA POR REGIÃO
+    # -------------------------------------------------------------------------
+    st.subheader("Tabela Resumo: Por Região")
+    if "Região" in metas_f.columns:
+        # Agrupa vendas pela região mapeada e metas pela região
+        vg_reg = (
+            vendas_f.groupby("Regiao_Meta", as_index=False)
+            .agg(real_qtd=("Empreendimento", "count"), real_vgv=("_vgv", "sum"))
+            .rename(columns={"Regiao_Meta": "Região"})
         )
-        vg = (
+        mg_reg = (
+            metas_f.groupby("Região", as_index=False)
+            .agg(meta_qtd=("Meta_Qtd", "sum"), meta_vgv=("Meta_VGV", "sum"))
+        )
+        tab_reg = vg_reg.merge(mg_reg, on="Região", how="outer").fillna(0)
+        
+        tab_reg["% Qtd"] = tab_reg.apply(lambda r: (r["real_qtd"] / r["meta_qtd"] * 100.0) if r["meta_qtd"] > 0 else 0.0, axis=1)
+        tab_reg["% VGV"] = tab_reg.apply(lambda r: (r["real_vgv"] / r["meta_vgv"] * 100.0) if r["meta_vgv"] > 0 else 0.0, axis=1)
+        
+        tab_reg = tab_reg.sort_values(["meta_qtd", "real_qtd"], ascending=False)
+        show_reg = tab_reg.rename(columns={
+            "meta_qtd": "Meta Qtd (un.)", "real_qtd": "Realizado Qtd (un.)",
+            "meta_vgv": "Meta VGV (R$)", "real_vgv": "Realizado VGV (R$)"
+        })
+        
+        show_reg["Realizado VGV (R$)"] = show_reg["Realizado VGV (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
+        show_reg["Meta VGV (R$)"] = show_reg["Meta VGV (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
+        show_reg["% Qtd"] = show_reg["% Qtd"].map(lambda x: f"{x:.1f}%")
+        show_reg["% VGV"] = show_reg["% VGV"].map(lambda x: f"{x:.1f}%")
+        
+        st.dataframe(show_reg, use_container_width=True, hide_index=True)
+
+    # -------------------------------------------------------------------------
+    # TABELA POR EMPREENDIMENTO
+    # -------------------------------------------------------------------------
+    st.subheader("Tabela Resumo: Por Empreendimento")
+    if coluna_existe(df_vendas, "Empreendimento") and coluna_existe(metas_f, "Empreendimento"):
+        emp_v = vendas_f.assign(_emp=vendas_f["Empreendimento"].astype(str).str.strip())
+        vg_emp = (
             emp_v.groupby("_emp", as_index=False)
-            .agg(realizado=("Empreendimento", "count"), vgv=("_vgv", "sum"))
+            .agg(real_qtd=("Empreendimento", "count"), real_vgv=("_vgv", "sum"))
             .rename(columns={"_emp": "Empreendimento"})
         )
-        emp_m = metas_f.assign(
-            _emp=metas_f["Empreendimento"].astype(str).str.strip()
+        emp_m = metas_f.assign(_emp=metas_f["Empreendimento"].astype(str).str.strip())
+        mg_emp = (
+            emp_m.groupby("_emp", as_index=False)
+            .agg(meta_qtd=("Meta_Qtd", "sum"), meta_vgv=("Meta_VGV", "sum"))
+            .rename(columns={"_emp": "Empreendimento"})
         )
-        mg = (
-            emp_m.groupby("_emp", as_index=False)["Meta_Qtd"]
-            .sum()
-            .rename(columns={"_emp": "Empreendimento", "Meta_Qtd": "Meta (un.)"})
-        )
-        tab = vg.merge(mg, on="Empreendimento", how="outer").fillna(0)
-        tab["Meta (un.)"] = tab["Meta (un.)"].astype(float)
-        tab["realizado"] = tab["realizado"].astype(float)
-        tab["vgv"] = tab["vgv"].astype(float)
-        tab["% meta"] = tab.apply(
-            lambda r: (r["realizado"] / r["Meta (un.)"] * 100.0) if r["Meta (un.)"] > 0 else 0.0,
-            axis=1,
-        )
-        tab = tab.sort_values(["Meta (un.)", "realizado"], ascending=False)
-        show = tab.rename(columns={"vgv": "VGV (R$)", "realizado": "Realizado (un.)"})
-        show["VGV (R$)"] = show["VGV (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
-        show["% meta"] = show["% meta"].map(lambda x: f"{x:.1f}%")
-        st.dataframe(show, use_container_width=True, hide_index=True)
+        tab_emp = vg_emp.merge(mg_emp, on="Empreendimento", how="outer").fillna(0)
+        
+        tab_emp["% Qtd"] = tab_emp.apply(lambda r: (r["real_qtd"] / r["meta_qtd"] * 100.0) if r["meta_qtd"] > 0 else 0.0, axis=1)
+        tab_emp["% VGV"] = tab_emp.apply(lambda r: (r["real_vgv"] / r["meta_vgv"] * 100.0) if r["meta_vgv"] > 0 else 0.0, axis=1)
+        
+        tab_emp = tab_emp.sort_values(["meta_qtd", "real_qtd"], ascending=False)
+        show_emp = tab_emp.rename(columns={
+            "meta_qtd": "Meta Qtd (un.)", "real_qtd": "Realizado Qtd (un.)",
+            "meta_vgv": "Meta VGV (R$)", "real_vgv": "Realizado VGV (R$)"
+        })
+        
+        show_emp["Realizado VGV (R$)"] = show_emp["Realizado VGV (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
+        show_emp["Meta VGV (R$)"] = show_emp["Meta VGV (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
+        show_emp["% Qtd"] = show_emp["% Qtd"].map(lambda x: f"{x:.1f}%")
+        show_emp["% VGV"] = show_emp["% VGV"].map(lambda x: f"{x:.1f}%")
+        
+        st.dataframe(show_emp, use_container_width=True, hide_index=True)
     else:
-        st.info(
-            "Para ver o cruzamento por empreendimento, as duas abas precisam da coluna **Empreendimento**."
-        )
-
-    with st.expander("Prévia dos dados (mês filtrado)"):
-        st.dataframe(vendas_f.head(50), use_container_width=True)
+        st.info("Para ver o cruzamento por empreendimento, as duas abas precisam da coluna **Empreendimento**.")
 
     st.markdown(
         f'<div class="footer" style="text-align:center;padding:1rem 0;color:{COR_TEXTO_MUTED};font-size:0.82rem;">'
