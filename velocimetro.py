@@ -16,6 +16,7 @@ import html
 import math
 import os
 import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -367,6 +368,11 @@ def aplicar_estilo() -> None:
             padding: 14px 16px;
             text-align: center;
             box-shadow: 0 2px 8px rgba({RGB_AZUL_CSS}, 0.06);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }}
+        .vel-kpi:hover {{
+            transform: translateY(-4px);
+            box-shadow: 0 10px 20px -5px rgba({RGB_AZUL_CSS}, 0.15);
         }}
         .vel-kpi .lbl {{
             font-size: 0.72rem;
@@ -853,8 +859,11 @@ def main() -> None:
     # -------------------------------------------------------------------------
     anos_disponiveis = sorted(int(x) for x in df_vendas["_ano"].dropna().unique().tolist() if pd.notna(x) and x > 2000)
     meses_no_ano = list(range(1, 13))
-    meses_vendas = sorted(int(x) for x in df_vendas["_mes"].dropna().unique().tolist() if pd.notna(x) and 1 <= int(x) <= 12)
-    mes_padrao = meses_vendas[-1] if meses_vendas else 1
+    
+    # Filtro padrão ajustado para o mês atual
+    mes_atual = datetime.now().month
+    mes_padrao = mes_atual if mes_atual in meses_no_ano else 1
+
     regioes_disponiveis = sorted(set(str(x).strip() for x in df_metas["Região"].dropna().unique() if str(x).strip()))
     
     emps_comuns = []
@@ -1112,38 +1121,56 @@ def main() -> None:
     vi_ideal = math.ceil(p_ideal / 0.25) if p_ideal > 0 else 0
     a_ideal = math.ceil(vi_ideal / 0.50) if vi_ideal > 0 else 0
     
-    # 1. Gráfico Funil (Plotly)
-    fig_funil = go.Figure(go.Funnel(
-        y=['Agendamentos', 'Visitas', 'Pastas', 'Pastas Aprovadas', 'Vendas (Meta)'],
-        x=[a_ideal, vi_ideal, p_ideal, pa_ideal, v_meta],
-        textinfo="value",
-        marker={"color": ["#022654", "#04428f", "#1e60b3", "#cb0935", "#9e0828"]},
-        connector={"fillcolor": "rgba(4, 66, 143, 0.15)"}
-    ))
-    fig_funil.update_layout(
-        margin=dict(l=20, r=20, t=30, b=20),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        height=380,
-        font=dict(family="Inter", color=COR_TEXTO_LABEL)
-    )
-    st.plotly_chart(fig_funil, use_container_width=True, config={"displayModeBar": False})
-
-    # 2. Métricas Derivadas (Digital e Corretores)
     vd_ideal = math.ceil(v_meta * 0.40)
     od_ideal = math.ceil(vd_ideal / 0.044) if vd_ideal > 0 else 0
     ld_ideal = math.ceil(od_ideal / 0.50) if od_ideal > 0 else 0
     
     corretores_ideal = math.ceil(v_meta / 0.20) if v_meta > 0 else 0
 
+    # Gráficos em colunas para comparação
+    col_funil_vendas, col_funil_mkt = st.columns(2)
+
+    with col_funil_vendas:
+        st.markdown("<h4 style='text-align: center; color: #04428f; font-size: 1.1rem; margin-bottom: 0px;'>Funil de Conversão</h4>", unsafe_allow_html=True)
+        fig_funil = go.Figure(go.Funnel(
+            y=['Agendamentos', 'Visitas', 'Pastas', 'Pastas Aprovadas', 'Vendas'],
+            x=[a_ideal, vi_ideal, p_ideal, pa_ideal, v_meta],
+            textinfo="value",
+            marker={"color": ["#022654", "#04428f", "#1e60b3", "#cb0935", "#9e0828"]},
+            connector={"fillcolor": "rgba(4, 66, 143, 0.15)"}
+        ))
+        fig_funil.update_layout(
+            margin=dict(l=20, r=20, t=30, b=20),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            height=380,
+            font=dict(family="Inter", color=COR_TEXTO_LABEL)
+        )
+        st.plotly_chart(fig_funil, use_container_width=True, config={"displayModeBar": False})
+
+    with col_funil_mkt:
+        st.markdown("<h4 style='text-align: center; color: #04428f; font-size: 1.1rem; margin-bottom: 0px;'>Funil Digital (Marketing)</h4>", unsafe_allow_html=True)
+        fig_funil_mkt = go.Figure(go.Funnel(
+            y=['Leads Digitais', 'Oport. Digitais', 'Vendas Digitais (40%)'],
+            x=[ld_ideal, od_ideal, vd_ideal],
+            textinfo="value",
+            marker={"color": ["#022654", "#1e60b3", "#cb0935"]},
+            connector={"fillcolor": "rgba(4, 66, 143, 0.15)"}
+        ))
+        fig_funil_mkt.update_layout(
+            margin=dict(l=20, r=20, t=30, b=20),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            height=380,
+            font=dict(family="Inter", color=COR_TEXTO_LABEL)
+        )
+        st.plotly_chart(fig_funil_mkt, use_container_width=True, config={"displayModeBar": False})
+
     st.markdown(
         f"""
-        <div style="margin-top: 1.5rem; margin-bottom: 0.85rem;"><strong>Métricas Derivadas: Digital e Corretores Ativos</strong></div>
-        <div class="vel-kpi-row">
-            <div class="vel-kpi"><div class="lbl">Leads Digitais</div><div class="val">{ld_ideal}</div></div>
-            <div class="vel-kpi"><div class="lbl">Oportunidades Digitais</div><div class="val">{od_ideal}</div></div>
-            <div class="vel-kpi"><div class="lbl">Vendas Digitais (40%)</div><div class="val">{vd_ideal}</div></div>
-            <div class="vel-kpi"><div class="lbl">Corretores (20% vendendo)</div><div class="val">{corretores_ideal}</div></div>
+        <div style="margin-top: 0.5rem; margin-bottom: 0.85rem; text-align: center;"><strong>Capacidade Comercial Necessária</strong></div>
+        <div class="vel-kpi-row" style="justify-content: center;">
+            <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Corretores Ativos (20% convertendo)</div><div class="val">{corretores_ideal}</div></div>
         </div>
         """,
         unsafe_allow_html=True,
