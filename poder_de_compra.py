@@ -316,7 +316,7 @@ def achar_coluna(df: pd.DataFrame, aliases: List[str]) -> Optional[str]:
 def fmt_br_milhoes(v: float) -> str:
     if v == 0: return "R$ 0,00"
     if v >= 1e6: return f"R$ {v / 1e6:.2f} mi"
-    if v >= 1e3: return f"R$ {v / 1e3:.1f} mil"
+    if v >= 1e3: return f"R$ {v / 1e3:.2f} mil"
     return f"R$ {v:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
 
 def fmt_br_porcentagem(v: float) -> str:
@@ -362,6 +362,10 @@ def main() -> None:
     c_v_dir = achar_coluna(df, ["VALOR DIRECIONAL DE VENDA"])
     c_v_emc = achar_coluna(df, ["VALOR EMCASH DE VENDA"])
 
+    # Colunas de Vendas Facilitadas/Comerciais
+    c_v_comercial = achar_coluna(df, ["VENDA COMERCIAL", "Venda Comercial"])
+    c_v_facilitada = achar_coluna(df, ["VENDA FACILITADA", "Venda Facilitada"])
+
     # Colunas de Limpeza solicitadas
     c_ps_dir = achar_coluna(df, ["PS DIRECIONAL"])
     c_ps_emc = achar_coluna(df, ["PS EMCASH"])
@@ -376,6 +380,14 @@ def main() -> None:
     if not c_data:
         st.error("Coluna de Data (CONTRATO GERADO EM) não encontrada para gerar a linha do tempo.")
         return
+
+    # -------------------------------------------------------------------------
+    # Filtro Obrigatório: Venda Comercial == 1
+    # -------------------------------------------------------------------------
+    if c_v_comercial:
+        df = df[pd.to_numeric(df[c_v_comercial], errors='coerce') == 1]
+    else:
+        st.warning("Coluna 'VENDA COMERCIAL' não encontrada. O filtro obrigatório não foi aplicado.")
 
     # -------------------------------------------------------------------------
     # Limpeza de Dados: Ignorar linhas com colunas vazias
@@ -437,37 +449,80 @@ def main() -> None:
     if c_rank and sel_rank: df_f = df_f[df_f[c_rank].isin(sel_rank)]
 
     # -------------------------------------------------------------------------
-    # Indicadores e Agregações Gerais
+    # Funções de Resumo de Indicadores com Média, Mediana e P90
     # -------------------------------------------------------------------------
-    vendas_qtd = len(df_f)
-    vgv_real_tot = df_f["VGV_Real"].sum()
-    vgv_dir_tot = df_f["VGV_Dir"].sum()
-    vgv_emc_tot = df_f["VGV_Emc"].sum()
+    def render_kpi_block(df_target: pd.DataFrame, title: str):
+        st.subheader(title)
+        if df_target.empty:
+            st.info("Não há dados para este segmento.")
+            return
 
-    gap_dir_tot = df_f["Gap_Dir"].sum()
-    gap_emc_tot = df_f["Gap_Emc"].sum()
+        vendas_qtd = len(df_target)
+        vgv_real_tot = df_target["VGV_Real"].sum()
+        
+        # Gaps Direcional
+        gap_dir_tot = df_target["Gap_Dir"].sum()
+        gap_dir_avg = df_target["Gap_Dir"].mean()
+        gap_dir_med = df_target["Gap_Dir"].median()
+        gap_dir_p90 = df_target["Gap_Dir"].quantile(0.9)
+        pct_gap_dir = (gap_dir_tot / vgv_real_tot * 100.0) if vgv_real_tot > 0 else 0.0
 
-    pct_gap_dir = (gap_dir_tot / vgv_real_tot * 100.0) if vgv_real_tot > 0 else 0.0
-    pct_gap_emc = (gap_emc_tot / vgv_real_tot * 100.0) if vgv_real_tot > 0 else 0.0
+        # Gaps Emcash
+        gap_emc_tot = df_target["Gap_Emc"].sum()
+        gap_emc_avg = df_target["Gap_Emc"].mean()
+        gap_emc_med = df_target["Gap_Emc"].median()
+        gap_emc_p90 = df_target["Gap_Emc"].quantile(0.9)
+        pct_gap_emc = (gap_emc_tot / vgv_real_tot * 100.0) if vgv_real_tot > 0 else 0.0
 
+        # Primeira Linha: Visão Geral do Segmento
+        st.markdown(
+            f"""
+            <div class="vel-kpi-row">
+                <div class="vel-kpi"><div class="lbl">Vendas (QTD)</div><div class="val">{vendas_qtd}</div></div>
+                <div class="vel-kpi"><div class="lbl">VGV Real Total</div><div class="val">{fmt_br_milhoes(vgv_real_tot)}</div></div>
+                <div class="vel-kpi"><div class="lbl">Gap Direcional (Tot)</div><div class="val val--red">{fmt_br_milhoes(gap_dir_tot)}</div></div>
+                <div class="vel-kpi"><div class="lbl">Gap Emcash (Tot)</div><div class="val val--red">{fmt_br_milhoes(gap_emc_tot)}</div></div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # Segunda Linha: Estatísticas Direcional
+        st.markdown(
+            f"""
+            <div class="vel-kpi-row">
+                <div class="vel-kpi"><div class="lbl">Média Gap (Dir)</div><div class="val">{fmt_br_milhoes(gap_dir_avg)}</div></div>
+                <div class="vel-kpi"><div class="lbl">Mediana Gap (Dir)</div><div class="val">{fmt_br_milhoes(gap_dir_med)}</div></div>
+                <div class="vel-kpi"><div class="lbl">P90 Gap (Dir)</div><div class="val">{fmt_br_milhoes(gap_dir_p90)}</div></div>
+                <div class="vel-kpi"><div class="lbl">Aumento Possível (Dir)</div><div class="val">{fmt_br_porcentagem(pct_gap_dir)}</div></div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        # Terceira Linha: Estatísticas Emcash
+        st.markdown(
+            f"""
+            <div class="vel-kpi-row" style="margin-bottom: 2rem;">
+                <div class="vel-kpi"><div class="lbl">Média Gap (Emc)</div><div class="val">{fmt_br_milhoes(gap_emc_avg)}</div></div>
+                <div class="vel-kpi"><div class="lbl">Mediana Gap (Emc)</div><div class="val">{fmt_br_milhoes(gap_emc_med)}</div></div>
+                <div class="vel-kpi"><div class="lbl">P90 Gap (Emc)</div><div class="val">{fmt_br_milhoes(gap_emc_p90)}</div></div>
+                <div class="vel-kpi"><div class="lbl">Aumento Possível (Emc)</div><div class="val">{fmt_br_porcentagem(pct_gap_emc)}</div></div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # Renderização dos 3 blocos de KPI
     st.markdown("<br>", unsafe_allow_html=True)
-    st.markdown(
-        f"""
-        <div class="vel-kpi-row">
-            <div class="vel-kpi"><div class="lbl">Vendas Realizadas (QTD)</div><div class="val">{vendas_qtd}</div></div>
-            <div class="vel-kpi"><div class="lbl">VGV Realizado</div><div class="val val--red">{fmt_br_milhoes(vgv_real_tot)}</div></div>
-            <div class="vel-kpi"><div class="lbl">VGV Direcional (Projetado)</div><div class="val">{fmt_br_milhoes(vgv_dir_tot)}</div></div>
-            <div class="vel-kpi"><div class="lbl">VGV Emcash (Projetado)</div><div class="val">{fmt_br_milhoes(vgv_emc_tot)}</div></div>
-        </div>
-        <div class="vel-kpi-row" style="margin-bottom: 2rem;">
-            <div class="vel-kpi"><div class="lbl">Gap Direcional ($)</div><div class="val val--red">{fmt_br_milhoes(gap_dir_tot)}</div></div>
-            <div class="vel-kpi"><div class="lbl">Aumento Possível (Direcional)</div><div class="val">{fmt_br_porcentagem(pct_gap_dir)}</div></div>
-            <div class="vel-kpi"><div class="lbl">Gap Emcash ($)</div><div class="val val--red">{fmt_br_milhoes(gap_emc_tot)}</div></div>
-            <div class="vel-kpi"><div class="lbl">Aumento Possível (Emcash)</div><div class="val">{fmt_br_porcentagem(pct_gap_emc)}</div></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    render_kpi_block(df_f, "Estatísticas Gerais (Juntas)")
+    
+    if c_v_facilitada:
+        df_facilitada = df_f[pd.to_numeric(df_f[c_v_facilitada], errors='coerce') == 1]
+        df_normal = df_f[pd.to_numeric(df_f[c_v_facilitada], errors='coerce') != 1]
+        
+        render_kpi_block(df_facilitada, "Vendas Facilitadas")
+        render_kpi_block(df_normal, "Vendas Normais")
 
     # -------------------------------------------------------------------------
     # Gráfico de Linha do Tempo (Evolução dos Gaps)
@@ -548,12 +603,10 @@ def main() -> None:
     
     # Separação por Regional e Imob baseada no Canal
     if c_reg_imob and c_canal:
-        # Regional: Canais DIR ou RIV
         df_regionais = df_f[df_f[c_canal].isin(['DIR', 'RIV'])]
         if not df_regionais.empty:
             gerar_tabela_gap(df_regionais, c_reg_imob, "Regional (Canais DIR/RIV)")
         
-        # Imob: Canais RJ ou RJG
         df_imobs = df_f[df_f[c_canal].isin(['RJ', 'RJG'])]
         if not df_imobs.empty:
             gerar_tabela_gap(df_imobs, c_reg_imob, "Imob (Canais RJ/RJG)")
