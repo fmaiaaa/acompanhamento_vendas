@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 Análise de Concorrência — Inteligência Competitiva e Performance.
+Pipeline: Data Cleaning -> Feature Engineering -> Strategic Analysis -> UI
 Planilha: Bases Concorrentes + Direcional.
-Dependências: streamlit, pandas, plotly, gspread, google-auth
 """
 from __future__ import annotations
 
@@ -11,13 +11,14 @@ import html
 import os
 import re
 import math
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
+import plotly.express as px
+import streamlit as st
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-
-import pandas as pd
-import plotly.graph_objects as go
-import streamlit as st
 
 # -----------------------------------------------------------------------------
 # Identificação da planilha e Arquivos Visuais
@@ -30,10 +31,8 @@ FAVICON_ARQUIVO = "502.57_LOGO D_COR_V3F.png"
 FUNDO_CADASTRO_ARQUIVO = "fundo_cadastrorh.jpg"
 URL_LOGO_DIRECIONAL_EMAIL = "https://logodownload.org/wp-content/uploads/2021/04/direcional-engenharia-logo.png"
 
-# Paleta alinhada à Ficha Credenciamento / Gaps
 COR_AZUL_ESC = "#04428f"
 COR_VERMELHO = "#cb0935"
-COR_VERMELHO_ESCURO = "#9e0828"
 COR_FUNDO_CARD = "rgba(255, 255, 255, 0.78)"
 COR_BORDA = "#eef2f6"
 COR_TEXTO_MUTED = "#64748b"
@@ -41,11 +40,8 @@ COR_TEXTO_LABEL = "#1e293b"
 COR_INPUT_BG = "#f0f2f6"
 
 def _hex_rgb_triplet(hex_color: str) -> str:
-    """Converte #RRGGBB em 'r, g, b' para uso em rgba(...)."""
     x = (hex_color or "").strip().lstrip("#")
-    if len(x) != 6:
-        return "0, 0, 0"
-    return f"{int(x[0:2], 16)}, {int(x[2:4], 16)}, {int(x[4:6], 16)}"
+    return f"{int(x[0:2], 16)}, {int(x[2:4], 16)}, {int(x[4:6], 16)}" if len(x) == 6 else "0,0,0"
 
 RGB_AZUL_CSS = _hex_rgb_triplet(COR_AZUL_ESC)
 RGB_VERMELHO_CSS = _hex_rgb_triplet(COR_VERMELHO)
@@ -54,92 +50,17 @@ RGB_VERMELHO_CSS = _hex_rgb_triplet(COR_VERMELHO)
 # Funções de Design (Padrão Premium)
 # -----------------------------------------------------------------------------
 def _resolver_png_raiz(nome: str) -> Path | None:
-    """Procura o PNG na pasta do app e na pasta pai."""
     for base in (_DIR_APP, _DIR_APP.parent):
         p = base / nome
-        if p.is_file():
-            return p
-    return None
-
-def _resolver_imagem_fundo_local(nome: str) -> Path | None:
-    """Imagem JPG/PNG na pasta do app ou na pasta pai."""
-    for base in (_DIR_APP, _DIR_APP.parent):
-        for ext in (".jpg", ".jpeg", ".JPG", ".JPEG", ".png", ".PNG"):
-            stem = Path(nome).stem
-            p = base / f"{stem}{ext}"
-            if p.is_file():
-                return p
-        p = base / nome
-        if p.is_file():
-            return p
+        if p.is_file(): return p
     return None
 
 def _css_url_fundo_cadastro() -> str:
-    """String para `url(...)` no CSS: data-URL ou URL https (fallback)."""
-    p = _resolver_imagem_fundo_local(FUNDO_CADASTRO_ARQUIVO)
+    p = _resolver_png_raiz(FUNDO_CADASTRO_ARQUIVO)
     if p and p.is_file():
-        try:
-            raw = p.read_bytes()
-            suf = p.suffix.lower()
-            mime = "image/jpeg" if suf in (".jpg", ".jpeg") else "image/png"
-            b64 = base64.b64encode(raw).decode("ascii")
-            return f"data:{mime};base64,{b64}"
-        except OSError:
-            pass
+        b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+        return f"data:image/jpeg;base64,{b64}"
     return "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1920&q=80"
-
-def _logo_arquivo_local() -> str | None:
-    p_topo = _resolver_png_raiz(LOGO_TOPO_ARQUIVO)
-    if p_topo:
-        return str(p_topo)
-    for name in ("logo_direcional.png", "logo_direcional.jpg", "logo_direcional.jpeg", "logo.png"):
-        p = _DIR_APP / "assets" / name
-        if p.is_file():
-            return str(p)
-    return None
-
-def _logo_url_secrets() -> str | None:
-    try:
-        if hasattr(st, "secrets") and isinstance(st.secrets.get("branding"), dict):
-            return (st.secrets["branding"].get("LOGO_URL") or "").strip() or None
-    except Exception:
-        pass
-    return None
-
-def _logo_url_drive_por_id_arquivo() -> str | None:
-    fid = (os.environ.get("DIRECIONAL_LOGO_FILE_ID") or "").strip()
-    if len(fid) < 10: return None
-    return f"https://drive.google.com/uc?export=view&id={fid}"
-
-def _exibir_logo_topo() -> None:
-    """Logo centralizada no topo."""
-    path = _logo_arquivo_local()
-    url = _logo_url_secrets() or _logo_url_drive_por_id_arquivo()
-    try:
-        if path:
-            ext = Path(path).suffix.lower().lstrip(".")
-            mime = "image/png" if ext == "png" else "image/jpeg" if ext in ("jpg", "jpeg") else "image/png"
-            with open(path, "rb") as f:
-                b64 = base64.b64encode(f.read()).decode("ascii")
-            st.markdown(f'<div class="ficha-logo-wrap"><img src="data:{mime};base64,{b64}" alt="Direcional" /></div>', unsafe_allow_html=True)
-            return
-        if url:
-            st.markdown(f'<div class="ficha-logo-wrap"><img src="{html.escape(url)}" alt="Direcional" /></div>', unsafe_allow_html=True)
-    except Exception:
-        pass
-
-def _cabecalho_pagina() -> None:
-    _exibir_logo_topo()
-    st.markdown(
-        f'<div class="ficha-hero-stack">'
-        f'<div class="ficha-hero">'
-        f'<p class="ficha-title">Inteligência Competitiva e Performance</p>'
-        f'<p class="ficha-sub">Análise Realizado X Projetado — Mercado e Concorrência.</p>'
-        f"</div>"
-        f'<div class="ficha-hero-bar-wrap" aria-hidden="true"><div class="ficha-hero-bar"></div></div>'
-        f"</div>",
-        unsafe_allow_html=True,
-    )
 
 def aplicar_estilo() -> None:
     bg_url = _css_url_fundo_cadastro()
@@ -157,7 +78,6 @@ def aplicar_estilo() -> None:
         }}
         [data-testid="stAppViewContainer"] {{ background: transparent !important; }}
         header[data-testid="stHeader"] {{ background: transparent !important; border: none !important; box-shadow: none !important; }}
-        [data-testid="stSidebar"] {{ display: none !important; }}
         [data-testid="stMain"] {{
             padding-left: clamp(14px, 5vw, 56px) !important; padding-right: clamp(14px, 5vw, 56px) !important;
             padding-top: clamp(12px, 3.5vh, 40px) !important; padding-bottom: clamp(14px, 4vh, 44px) !important;
@@ -194,7 +114,7 @@ def aplicar_estilo() -> None:
         """, unsafe_allow_html=True)
 
 # -----------------------------------------------------------------------------
-# Lógicas de Dados
+# Pipeline de Dados (Pandas)
 # -----------------------------------------------------------------------------
 def _secrets_connections_gsheets() -> Dict[str, Any]:
     try:
@@ -234,133 +154,192 @@ def parse_val(v):
     try: return float(re.sub(r'[^\d.]', '', s))
     except: return 0.0
 
+def process_data() -> pd.DataFrame:
+    # 1. Carregamento
+    df_det = ler_aba(SPREADSHEET_ID_CONC, "BD DETALHADA")
+    df_ger = ler_aba(SPREADSHEET_ID_CONC, "BD GERAL")
+    df_men = ler_aba(SPREADSHEET_ID_CONC, "Abr/2026")
+    df_dados_dir = ler_aba(SPREADSHEET_ID_CONC, "DADOS DIRECIONAL")
+    
+    # 2. Data Cleaning
+    df_det["Preço_Float"] = df_det["PREÇO"].apply(parse_val)
+    df_det["Metragem_Float"] = df_det["METRAGEM"].apply(parse_val)
+    df_det["Preço_m2"] = df_det["PREÇO_M2"].apply(parse_val)
+    
+    # Recalcular Preço_m2 se inconsistente
+    df_det["Preço_m2"] = np.where(
+        (df_det["Preço_m2"] == 0) & (df_det["Metragem_Float"] > 0),
+        df_det["Preço_Float"] / df_det["Metragem_Float"],
+        df_det["Preço_m2"]
+    )
+    
+    df_ger["Preço_Min"] = df_ger["Venda a Partir"].apply(parse_val)
+    
+    # 3. Merges
+    df_master = df_det.merge(df_ger[["CHAVE", "Preço_Min", "Previsão"]], on="CHAVE", how="left")
+    df_master = df_master.merge(df_men[["CHAVE", "Vendas (Qnt.)", "Estoque (Qnt.)", "VGV (R$)", "PREÇO MÉDIO"]], on="CHAVE", how="left")
+    
+    # 4. Feature Engineering
+    # Taxa de Absorção
+    vendas = pd.to_numeric(df_master["Vendas (Qnt.)"], errors='coerce').fillna(0)
+    estoque = pd.to_numeric(df_master["Estoque (Qnt.)"], errors='coerce').fillna(0)
+    df_master["Absorcao"] = vendas / (vendas + estoque)
+    df_master["Absorcao"] = df_master["Absorcao"].replace([np.inf, -np.inf], 0).fillna(0)
+    
+    # Desconto Implícito (Preço Unidade vs Preço Mínimo Projeto)
+    df_master["Desconto"] = (df_master["Preço_Float"] - df_master["Preço_Min"]) / df_master["Preço_Min"]
+    df_master["Desconto"] = df_master["Desconto"].fillna(0)
+    
+    # Posicionamento Relativo (Preço m2 vs Média Bairro)
+    medias_bairro = df_master.groupby("BAIRRO")["Preço_m2"].transform("mean")
+    df_master["Posicionamento_Rel"] = df_master["Preço_m2"] - medias_bairro
+    
+    # Densidade Competitiva
+    df_master["Densidade_Bairro"] = df_master.groupby("BAIRRO")["CHAVE"].transform("nunique")
+    
+    # Faixas de Metragem
+    df_master["Faixa_Metragem"] = pd.cut(df_master["Metragem_Float"], bins=[0, 35, 45, 55, 70, 1000], labels=["Até 35m²", "35-45m²", "45-55m²", "55-70m²", "70m²+"])
+    
+    # Identificar se é Direcional (Filtro por Endereço solicitado)
+    allowed_addresses = [str(x).strip().upper() for x in df_dados_dir["Endereço"].unique() if x]
+    df_master["Is_Direcional"] = df_master["ENDEREÇO"].str.strip().str.upper().isin(allowed_addresses)
+    
+    return df_master
+
 # -----------------------------------------------------------------------------
-# App Principal
+# Interface e Páginas
 # -----------------------------------------------------------------------------
 def main():
     aplicar_estilo()
-    _cabecalho_pagina()
-
-    with st.spinner("Consolidando bases de inteligência competitiva..."):
-        # 1. Carregando Bases
-        try:
-            df_detalhada = ler_aba(SPREADSHEET_ID_CONC, "BD DETALHADA")
-            df_geral = ler_aba(SPREADSHEET_ID_CONC, "BD GERAL")
-            df_mensal = ler_aba(SPREADSHEET_ID_CONC, "Abr/2026") # Mês base
-            df_dados_dir = ler_aba(SPREADSHEET_ID_CONC, "DADOS DIRECIONAL")
-            df_vendas_dir = ler_aba(SPREADSHEET_ID_CONC, "Controle de Vendas RJ - Periodo Integral")
-        except Exception as e:
-            st.error(f"Erro ao carregar abas: {e}")
-            return
-
-    # 2. Processamento e Enriquecimento Concorrentes
-    df_detalhada["Preço_Float"] = df_detalhada["PREÇO"].apply(parse_val)
-    df_detalhada["Preço_m2"] = df_detalhada["PREÇO_M2"].apply(parse_val)
+    _exibir_logo_topo()
     
-    # Merge Master - CORREÇÃO: Usando 'EMPREENDIMENTO' em vez de 'EMPREENDIMENTOVendas' para evitar KeyError
-    df_master = df_detalhada.merge(
-        df_geral[["Empreendimento", "Venda a Partir", "Previsão"]], 
-        left_on="EMPREENDIMENTO", 
-        right_on="Empreendimento", 
-        how="left", 
-        suffixes=('', '_geral')
-    )
-    df_master = df_master.merge(df_mensal[["CHAVE", "Vendas (Qnt.)", "Estoque (Qnt.)", "VGV (R$)"]], on="CHAVE", how="left")
+    st.sidebar.markdown(f"<h3 style='color:{COR_AZUL_ESC};'>Menu Estratégico</h3>", unsafe_allow_html=True)
+    page = st.sidebar.radio("Navegação", ["Visão Geral", "Mapa Competitivo", "Produto Ideal", "Pricing & Demanda", "Ranking Concorrentes", "Oportunidades (Insights)"])
     
-    # KPI: Taxa de Absorção
-    df_master["Vendas_Num"] = pd.to_numeric(df_master["Vendas (Qnt.)"], errors="coerce").fillna(0)
-    df_master["Estoque_Num"] = pd.to_numeric(df_master["Estoque (Qnt.)"], errors="coerce").fillna(0)
-    # Absorção = Vendas / (Vendas + Estoque)
-    df_master["Absorcao"] = df_master["Vendas_Num"] / (df_master["Vendas_Num"] + df_master["Estoque_Num"])
-    df_master["Absorcao"] = df_master["Absorcao"].fillna(0)
+    try:
+        df_master = process_data()
+    except Exception as e:
+        st.error(f"Erro no Pipeline de Dados: {e}")
+        return
 
-    # -------------------------------------------------------------------------
-    # Filtros Estratégicos
-    # -------------------------------------------------------------------------
-    st.markdown("<div style='margin-bottom:1rem; text-align: center;'><strong>Filtros Estratégicos de Mercado</strong></div>", unsafe_allow_html=True)
-    c1, c2, c3, c4 = st.columns(4)
-    with c1: f_regiao = st.multiselect("Região", sorted(df_master["REGIÃO"].dropna().unique()))
-    with c2: f_bairro = st.multiselect("Bairro", sorted(df_master["BAIRRO"].dropna().unique()))
-    with c3: f_conc = st.multiselect("Concorrente", sorted(df_master["CONCORRENTE"].dropna().unique()))
-    with c4: f_tipo = st.multiselect("Tipologia", sorted(df_master["TIPOLOGIA"].dropna().unique()))
-
+    # Filtros Globais
+    st.sidebar.markdown("---")
+    f_regiao = st.sidebar.multiselect("Região", sorted(df_master["REGIÃO"].dropna().unique()))
+    f_bairro = st.sidebar.multiselect("Bairro", sorted(df_master["BAIRRO"].dropna().unique()))
+    
     df_f = df_master.copy()
     if f_regiao: df_f = df_f[df_f["REGIÃO"].isin(f_regiao)]
     if f_bairro: df_f = df_f[df_f["BAIRRO"].isin(f_bairro)]
-    if f_conc: df_f = df_f[df_f["CONCORRENTE"].isin(f_conc)]
-    if f_tipo: df_f = df_f[df_f["TIPOLOGIA"].isin(f_tipo)]
 
-    # -------------------------------------------------------------------------
-    # KPIs Mercado
-    # -------------------------------------------------------------------------
-    avg_m2 = df_f["Preço_m2"].mean()
-    avg_abs = df_f["Absorcao"].mean() * 100
-    total_vendas = df_f["Vendas_Num"].sum()
-    
-    st.markdown(f"""
-        <div class="vel-kpi-row">
-            <div class="vel-kpi"><div class="lbl">Preço Médio / m²</div><div class="val">R$ {avg_m2:,.2f}</div></div>
-            <div class="vel-kpi"><div class="lbl">Absorção Média</div><div class="val">{avg_abs:.1f}%</div></div>
-            <div class="vel-kpi"><div class="lbl">Vendas no Mês (Segmento)</div><div class="val">{int(total_vendas)}</div></div>
-            <div class="vel-kpi"><div class="lbl">Nº Projetos Ativos</div><div class="val">{df_f['CHAVE'].nunique()}</div></div>
-        </div>
-    """, unsafe_allow_html=True)
+    if page == "Visão Geral":
+        st.markdown("## Visão Geral do Mercado")
+        avg_m2 = df_f["Preço_m2"].mean()
+        avg_abs = df_f["Absorcao"].mean() * 100
+        num_conc = df_f["CONCORRENTE"].nunique()
+        
+        st.markdown(f"""
+            <div class="vel-kpi-row">
+                <div class="vel-kpi"><div class="lbl">Preço Médio / m²</div><div class="val">R$ {avg_m2:,.2f}</div></div>
+                <div class="vel-kpi"><div class="lbl">Absorção Média</div><div class="val">{avg_abs:.1f}%</div></div>
+                <div class="vel-kpi"><div class="lbl">Nº Concorrentes</div><div class="val">{num_conc}</div></div>
+                <div class="vel-kpi"><div class="lbl">Oferta Ativa (Unid.)</div><div class="val">{int(df_f['CHAVE'].count())}</div></div>
+            </div>
+        """, unsafe_allow_html=True)
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("Market Share por Concorrente (VGV)")
+            df_gv = df_f.groupby("CONCORRENTE")["Preço_Float"].sum().reset_index()
+            fig = px.pie(df_gv, values='Preço_Float', names='CONCORRENTE', hole=.4, color_discrete_sequence=px.colors.sequential.RdBu)
+            fig.update_layout(paper_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig, use_container_width=True)
+        with col2:
+            st.subheader("Performance por Região")
+            df_reg = df_f.groupby("REGIÃO")["Absorcao"].mean().reset_index()
+            fig = px.bar(df_reg, x='REGIÃO', y='Absorcao', color_discrete_sequence=[COR_AZUL_ESC])
+            fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig, use_container_width=True)
 
-    # -------------------------------------------------------------------------
-    # Gráficos de Inteligência
-    # -------------------------------------------------------------------------
-    col_g1, col_g2 = st.columns(2)
-    
-    with col_g1:
-        st.subheader("Curva de Demanda: Preço vs Absorção")
-        fig_demand = go.Figure(data=go.Scatter(
-            x=df_f["Preço_m2"], y=df_f["Absorcao"] * 100,
-            mode='markers',
-            text=df_f["EMPREENDIMENTO"],
-            marker=dict(size=14, color=df_f["Preço_Float"], colorscale='Viridis', showscale=True, line=dict(width=1, color='white'))
-        ))
-        fig_demand.update_layout(xaxis_title="R$ / m²", yaxis_title="Absorção (%)", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", margin=dict(l=20, r=20, t=40, b=20))
-        st.plotly_chart(fig_demand, use_container_width=True, config={"displayModeBar": False})
+    elif page == "Mapa Competitivo":
+        st.markdown("## Mapa Competitivo e Saturação")
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.subheader("Distribuição de Preço/m² por Bairro")
+            fig = px.box(df_f, x="BAIRRO", y="Preço_m2", color="CONCORRENTE", points="all")
+            fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig, use_container_width=True)
+        with col2:
+            st.subheader("Densidade de Projetos")
+            df_dens = df_f.groupby("BAIRRO")["CHAVE"].nunique().reset_index().sort_values("CHAVE", ascending=False)
+            st.dataframe(df_dens.rename(columns={"CHAVE": "Projetos Ativos"}), use_container_width=True, hide_index=True)
 
-    with col_g2:
-        st.subheader("Eficiência Média por Concorrente")
-        df_eff = df_f.groupby("CONCORRENTE").agg({"Absorcao": "mean"}).sort_values("Absorcao", ascending=False)
-        fig_eff = go.Figure(go.Bar(
-            x=df_eff.index, y=df_eff["Absorcao"] * 100,
-            marker_color=COR_AZUL_ESC
-        ))
-        fig_eff.update_layout(yaxis_title="Absorção Média (%)", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", margin=dict(l=20, r=20, t=40, b=20))
-        st.plotly_chart(fig_eff, use_container_width=True, config={"displayModeBar": False})
+    elif page == "Produto Ideal":
+        st.markdown("## Inteligência de Produto")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("O que mais vende? (Tipologia)")
+            df_tipo = df_f.groupby("TIPOLOGIA")["Absorcao"].mean().reset_index().sort_values("Absorcao", ascending=False)
+            fig = px.bar(df_tipo, x="Absorcao", y="TIPOLOGIA", orientation='h', color_discrete_sequence=[COR_VERMELHO])
+            st.plotly_chart(fig, use_container_width=True)
+        with col2:
+            st.subheader("Metragem vs Velocidade")
+            fig = px.scatter(df_f, x="Metragem_Float", y="Absorcao", color="CONCORRENTE", size="Preço_m2", hover_name="EMPREENDIMENTO")
+            st.plotly_chart(fig, use_container_width=True)
 
-    # -------------------------------------------------------------------------
-    # Oportunidades e Gaps de Mercado
-    # -------------------------------------------------------------------------
-    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1.5rem 0;'/>", unsafe_allow_html=True)
-    st.subheader("Gap de Mercado: Análise por Bairro")
-    
-    if not df_f.empty:
-        df_gap = df_f.groupby("BAIRRO").agg(
-            Oferta_Ativa=("CHAVE", "nunique"),
-            Preco_m2_Medio=("Preço_m2", "mean"),
-            Absorcao_Media=("Absorcao", "mean")
+    elif page == "Pricing & Demanda":
+        st.markdown("## Curva de Demanda e Elasticidade")
+        st.subheader("Relação Preço/m² vs Absorção")
+        fig = px.scatter(df_f, x="Preço_m2", y="Absorcao", color="CONCORRENTE", trendline="ols", 
+                         labels={"Preço_m2": "R$ / m²", "Absorcao": "Taxa de Absorção"},
+                         hover_name="EMPREENDIMENTO", text="BAIRRO")
+        st.plotly_chart(fig, use_container_width=True)
+        st.info("💡 Pontos acima da linha de tendência representam produtos com alta eficiência de preço. Pontos abaixo indicam produtos 'Overpriced' para a demanda local.")
+
+    elif page == "Ranking Concorrentes":
+        st.markdown("## Benchmarking de Concorrentes")
+        df_rank = df_f.groupby("CONCORRENTE").agg(
+            Preco_m2=("Preço_m2", "mean"),
+            Absorcao_Media=("Absorcao", "mean"),
+            Volume_Vendas=("Vendas (Qnt.)", "sum"),
+            N_Projetos=("CHAVE", "nunique")
         ).reset_index()
         
-        med_oferta = df_gap['Oferta_Ativa'].median()
+        # Eficiência = Absorção / (Preço_m2 / Média_Mercado) -> penaliza preço alto se a absorção for baixa
+        avg_mkt_m2 = df_f["Preço_m2"].mean()
+        df_rank["Eficiência"] = df_rank["Absorcao_Media"] / (df_rank["Preco_m2"] / avg_mkt_m2)
         
-        def identificar_status(row):
-            if row['Absorcao_Media'] > (avg_abs/100) and row['Oferta_Ativa'] <= med_oferta:
-                return "🔥 Oportunidade: Alta Demanda / Baixa Oferta"
-            if row['Absorcao_Media'] < (avg_abs/100) and row['Oferta_Ativa'] > med_oferta:
-                return "⚠️ Atenção: Mercado Saturado"
-            return "Alinhado ao Mercado"
+        st.dataframe(df_rank.sort_values("Eficiência", ascending=False).style.format({
+            "Preco_m2": "R$ {:.2f}", "Absorcao_Media": "{:.1%}", "Eficiência": "{:.2f}"
+        }), use_container_width=True, hide_index=True)
 
-        df_gap["Sugestão Estratégica"] = df_gap.apply(identificar_status, axis=1)
-        df_gap["Absorcao_Media"] = (df_gap["Absorcao_Media"] * 100).map("{:.1f}%".format)
-        df_gap["Preco_m2_Medio"] = df_gap["Preco_m2_Medio"].map("R$ {:,.2f}".format)
+    elif page == "Oportunidades (Insights)":
+        st.markdown("## 🎯 Matriz de Oportunidades")
         
-        st.dataframe(df_gap.sort_values("Oferta_Ativa", ascending=False), use_container_width=True, hide_index=True)
+        if not df_f.empty:
+            df_insight = df_f.groupby("BAIRRO").agg(
+                Metragem_Media=("Metragem_Float", "mean"),
+                Preco_m2=("Preço_m2", "mean"),
+                Abs_Media=("Absorcao", "mean"),
+                Qtd_Projetos=("CHAVE", "nunique")
+            ).reset_index()
+            
+            avg_mkt_abs = df_master["Absorcao"].mean()
+            med_mkt_projects = df_insight["Qtd_Projetos"].median()
+            
+            def strategic_action(row):
+                if row['Abs_Media'] > avg_mkt_abs and row['Qtd_Projetos'] <= med_mkt_projects:
+                    return "🔥 OPORTUNIDADE: Alta demanda e baixa oferta. Lançar produto similar."
+                if row['Abs_Media'] < avg_mkt_abs and row['Qtd_Projetos'] > med_mkt_projects:
+                    return "⚠️ RISCO: Mercado saturado ou preço descolado. Evitar lançamentos."
+                if row['Preco_m2'] < df_insight['Preco_m2'].mean() * 0.8:
+                    return "💎 GAP DE PADRÃO: Preços muito baixos. Oportunidade para upgrade."
+                return "MERCADO ESTÁVEL: Monitorar performance."
 
-    st.markdown(f'<div style="text-align:center; padding:1rem; color:{COR_TEXTO_MUTED}; font-size:0.82rem;">Direcional Engenharia · Inteligência de Mercado</div>', unsafe_allow_html=True)
+            df_insight["Ação Recomendada"] = df_insight.apply(strategic_action, axis=1)
+            
+            st.dataframe(df_insight.sort_values("Abs_Media", ascending=False), use_container_width=True, hide_index=True)
+
+    st.markdown(f'<div style="text-align:center; padding:1rem; color:{COR_TEXTO_MUTED}; font-size:0.82rem;">Direcional Engenharia · Inteligência Competitiva · Developed by Lucas Maia</div>', unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
