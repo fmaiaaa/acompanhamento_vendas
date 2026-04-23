@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
 """
 Análise de Concorrência — Inteligência Competitiva e Performance.
-Foco: Comparação Direta via BD GERAL (Indicadores) e BD DETALHADA (Preços).
-Design: Alinhado ao dashboard de Gaps (Fundo, Logo, Favicon).
+Foco: Comparação Direta via BD GERAL e BD DETALHADA.
+Recursos: Evolução de Preço m2 vs Estoque, Gaps de 2 meses e Design Gaps.
 """
 from __future__ import annotations
 
@@ -19,6 +19,7 @@ import streamlit as st
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from plotly.subplots import make_subplots
 
 # -----------------------------------------------------------------------------
 # Identificação da folha de cálculo e Ficheiros Visuais
@@ -169,8 +170,7 @@ def aplicar_estilo() -> None:
         .vel-kpi .lbl {{ font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: {COR_AZUL_ESC}; opacity: 0.85; }}
         .vel-kpi .val {{ font-family: 'Montserrat', sans-serif; font-size: 1.35rem; font-weight: 800; color: {COR_AZUL_ESC}; margin-top: 6px; }}
         .vel-kpi .val--red {{ color: {COR_VERMELHO} !important; }}
-        div[data-baseweb="input"] {{ border-radius: 10px !important; border: 1px solid #e2e8f0 !important; background-color: {COR_INPUT_BG} !important; }}
-        div[data-baseweb="input"]:focus-within {{ border-color: rgba({RGB_AZUL_CSS}, 0.35) !important; box-shadow: 0 0 0 3px rgba({RGB_AZUL_CSS}, 0.08) !important; }}
+        div[data-baseweb="input"], div[data-baseweb="select"] {{ border-radius: 10px !important; border: 1px solid #e2e8f0 !important; background-color: {COR_INPUT_BG} !important; }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -214,6 +214,7 @@ def process_pipeline():
     
     if df_geral.empty: raise ValueError("BD GERAL não encontrada.")
 
+    # Normalização
     for df in [df_geral, df_det]:
         if "CHAVE" in df.columns: df["CHAVE"] = df["CHAVE"].astype(str).str.strip().str.upper()
         if "CONSTRUTORA" in df.columns: df["CONSTRUTORA"] = df["CONSTRUTORA"].astype(str).str.strip().str.upper()
@@ -237,7 +238,7 @@ def process_pipeline():
     return df_geral, df_det
 
 # -----------------------------------------------------------------------------
-# Main
+# Main Application
 # -----------------------------------------------------------------------------
 def main():
     fav = _resolver_png_raiz(FAVICON_ARQUIVO)
@@ -259,6 +260,7 @@ def main():
         return
     alvo_selecionado = st.selectbox("Escolha o Produto Direcional", lista_alvos)
 
+    # Lógica de Concorrência Automática via Coluna
     df_cluster = df_master[
         (df_master["EMPREENDIMENTO"] == alvo_selecionado) | 
         (df_master["CONCORRE COM"].str.contains(alvo_selecionado, na=False, regex=False))
@@ -285,24 +287,70 @@ def main():
         </div>
     """, unsafe_allow_html=True)
 
-    st.subheader("Performance Mensal (BD GERAL)")
+    # -------------------------------------------------------------------------
+    # INDICADORES DE PERFORMANCE (BD GERAL)
+    # -------------------------------------------------------------------------
+    st.subheader("Performance de Vendas e Preço (BD GERAL)")
     if not df_cluster.empty:
         df_trend = df_cluster.sort_values("DATA_DT")
         df_trend["DATA_STR"] = df_trend["DATA_DT"].dt.strftime("%m/%Y")
+        
         g1, g2 = st.columns(2)
         with g1:
             st.markdown("**Taxa de Absorção**")
             st.plotly_chart(px.bar(df_trend, x="DATA_STR", y="Absorcao", color="EMPREENDIMENTO", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism).update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title=""), use_container_width=True)
-            st.markdown("**Taxa de Escoamento**")
-            st.plotly_chart(px.bar(df_trend, x="DATA_STR", y="Escoamento", color="EMPREENDIMENTO", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism).update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title=""), use_container_width=True)
         with g2:
             st.markdown("**Velocidade de Vendas**")
             st.plotly_chart(px.bar(df_trend, x="DATA_STR", y="Velocidade", color="EMPREENDIMENTO", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism).update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title=""), use_container_width=True)
-            st.markdown("**Variação de Preço (MoM)**")
-            st.plotly_chart(px.bar(df_trend, x="DATA_STR", y="Delta_Preco", color="EMPREENDIMENTO", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism).update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title=""), use_container_width=True)
 
-    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:2rem 0;'/>", unsafe_allow_html=True)
+    # -------------------------------------------------------------------------
+    # NOVO GRÁFICO: EVOLUÇÃO PREÇO M2 VS ESTOQUE
+    # -------------------------------------------------------------------------
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.subheader("Evolução do Mercado: Preço m² (Mediana) e Estoque (Soma)")
+    
     df_det_f = df_detalhada[df_detalhada["EMPREENDIMENTO"].isin(df_cluster["EMPREENDIMENTO"].unique())].copy()
+    
+    if not df_det_f.empty and not df_cluster.empty:
+        # Agrupar Preço m2 por data (Mediana do Cluster)
+        df_price_trend = df_det_f.groupby("DATA_DT").agg(Preco_m2_Mediana=("Preco_m2", "median")).reset_index()
+        # Agrupar Estoque por data (Soma do Cluster)
+        df_stock_trend = df_cluster.groupby("DATA_DT").agg(Estoque_Total=("ESTOQUE", "sum")).reset_index()
+        
+        df_merged_trend = pd.merge(df_price_trend, df_stock_trend, on="DATA_DT", how="outer").sort_values("DATA_DT")
+        df_merged_trend["DATA_STR"] = df_merged_trend["DATA_DT"].dt.strftime("%m/%Y")
+        
+        fig_dual = make_subplots(specs=[[{"secondary_y": True}]])
+        
+        fig_dual.add_trace(
+            go.Scatter(x=df_merged_trend["DATA_STR"], y=df_merged_trend["Preco_m2_Mediana"], 
+                       name="Preço m² Mediano (R$)", line=dict(color=COR_VERMELHO, width=4)),
+            secondary_y=False,
+        )
+        
+        fig_dual.add_trace(
+            go.Bar(x=df_merged_trend["DATA_STR"], y=df_merged_trend["Estoque_Total"], 
+                   name="Estoque Total (Unid.)", marker_color=COR_AZUL_ESC, opacity=0.4),
+            secondary_y=True,
+        )
+        
+        fig_dual.update_layout(
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            margin=dict(l=20, r=20, t=30, b=20),
+            font=dict(family="Inter", color=COR_TEXTO_LABEL)
+        )
+        
+        fig_dual.update_yaxes(title_text="Preço m² (R$)", secondary_y=False, gridcolor="rgba(226, 232, 240, 0.4)")
+        fig_dual.update_yaxes(title_text="Estoque (Unid.)", secondary_y=True)
+        
+        st.plotly_chart(fig_dual, use_container_width=True, config={"displayModeBar": False})
+
+    # -------------------------------------------------------------------------
+    # TABELAS DE PREÇO (BD DETALHADA) - 2 ÚLTIMOS MESES
+    # -------------------------------------------------------------------------
+    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:2rem 0;'/>", unsafe_allow_html=True)
+    
     if not df_det_f.empty:
         df_det_f["Mes_Ano"] = df_det_f["DATA_DT"].dt.strftime("%m/%Y")
         all_months = sorted(df_det_f["Mes_Ano"].unique(), key=lambda x: datetime.strptime(x, "%m/%Y"))
@@ -310,12 +358,14 @@ def main():
         
         st.subheader("Mediana do Preço m² (Últimos 2 meses)")
         p_med = pd.pivot_table(df_det_f, values="Preco_m2", index="EMPREENDIMENTO", columns="Mes_Ano", aggfunc="median")[last_two].reset_index()
-        if len(last_two) == 2: p_med["Gap (%)"] = ((p_med[last_two[1]] / p_med[last_two[0]]) - 1) * 100
+        if len(last_two) == 2: 
+            p_med["Gap (%)"] = ((p_med[last_two[1]] / p_med[last_two[0]]) - 1) * 100
         st.dataframe(p_med.style.format({**{m: "R$ {:.2f}" for m in last_two}, "Gap (%)": "{:.1f}%"}), use_container_width=True, hide_index=True)
 
         st.subheader("Média do Preço m² por Tipologia (Últimos 2 meses)")
         p_tip = pd.pivot_table(df_det_f, values="Preco_m2", index="TIPOLOGIA", columns="Mes_Ano", aggfunc="mean")[last_two].reset_index()
-        if len(last_two) == 2: p_tip["Gap (%)"] = ((p_tip[last_two[1]] / p_tip[last_two[0]]) - 1) * 100
+        if len(last_two) == 2: 
+            p_tip["Gap (%)"] = ((p_tip[last_two[1]] / p_tip[last_two[0]]) - 1) * 100
         st.dataframe(p_tip.style.format({**{m: "R$ {:.2f}" for m in last_two}, "Gap (%)": "{:.1f}%"}), use_container_width=True, hide_index=True)
 
     st.markdown(f'<div style="text-align:center; padding:1rem; color:{COR_TEXTO_MUTED}; font-size:0.82rem;">Direcional Engenharia · Inteligência de Mercado</div>', unsafe_allow_html=True)
