@@ -108,7 +108,7 @@ def aplicar_estilo() -> None:
         .ficha-hero-bar {{ height: 4px; border-radius: 999px; background: linear-gradient(90deg, {COR_AZUL_ESC}, {COR_VERMELHO}, {COR_AZUL_ESC}); background-size: 200% 100%; animation: fichaShimmer 4s infinite alternate; }}
         .vel-kpi-row {{ display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 1.25rem; }}
         .vel-kpi {{
-            flex: 1 1 20%; background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,251,252,0.9) 100%);
+            flex: 1 1 20%; background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,251,252,0.82) 100%);
             border: 1px solid rgba(226, 232, 240, 0.9); border-radius: 14px; padding: 14px 16px; text-align: center;
             box-shadow: 0 2px 8px rgba({RGB_AZUL_CSS}, 0.06); transition: transform 0.3s ease, box-shadow 0.3s ease;
         }}
@@ -210,7 +210,7 @@ def parse_val(v):
     except: return 0.0
 
 def process_data() -> pd.DataFrame:
-    """Pipeline de limpeza e engenharia de features."""
+    """Pipeline de limpeza e engenharia de features focada em REGIÃO."""
     df_det = ler_aba(SPREADSHEET_ID_CONC, "BD DETALHADA")
     df_ger = ler_aba(SPREADSHEET_ID_CONC, "BD GERAL")
     df_men = ler_aba(SPREADSHEET_ID_CONC, "Abr/2026")
@@ -221,7 +221,7 @@ def process_data() -> pd.DataFrame:
     df_det["Metragem_Float"] = df_det["METRAGEM"].apply(parse_val)
     df_det["Preço_m2"] = df_det["PREÇO_M2"].apply(parse_val)
     
-    # Recalcular Preço_m2
+    # Recalcular Preço_m2 se for zero mas tiver metragem
     df_det["Preço_m2"] = np.where(
         (df_det["Preço_m2"] == 0) & (df_det["Metragem_Float"] > 0),
         df_det["Preço_Float"] / df_det["Metragem_Float"],
@@ -230,14 +230,13 @@ def process_data() -> pd.DataFrame:
     
     df_ger["Preço_Min"] = df_ger["Venda a Partir"].apply(parse_val)
     
-    # 2. Merge Master (Chave = CHAVE para Detalhada e Mensal)
+    # 2. Merge Master
     df_master = df_det.merge(
         df_men[["CHAVE", "Vendas (Qnt.)", "Estoque (Qnt.)", "VGV (R$)", "PREÇO MÉDIO"]], 
         on="CHAVE", 
         how="left"
     )
     
-    # Merge com Geral usando Empreendimento (Pois BD GERAL não tem CHAVE no seu novo formato)
     df_master = df_master.merge(
         df_ger[["Empreendimento", "Preço_Min", "Previsão"]], 
         left_on="EMPREENDIMENTO", 
@@ -245,26 +244,23 @@ def process_data() -> pd.DataFrame:
         how="left"
     )
     
-    # 3. Feature Engineering
+    # 3. Feature Engineering (Foco Regional)
     vendas = pd.to_numeric(df_master["Vendas (Qnt.)"], errors='coerce').fillna(0)
     estoque = pd.to_numeric(df_master["Estoque (Qnt.)"], errors='coerce').fillna(0)
-    # Absorção = Vendas / (Vendas + Estoque)
     df_master["Absorcao"] = vendas / (vendas + estoque)
     df_master["Absorcao"] = df_master["Absorcao"].replace([np.inf, -np.inf], 0).fillna(0)
     
-    # Desconto Implícito (Preço Unidade vs Preço Mínimo Projeto)
     df_master["Desconto"] = (df_master["Preço_Float"] - df_master["Preço_Min"]) / df_master["Preço_Min"]
     df_master["Desconto"] = df_master["Desconto"].fillna(0)
     
-    # Posicionamento Relativo (Preço m2 vs Média Bairro)
-    medias_bairro = df_master.groupby("BAIRRO")["Preço_m2"].transform("mean")
-    df_master["Posicionamento_Rel"] = df_master["Preço_m2"] - medias_bairro
+    # Posicionamento Relativo (Preço m2 vs Média da Região)
+    medias_regiao = df_master.groupby("REGIÃO")["Preço_m2"].transform("mean")
+    df_master["Posicionamento_Rel_Regiao"] = df_master["Preço_m2"] - medias_regiao
     
-    # Densidade Competitiva por Bairro
-    df_master["Densidade_Bairro"] = df_master.groupby("BAIRRO")["CHAVE"].transform("nunique")
+    # Densidade Competitiva por Região
+    df_master["Densidade_Regiao"] = df_master.groupby("REGIÃO")["CHAVE"].transform("nunique")
     
-    # 4. Identificar Direcional (Comparação)
-    # Filtra empreendimentos baseados no endereço/nome presentes na aba DADOS DIRECIONAL
+    # 4. Identificar Direcional (Filtro por Endereço/Chave)
     allowed_addresses = [str(x).strip().upper() for x in df_dados_dir["Endereço"].unique() if x]
     allowed_keys = [str(x).strip().upper() for x in df_dados_dir["Nome do Empreendimento (Chave)"].unique() if x]
     
@@ -292,19 +288,16 @@ def main():
     st.sidebar.markdown(f"<h3 style='color:{COR_AZUL_ESC};'>Menu Estratégico</h3>", unsafe_allow_html=True)
     page = st.sidebar.radio("Analítica", ["Visão Geral", "Mapa Competitivo", "Produto Ideal", "Pricing & Demanda", "Ranking Concorrentes", "Matriz de Oportunidades"])
     
-    # Filtros Globais na Sidebar
+    # Filtros Globais na Sidebar (Exclusivamente por Região)
     st.sidebar.markdown("---")
-    f_regiao = st.sidebar.multiselect("Região", sorted(df_master["REGIÃO"].dropna().unique()))
-    f_bairro = st.sidebar.multiselect("Bairro", sorted(df_master["BAIRRO"].dropna().unique()))
+    f_regiao = st.sidebar.multiselect("Filtrar por Região", sorted(df_master["REGIÃO"].dropna().unique()))
     
     df_f = df_master.copy()
     if f_regiao: df_f = df_f[df_f["REGIÃO"].isin(f_regiao)]
-    if f_bairro: df_f = df_f[df_f["BAIRRO"].isin(f_bairro)]
 
     if page == "Visão Geral":
-        st.markdown("## Visão Geral do Mercado")
+        st.markdown("## Visão Geral do Mercado Regional")
         
-        # Comparação Direcional vs Mercado
         df_mkt = df_f[~df_f["Is_Direcional"]]
         df_dir = df_f[df_f["Is_Direcional"]]
         
@@ -326,24 +319,22 @@ def main():
         
         col1, col2 = st.columns(2)
         with col1:
-            st.subheader("Market Share por VGV (Mercado)")
+            st.subheader("VGV por Concorrente na Região")
             df_gv = df_f.groupby("CONCORRENTE")["Preço_Float"].sum().reset_index()
             fig = px.pie(df_gv, values='Preço_Float', names='CONCORRENTE', hole=.4, color_discrete_sequence=px.colors.sequential.Blues_r)
             fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", legend=dict(orientation="h", y=-0.1))
             st.plotly_chart(fig, use_container_width=True)
         with col2:
-            st.subheader("Absorção por Concorrente")
-            df_reg = df_f.groupby("CONCORRENTE")["Absorcao"].mean().reset_index().sort_values("Absorcao", ascending=False)
-            # Garantir que a Direcional tenha destaque no gráfico de barras
-            fig = px.bar(df_reg, x='CONCORRENTE', y='Absorcao', color='CONCORRENTE', color_discrete_map={"DIRECIONAL": COR_VERMELHO})
+            st.subheader("Performance Regional (Absorção)")
+            df_reg_perf = df_f.groupby("CONCORRENTE")["Absorcao"].mean().reset_index().sort_values("Absorcao", ascending=False)
+            fig = px.bar(df_reg_perf, x='CONCORRENTE', y='Absorcao', color='CONCORRENTE', color_discrete_map={"DIRECIONAL": COR_VERMELHO})
             fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", showlegend=False)
             st.plotly_chart(fig, use_container_width=True)
 
     elif page == "Mapa Competitivo":
-        st.markdown("## Mapa Competitivo e Saturação")
-        st.subheader("Distribuição de Preço/m² por Bairro")
-        # Boxplot destacando outliers e posicionamento Direcional
-        fig = px.box(df_f, x="BAIRRO", y="Preço_m2", color="Is_Direcional", 
+        st.markdown("## Mapa Competitivo e Saturação Regional")
+        st.subheader("Distribuição de Preço/m² por Região")
+        fig = px.box(df_f, x="REGIÃO", y="Preço_m2", color="Is_Direcional", 
                      color_discrete_map={True: COR_VERMELHO, False: COR_AZUL_ESC},
                      labels={"Is_Direcional": "Produto Direcional"}, points="all", hover_name="EMPREENDIMENTO")
         fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
@@ -351,16 +342,16 @@ def main():
         
         col1, col2 = st.columns(2)
         with col1:
-            st.subheader("Densidade de Lançamentos")
-            df_dens = df_f.groupby("BAIRRO")["CHAVE"].nunique().reset_index().sort_values("CHAVE", ascending=False)
+            st.subheader("Densidade de Lançamentos por Região")
+            df_dens = df_f.groupby("REGIÃO")["CHAVE"].nunique().reset_index().sort_values("CHAVE", ascending=False)
             st.dataframe(df_dens.rename(columns={"CHAVE": "Projetos Ativos"}), use_container_width=True, hide_index=True)
         with col2:
-            st.subheader("Média de Metragem por Bairro")
-            df_met = df_f.groupby("BAIRRO")["Metragem_Float"].mean().reset_index().sort_values("Metragem_Float", ascending=False)
+            st.subheader("Metragem Média Regional")
+            df_met = df_f.groupby("REGIÃO")["Metragem_Float"].mean().reset_index().sort_values("Metragem_Float", ascending=False)
             st.dataframe(df_met.rename(columns={"Metragem_Float": "m² Médio"}), use_container_width=True, hide_index=True)
 
     elif page == "Produto Ideal":
-        st.markdown("## O que o mercado está absorvendo?")
+        st.markdown("## O que as regiões estão absorvendo?")
         col1, col2 = st.columns(2)
         with col1:
             st.subheader("Absorção por Tipologia")
@@ -375,19 +366,18 @@ def main():
             st.plotly_chart(fig, use_container_width=True)
 
     elif page == "Pricing & Demanda":
-        st.markdown("## Curva de Demanda e Elasticidade")
+        st.markdown("## Curva de Demanda e Elasticidade Regional")
         st.subheader("Elasticidade Preço: Preço/m² vs Absorção")
-        # OLS Trendline para ver a média de demanda
         fig = px.scatter(df_f, x="Preço_m2", y="Absorcao", color="Is_Direcional", trendline="ols",
                          color_discrete_map={True: COR_VERMELHO, False: COR_AZUL_ESC},
-                         hover_name="EMPREENDIMENTO", text="BAIRRO", 
+                         hover_name="EMPREENDIMENTO", text="REGIÃO", 
                          labels={"Preço_m2": "R$ / m²", "Absorcao": "Taxa de Absorção"})
         fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
         st.plotly_chart(fig, use_container_width=True)
-        st.info("💡 Produtos acima da linha vendem mais do que o esperado para o seu preço. Produtos abaixo estão 'caros' para a demanda local.")
+        st.info("💡 Produtos acima da linha vendem mais do que o esperado regionalmente. Produtos abaixo podem estar sobre-precificados.")
 
     elif page == "Ranking Concorrentes":
-        st.markdown("## Eficiência Competitiva")
+        st.markdown("## Eficiência Competitiva por Concorrente")
         avg_mkt_m2 = df_f["Preço_m2"].mean()
         
         df_rank = df_f.groupby("CONCORRENTE").agg(
@@ -397,7 +387,6 @@ def main():
             Absorcao_Media=("Absorcao", "mean")
         ).reset_index()
         
-        # Eficiência ajustada: Vende bem mesmo cobrando caro?
         df_rank["Eficiência"] = df_rank["Absorcao_Media"] / (df_rank["Preco_m2"] / avg_mkt_m2)
         
         st.dataframe(df_rank.sort_values("Eficiência", ascending=False).style.format({
@@ -405,10 +394,10 @@ def main():
         }), use_container_width=True, hide_index=True)
 
     elif page == "Matriz de Oportunidades":
-        st.markdown("## 🎯 Matriz de Oportunidades (Insights Estratégicos)")
+        st.markdown("## 🎯 Matriz de Oportunidades por Região")
         
         if not df_f.empty:
-            df_insight = df_f.groupby("BAIRRO").agg(
+            df_insight = df_f.groupby("REGIÃO").agg(
                 m2_Medio=("Metragem_Float", "mean"),
                 Preco_m2=("Preço_m2", "mean"),
                 Abs_Media=("Absorcao", "mean"),
@@ -420,14 +409,14 @@ def main():
             
             def strategic_action(row):
                 if row['Abs_Media'] > avg_mkt_abs and row['Qtd_Projetos'] <= med_mkt_projects:
-                    return "🔥 ALTA DEMANDA: Pouca oferta e alta velocidade. Oportunidade de Lançamento."
+                    return "🔥 ALTA DEMANDA: Pouca oferta regional e alta velocidade. Oportunidade Crítica."
                 if row['Abs_Media'] < avg_mkt_abs and row['Qtd_Projetos'] > med_mkt_projects:
-                    return "⚠️ RISCO: Saturação detectada. Baixa velocidade com muitos players."
+                    return "⚠️ SATURAÇÃO: Muitos players e baixa velocidade. Risco de estoque parado."
                 if row['Preco_m2'] < df_insight['Preco_m2'].mean() * 0.85:
-                    return "💎 GAP DE PADRÃO: Preços defasados. Bairro aceita ticket maior."
-                return "ESTÁVEL: Acompanhar movimentação mensal."
+                    return "💎 GAP DE PADRÃO: Região aceita valorização. Oportunidade de upgrade."
+                return "EQUILÍBRIO: Região saudável, monitorar novos lançamentos."
 
-            df_insight["Diagnóstico de Mercado"] = df_insight.apply(strategic_action, axis=1)
+            df_insight["Diagnóstico Regional"] = df_insight.apply(strategic_action, axis=1)
             
             st.dataframe(df_insight.sort_values("Abs_Media", ascending=False).style.format({
                 "Preco_m2": "R$ {:.2f}", "m2_Medio": "{:.1f} m²", "Abs_Media": "{:.1%}"
