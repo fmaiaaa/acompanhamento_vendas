@@ -373,6 +373,8 @@ def main() -> None:
     c_renda = achar_coluna(df, ["RENDA APURADA"])
     c_finan = achar_coluna(df, ["FINANCIAMENTO MÁXIMO"])
     c_subsi = achar_coluna(df, ["SUBSÍDIO DISPONÍVEL"])
+    # Adicionando coluna de Avaliação para filtragem (Vazia ou NA)
+    c_avalia = achar_coluna(df, ["Avaliação", "Avaliacao", "Nome da Avaliação de crédito"])
 
     if not all([c_v_real, c_v_dir, c_v_emc]):
         st.error("Colunas essenciais de valores não encontradas.")
@@ -391,7 +393,8 @@ def main() -> None:
     # -------------------------------------------------------------------------
     # Limpeza de Dados: Ignorar linhas com colunas vazias
     # -------------------------------------------------------------------------
-    cols_limpeza = [c for c in [c_ps_dir, c_ps_emc, c_renda, c_finan, c_subsi] if c]
+    # Incluindo Renda Apurada e Avaliação na filtragem de vazios/NA conforme solicitado
+    cols_limpeza = [c for c in [c_ps_dir, c_ps_emc, c_renda, c_finan, c_subsi, c_avalia] if c]
     if cols_limpeza:
         for col in cols_limpeza:
             df = df[df[col].notna() & (df[col].astype(str).str.strip() != "")]
@@ -466,13 +469,13 @@ def main() -> None:
         gap_dir_tot = df_target["Gap_Dir"].sum()
         gap_dir_avg = df_target["Gap_Dir"].mean()
         gap_dir_med = df_target["Gap_Dir"].median()
-        gap_dir_p10 = df_target["Gap_Dir"].quantile(0.1)
+        gap_dir_p10 = df_target["Gap_Dir"].quantile(0.1) # Alterado de P90 para P10
         pct_gap_dir = (gap_dir_tot / vgv_real_tot * 100.0) if vgv_real_tot > 0 else 0.0
 
         gap_emc_tot = df_target["Gap_Emc"].sum()
         gap_emc_avg = df_target["Gap_Emc"].mean()
         gap_emc_med = df_target["Gap_Emc"].median()
-        gap_emc_p10 = df_target["Gap_Emc"].quantile(0.1)
+        gap_emc_p10 = df_target["Gap_Emc"].quantile(0.1) # Alterado de P90 para P10
         pct_gap_emc = (gap_emc_tot / vgv_real_tot * 100.0) if vgv_real_tot > 0 else 0.0
 
         st.markdown(
@@ -527,7 +530,7 @@ def main() -> None:
         
         fig.update_layout(
             barmode="group",
-            bargap=0.4, # Diminuindo a largura das barras ao aumentar o gap entre elas
+            bargap=0.4,
             margin=dict(l=20, r=20, t=30, b=20),
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
@@ -547,14 +550,14 @@ def main() -> None:
             name="Distribuição Direcional",
             marker_color=COR_AZUL_ESC,
             opacity=0.75,
-            xbins=dict(size=5000) # De 5 em 5k
+            xbins=dict(size=5000)
         ))
         fig_hist.add_trace(go.Histogram(
             x=df_f["Gap_Emc"],
             name="Distribuição Emcash",
             marker_color=COR_VERMELHO,
             opacity=0.75,
-            xbins=dict(size=5000) # De 5 em 5k
+            xbins=dict(size=5000)
         ))
         
         fig_hist.update_layout(
