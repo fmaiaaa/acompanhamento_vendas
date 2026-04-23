@@ -800,7 +800,6 @@ def main() -> None:
         
     rows_metas = []
     for _, row in df_metas_melted.iterrows():
-        # Separa coordenadores considerando a junção " e "
         coords = [c.strip() for c in re.split(r'\s+e\s+', str(row.get("Coordenador", "Não Informado"))) if c.strip()]
         if not coords:
             coords = ["Não Informado"]
@@ -855,7 +854,6 @@ def main() -> None:
     else:
         st.warning("Coluna 'Venda Comercial?' não encontrada na base.")
 
-    # Classificação de Venda Facilitada vs Normal
     if col_venda_facilitada:
         def check_facilitada(val: Any) -> str:
             if pd.isna(val):
@@ -898,6 +896,7 @@ def main() -> None:
         def agrupar_canal(c: Any) -> str:
             c_str = str(c).strip().upper()
             prefixo = c_str.split('-')[0].strip()
+            # Canais que compõem a DV RJ / RIV (Internos)
             if prefixo in ['RJ', 'RJG'] or c_str in ['RJ', 'RJG']:
                 return 'IMOB'
             return 'DV RJ'
@@ -908,30 +907,20 @@ def main() -> None:
     # -------------------------------------------------------------------------
     # Multiplicação e Distribuição das Vendas de Acordo com Coordenador (Peso)
     # -------------------------------------------------------------------------
-    # Extrai a correlação única de Empreendimento -> Regiao_Coord com seus pesos
     map_emp_regiao = df_metas[["Empreendimento", "Regiao_Coord", "_peso_coord"]].drop_duplicates()
-    
-    # Left join explode as vendas quando há mais de 1 coordenador para o Empreendimento
     df_vendas = df_vendas.merge(map_emp_regiao, on="Empreendimento", how="left")
-    
-    # Preenche eventuais vendas sem meta atrelada com peso 1.0 e região padrão
     df_vendas["_peso_coord"] = df_vendas["_peso_coord"].fillna(1.0)
     df_vendas["Regiao_Coord"] = df_vendas["Regiao_Coord"].fillna(df_vendas.get("Região", "Não Informado"))
-    
-    # Ajusta os contadores de vendas fracionados
     df_vendas["_qtd_venda"] = 1.0 * df_vendas["_peso_coord"]
     df_vendas["_vgv_venda"] = df_vendas["_vgv"] * df_vendas["_peso_coord"]
 
     # -------------------------------------------------------------------------
-    # LINHA ÚNICA DE FILTROS (Múltipla Seleção)
+    # LINHA ÚNICA DE FILTROS
     # -------------------------------------------------------------------------
     anos_disponiveis = sorted(int(x) for x in df_vendas["_ano"].dropna().unique().tolist() if pd.notna(x) and x > 2000)
     meses_no_ano = list(range(1, 13))
-    
-    # Filtro padrão ajustado para o mês atual
     mes_atual = datetime.now().month
     mes_padrao = mes_atual if mes_atual in meses_no_ano else 1
-
     regioes_disponiveis = sorted(set(str(x).strip() for x in df_metas["Regiao_Coord"].dropna().unique() if str(x).strip()))
     
     emps_comuns = []
@@ -955,7 +944,7 @@ def main() -> None:
         emps_sel = st.multiselect("Empreendimento", emps_comuns, default=[])
 
     # -------------------------------------------------------------------------
-    # Aplicação de Filtros (Listas)
+    # Aplicação de Filtros
     # -------------------------------------------------------------------------
     vendas_f = df_vendas.copy()
     metas_f = df_metas.copy()
@@ -974,6 +963,7 @@ def main() -> None:
     fator_meta = 0.0
     mask_vendas = pd.Series(False, index=vendas_f.index)
 
+    # Lógica de canais para cálculo de fatores e meta proporcional
     if not canais_sel or "RIO" in canais_sel:
         fator_meta = 1.0
         mask_vendas = pd.Series(True, index=vendas_f.index)
@@ -990,6 +980,10 @@ def main() -> None:
 
     fator_meta = min(1.0, fator_meta)
     vendas_f = vendas_f[mask_vendas]
+
+    # Meta absoluta utilizada no cálculo do funil
+    total_meta_qtd_base = float(metas_f["Meta_Qtd"].sum()) if not metas_f.empty else 0.0
+    total_meta_vgv_base = float(metas_f["Meta_VGV"].sum()) if not metas_f.empty else 0.0
 
     metas_f["Meta_Qtd"] = (metas_f["Meta_Qtd"] * fator_meta).apply(math.floor)
     metas_f["Meta_VGV"] = metas_f["Meta_VGV"] * fator_meta
@@ -1018,13 +1012,9 @@ def main() -> None:
         unsafe_allow_html=True,
     )
 
-    # -------------------------------------------------------------------------
-    # KPIs: Perfil das Vendas (Facilitada vs Normal)
-    # -------------------------------------------------------------------------
+    st.subheader("Perfil das Vendas")
     qtd_facilitada = float(vendas_f[vendas_f["Tipo_Venda"] == "Facilitada"]["_qtd_venda"].sum())
     qtd_normal = float(vendas_f[vendas_f["Tipo_Venda"] == "Normal"]["_qtd_venda"].sum())
-
-    st.subheader("Perfil das Vendas")
     st.markdown(
         f"""
         <div class="vel-kpi-row">
@@ -1041,161 +1031,46 @@ def main() -> None:
         criar_medidor("Geral — quantidade vs meta", float(total_realizado_qtd), total_meta_qtd, total_vgv_realizado, total_meta_vgv, total_realizado_qtd)
 
     st.subheader("Por região")
-    if "Regiao_Coord" in metas_f.columns and "Empreendimento" in metas_f.columns:
+    if "Regiao_Coord" in metas_f.columns:
         regioes_m = sorted(str(x).strip() for x in metas_f["Regiao_Coord"].dropna().unique() if str(x).strip())
-        if not regioes_m:
-            st.info("Não há região definida nas metas do período filtrado.")
-        else:
+        if regioes_m:
             cols = st.columns(min(3, len(regioes_m)) or 1)
             for i, regiao in enumerate(regioes_m):
                 with cols[i % len(cols)]:
-                    metas_regiao = metas_f[metas_f["Regiao_Coord"].astype(str).str.strip() == regiao]
-                    m_reg_qtd = float(metas_regiao["Meta_Qtd"].sum())
-                    m_reg_vgv = float(metas_regiao["Meta_VGV"].sum())
-
-                    v_reg = vendas_f[vendas_f["Regiao_Coord"].astype(str).str.strip() == regiao]
-
-                    criar_medidor(
-                        regiao,
-                        float(v_reg["_qtd_venda"].sum()),
-                        m_reg_qtd,
-                        float(v_reg["_vgv_venda"].sum()),
-                        m_reg_vgv,
-                        float(v_reg["_qtd_venda"].sum()),
-                    )
-    else:
-        st.warning("As colunas **Região/Coordenador** e/ou **Empreendimento** não foram encontradas para cruzar as regiões.")
+                    m_reg = metas_f[metas_f["Regiao_Coord"] == regiao]
+                    v_reg = vendas_f[vendas_f["Regiao_Coord"] == regiao]
+                    criar_medidor(regiao, float(v_reg["_qtd_venda"].sum()), m_reg["Meta_Qtd"].sum(), v_reg["_vgv_venda"].sum(), m_reg["Meta_VGV"].sum(), float(v_reg["_qtd_venda"].sum()))
 
     # -------------------------------------------------------------------------
     # TABELAS
     # -------------------------------------------------------------------------
     st.subheader("Tabela Resumo: Por Região")
     if "Regiao_Coord" in metas_f.columns:
-        vg_reg = (
-            vendas_f.groupby("Regiao_Coord", as_index=False)
-            .agg(real_qtd=("_qtd_venda", "sum"), real_vgv=("_vgv_venda", "sum"))
-            .rename(columns={"Regiao_Coord": "Região"})
-        )
-        mg_reg = (
-            metas_f.groupby("Regiao_Coord", as_index=False)
-            .agg(meta_qtd=("Meta_Qtd", "sum"), meta_vgv=("Meta_VGV", "sum"))
-            .rename(columns={"Regiao_Coord": "Região"})
-        )
+        vg_reg = vendas_f.groupby("Regiao_Coord", as_index=False).agg(real_qtd=("_qtd_venda", "sum"), real_vgv=("_vgv_venda", "sum")).rename(columns={"Regiao_Coord": "Região"})
+        mg_reg = metas_f.groupby("Regiao_Coord", as_index=False).agg(meta_qtd=("Meta_Qtd", "sum"), meta_vgv=("Meta_VGV", "sum")).rename(columns={"Regiao_Coord": "Região"})
         tab_reg = vg_reg.merge(mg_reg, on="Região", how="outer").fillna(0)
         tab_reg["% Qtd"] = tab_reg.apply(lambda r: (r["real_qtd"] / r["meta_qtd"] * 100.0) if r["meta_qtd"] > 0 else 0.0, axis=1)
         tab_reg["% VGV"] = tab_reg.apply(lambda r: (r["real_vgv"] / r["meta_vgv"] * 100.0) if r["meta_vgv"] > 0 else 0.0, axis=1)
-        tab_reg = tab_reg.sort_values(["meta_qtd", "real_qtd"], ascending=False)
-        show_reg = tab_reg.rename(columns={
-            "meta_qtd": "Meta Qtd (un.)", "real_qtd": "Realizado Qtd (un.)",
-            "meta_vgv": "Meta VGV (R$)", "real_vgv": "Realizado VGV (R$)"
-        })
-        show_reg["Realizado Qtd (un.)"] = show_reg["Realizado Qtd (un.)"].map(lambda x: fmt_qtd(float(x)))
-        show_reg["Meta Qtd (un.)"] = show_reg["Meta Qtd (un.)"].map(lambda x: fmt_qtd(float(x)))
-        show_reg["Realizado VGV (R$)"] = show_reg["Realizado VGV (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
-        show_reg["Meta VGV (R$)"] = show_reg["Meta VGV (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
-        show_reg["% Qtd"] = show_reg["% Qtd"].map(lambda x: f"{x:.1f}%")
-        show_reg["% VGV"] = show_reg["% VGV"].map(lambda x: f"{x:.1f}%")
-        st.dataframe(show_reg, use_container_width=True, hide_index=True)
-
-    st.subheader("Tabela Resumo: Por Empreendimento")
-    if coluna_existe(df_vendas, "Empreendimento") and coluna_existe(metas_f, "Empreendimento"):
-        emp_v = vendas_f.assign(_emp=vendas_f["Empreendimento"].astype(str).str.strip())
-        vg_emp = (
-            emp_v.groupby("_emp", as_index=False)
-            .agg(real_qtd=("_qtd_venda", "sum"), real_vgv=("_vgv_venda", "sum"))
-            .rename(columns={"_emp": "Empreendimento"})
-        )
-        emp_m = metas_f.assign(_emp=metas_f["Empreendimento"].astype(str).str.strip())
-        mg_emp = (
-            emp_m.groupby("_emp", as_index=False)
-            .agg(meta_qtd=("Meta_Qtd", "sum"), meta_vgv=("Meta_VGV", "sum"))
-            .rename(columns={"_emp": "Empreendimento"})
-        )
-        tab_emp = vg_emp.merge(mg_emp, on="Empreendimento", how="outer").fillna(0)
-        tab_emp["% Qtd"] = tab_emp.apply(lambda r: (r["real_qtd"] / r["meta_qtd"] * 100.0) if r["meta_qtd"] > 0 else 0.0, axis=1)
-        tab_emp["% VGV"] = tab_emp.apply(lambda r: (r["real_vgv"] / r["meta_vgv"] * 100.0) if r["meta_vgv"] > 0 else 0.0, axis=1)
-        tab_emp = tab_emp.sort_values(["meta_qtd", "real_qtd"], ascending=False)
-        show_emp = tab_emp.rename(columns={
-            "meta_qtd": "Meta Qtd (un.)", "real_qtd": "Realizado Qtd (un.)",
-            "meta_vgv": "Meta VGV (R$)", "real_vgv": "Realizado VGV (R$)"
-        })
-        show_emp["Realizado Qtd (un.)"] = show_emp["Realizado Qtd (un.)"].map(lambda x: fmt_qtd(float(x)))
-        show_emp["Meta Qtd (un.)"] = show_emp["Meta Qtd (un.)"].map(lambda x: fmt_qtd(float(x)))
-        show_emp["Realizado VGV (R$)"] = show_emp["Realizado VGV (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
-        show_emp["Meta VGV (R$)"] = show_emp["Meta VGV (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
-        show_emp["% Qtd"] = show_emp["% Qtd"].map(lambda x: f"{x:.1f}%")
-        show_emp["% VGV"] = show_emp["% VGV"].map(lambda x: f"{x:.1f}%")
-        st.dataframe(show_emp, use_container_width=True, hide_index=True)
-    else:
-        st.info("Para ver o cruzamento por empreendimento, as duas abas precisam da coluna **Empreendimento**.")
-
-    if col_proprietario:
-        c_imob, c_reg = st.columns(2)
-        with c_imob:
-            st.subheader("Vendas por IMOB")
-            df_imob = vendas_f[vendas_f["Canal_Agrupado"] == "IMOB"].copy()
-            if not df_imob.empty:
-                df_imob[col_proprietario] = df_imob[col_proprietario].fillna("Não Informado").astype(str)
-                tab_imob = df_imob.groupby(col_proprietario, as_index=False).agg(
-                    QTD=("_qtd_venda", "sum"),
-                    VGV=("_vgv_venda", "sum")
-                ).sort_values("VGV", ascending=False)
-                tab_imob["QTD"] = tab_imob["QTD"].apply(lambda x: fmt_qtd(float(x)))
-                tab_imob["VGV"] = tab_imob["VGV"].apply(lambda x: fmt_br_milhoes(float(x)))
-                tab_imob.rename(columns={col_proprietario: "Proprietário"}, inplace=True)
-                st.dataframe(tab_imob, use_container_width=True, hide_index=True)
-            else:
-                st.info("Nenhuma venda IMOB encontrada com os filtros atuais.")
-        with c_reg:
-            st.subheader("Vendas por Regional")
-            df_regional = vendas_f[vendas_f["Canal_Agrupado"] == "DV RJ"].copy()
-            if not df_regional.empty:
-                df_regional[col_proprietario] = df_regional[col_proprietario].fillna("Não Informado").astype(str)
-                tab_reg = df_regional.groupby(col_proprietario, as_index=False).agg(
-                    QTD=("_qtd_venda", "sum"),
-                    VGV=("_vgv_venda", "sum")
-                ).sort_values("VGV", ascending=False)
-                tab_reg["QTD"] = tab_reg["QTD"].apply(lambda x: fmt_qtd(float(x)))
-                tab_reg["VGV"] = tab_reg["VGV"].apply(lambda x: fmt_br_milhoes(float(x)))
-                tab_reg.rename(columns={col_proprietario: "Proprietário"}, inplace=True)
-                st.dataframe(tab_reg, use_container_width=True, hide_index=True)
-            else:
-                st.info("Nenhuma venda Regional encontrada com os filtros atuais.")
-    else:
-        st.warning("Coluna 'Proprietário da oportunidade' não encontrada na base.")
-
-    st.subheader("Vendas por Ranking")
-    if col_ranking:
-        if not vendas_f.empty:
-            df_rank = vendas_f.copy()
-            df_rank[col_ranking] = df_rank[col_ranking].fillna("Não Informado").astype(str)
-            tab_rank = df_rank.groupby(col_ranking, as_index=False).agg(
-                QTD=("_qtd_venda", "sum"),
-                VGV=("_vgv_venda", "sum")
-            ).sort_values("VGV", ascending=False)
-            tab_rank["QTD"] = tab_rank["QTD"].apply(lambda x: fmt_qtd(float(x)))
-            tab_rank["VGV"] = tab_rank["VGV"].apply(lambda x: fmt_br_milhoes(float(x)))
-            tab_rank.rename(columns={col_ranking: "Ranking"}, inplace=True)
-            st.dataframe(tab_rank, use_container_width=True, hide_index=True)
-        else:
-            st.info("Nenhuma venda encontrada com os filtros atuais.")
-    else:
-        st.warning("Coluna 'Ranking' não encontrada na base.")
+        st.dataframe(tab_reg.sort_values("meta_qtd", ascending=False), use_container_width=True, hide_index=True)
 
     # -------------------------------------------------------------------------
-    # FUNIL IDEAL E ENGENHARIA REVERSA
+    # FUNIL IDEAL E ENGENHARIA REVERSA (LOGICA ATUALIZADA)
     # -------------------------------------------------------------------------
     st.markdown("<br><hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
     st.subheader("Engenharia Reversa: Funil Ideal")
 
-    # --- Cálculos Funil Ideal (Engenharia Reversa) ---
+    # Cálculos Funil Ideal
     v_meta = math.floor(total_meta_qtd)
     pa_ideal = math.ceil(v_meta / 0.64) if v_meta > 0 else 0
     p_ideal = math.ceil(pa_ideal / 0.64) if pa_ideal > 0 else 0
     vi_ideal = math.ceil(p_ideal / 0.25) if p_ideal > 0 else 0
     a_ideal = math.ceil(vi_ideal / 0.50) if vi_ideal > 0 else 0
     
-    vd_ideal = math.ceil(v_meta * 0.40)
+    # CORREÇÃO: Vendas Digitais são 40% da meta da DV RJ (que representa 50% da meta global RIO)
+    meta_global_referencia = (total_meta_qtd / fator_meta) if fator_meta > 0 else 0
+    meta_dvrj_ref = meta_global_referencia * 0.5
+    vd_ideal = math.ceil(meta_dvrj_ref * 0.40)
+    
     od_ideal = math.ceil(vd_ideal / 0.044) if vd_ideal > 0 else 0
     ld_ideal = math.ceil(od_ideal / 0.50) if od_ideal > 0 else 0
     
@@ -1203,9 +1078,7 @@ def main() -> None:
     corretores_moderado = math.ceil(v_meta / 0.20) if v_meta > 0 else 0
     corretores_otimista = math.ceil(v_meta / 0.25) if v_meta > 0 else 0
 
-    # --- Gráfico Plotly (Funil Ideal) Centralizado ---
     col_f_meta_espaco, col_f_meta, col_f_meta_espaco2 = st.columns([1, 2, 1])
-
     with col_f_meta:
         fig_ideal = go.Figure(go.Funnel(
             y=['Agendamentos', 'Visitas', 'Pastas', 'Past. Aprov.', 'Vendas (Meta)'],
@@ -1217,15 +1090,13 @@ def main() -> None:
         fig_ideal.update_layout(margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=350, font=dict(family="Inter", color=COR_TEXTO_LABEL))
         st.plotly_chart(fig_ideal, use_container_width=True, config={"displayModeBar": False})
 
-    # --- Funil de Marketing Digital ---
     st.markdown("<br><hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
     st.subheader("Funil de Marketing Digital")
     
-    # Layout centralizado usando colunas de espaçamento
     col_mkt_espaco, col_mkt_grafico, col_mkt_espaco2 = st.columns([1, 2, 1])
     with col_mkt_grafico:
         fig_mkt = go.Figure(go.Funnel(
-            y=['Leads Digitais', 'Oport. Digitais', 'Vendas Dig. (40%)'],
+            y=['Leads Digitais', 'Oport. Digitais', 'Vendas Dig. (40% DV RJ)'],
             x=[ld_ideal, od_ideal, vd_ideal],
             textinfo="value",
             marker={"color": ["#022654", "#1e60b3", "#cb0935"]},
@@ -1234,10 +1105,8 @@ def main() -> None:
         fig_mkt.update_layout(margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=300, font=dict(family="Inter", color=COR_TEXTO_LABEL))
         st.plotly_chart(fig_mkt, use_container_width=True, config={"displayModeBar": False})
 
-    # --- Cenários de Corretores ---
     st.markdown("<br><hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
     st.subheader("Cenários: Corretores Ativos (Necessários para bater a meta global)")
-
     st.markdown(
         f"""
         <div class="vel-kpi-row" style="justify-content: center; margin-top: 1rem;">
