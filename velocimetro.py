@@ -623,6 +623,7 @@ def main() -> None:
     col_canal = achar_coluna(df_vendas, ["Canal"])
     col_valor = achar_coluna(df_vendas, ["Valor Real de Venda", "Valor Real", "Valor"])
     col_emp = achar_coluna(df_vendas, ["Empreendimento", "Obra", "Nome do Empreendimento"])
+    col_venda_comercial = achar_coluna(df_vendas, ["Venda Comercial?", "Venda Comercial"])
 
     if not col_ano and not col_mes:
         st.error(
@@ -642,6 +643,16 @@ def main() -> None:
     # Remove também eventuais linhas de "Total" na aba de vendas
     if col_emp:
         df_vendas = df_vendas[~df_vendas[col_emp].astype(str).str.strip().str.lower().isin(["total", "geral", ""])]
+
+    # -------------------------------------------------------------------------
+    # Filtro Obrigatório: Apenas Venda Comercial == 1
+    # -------------------------------------------------------------------------
+    if col_venda_comercial:
+        # Usa pd.to_numeric com coerce para forçar tudo que não for número virar NaN
+        # Depois filtra onde o valor numérico é igual a 1
+        df_vendas = df_vendas[pd.to_numeric(df_vendas[col_venda_comercial], errors='coerce') == 1]
+    else:
+        st.warning("Coluna 'Venda Comercial?' não encontrada na base. O filtro de venda comercial não foi aplicado.")
 
     # Extração de Mês
     df_vendas["_mes"] = df_vendas[col_mes].apply(extrair_mes) if col_mes else None
@@ -697,7 +708,7 @@ def main() -> None:
         int(x) for x in df_vendas["_ano"].dropna().unique().tolist() if pd.notna(x) and x > 2000
     )
     if not anos_disponiveis:
-        st.warning("Nenhum ano numérico válido (> 2000) foi encontrado na base de vendas.")
+        st.warning("Nenhum ano numérico válido (> 2000) foi encontrado na base de vendas (ou todas as vendas comerciais = 1 foram filtradas para fora).")
         return
 
     ano_sel = st.sidebar.selectbox("Ano", anos_disponiveis, index=len(anos_disponiveis) - 1)
@@ -800,24 +811,25 @@ def main() -> None:
         criar_medidor("Geral — quantidade vs meta", float(total_realizado), total_meta, total_vgv, total_realizado)
 
     st.subheader("Por região")
-    if col_regiao and col_regiao in vendas_f.columns:
-        regioes_v = sorted(str(x).strip() for x in vendas_f[col_regiao].dropna().unique() if str(x).strip())
-        regioes_m = sorted(str(x).strip() for x in metas_f["Região"].dropna().unique()) if "Região" in metas_f.columns else []
-        regioes = sorted(set(regioes_v) | set(regioes_m))
+    if "Região" in metas_f.columns and "Empreendimento" in metas_f.columns and "Empreendimento" in vendas_f.columns:
+        regioes_m = sorted(str(x).strip() for x in metas_f["Região"].dropna().unique() if str(x).strip())
 
-        if not regioes:
-            st.info("Não há região nas vendas filtradas nem nas metas deste mês.")
+        if not regioes_m:
+            st.info("Não há região definida nas metas deste mês.")
         else:
-            cols = st.columns(min(3, len(regioes)) or 1)
-            for i, regiao in enumerate(regioes):
+            cols = st.columns(min(3, len(regioes_m)) or 1)
+            for i, regiao in enumerate(regioes_m):
                 with cols[i % len(cols)]:
-                    v_reg = vendas_f[vendas_f[col_regiao].astype(str).str.strip() == regiao]
-                    if "Região" in metas_f.columns:
-                        m_reg = float(
-                            metas_f[metas_f["Região"].astype(str).str.strip() == regiao]["Meta_Qtd"].sum()
-                        )
-                    else:
-                        m_reg = 0.0
+                    # 1. Filtra metas para esta região e soma a meta
+                    metas_regiao = metas_f[metas_f["Região"].astype(str).str.strip() == regiao]
+                    m_reg = float(metas_regiao["Meta_Qtd"].sum())
+
+                    # 2. Identifica os empreendimentos vinculados a esta região na aba de metas
+                    emps_da_regiao = metas_regiao["Empreendimento"].astype(str).str.strip().unique()
+
+                    # 3. Conta as vendas cruzando apenas os empreendimentos correspondentes
+                    v_reg = vendas_f[vendas_f["Empreendimento"].astype(str).str.strip().isin(emps_da_regiao)]
+
                     criar_medidor(
                         regiao,
                         float(v_reg.shape[0]),
@@ -826,12 +838,11 @@ def main() -> None:
                         int(v_reg.shape[0]),
                     )
     else:
-        st.warning("Coluna **Região** não encontrada na aba de vendas — indicadores por região omitidos.")
+        st.warning("As colunas **Região** e/ou **Empreendimento** não foram encontradas para cruzar as regiões.")
 
     st.caption(
-        "Se os medidores por **região** ficarem com meta zerada, confira se o texto de **Região** na aba "
-        "**Metas** (ex.: «Zona Oeste - Leo») bate com o da **BD Vendas Completa** (ex.: bairro). "
-        "A tabela abaixo cruza por **Empreendimento**, costuma alinhar melhor à planilha de metas."
+        "Nota: O agrupamento por região utiliza automaticamente o mapeamento de **Empreendimentos** "
+        "definido na aba de **Metas** para buscar as vendas correspondentes na base completa."
     )
 
     if coluna_existe(df_vendas, "Empreendimento") and coluna_existe(metas_f, "Empreendimento"):
