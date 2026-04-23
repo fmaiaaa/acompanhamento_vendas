@@ -11,6 +11,7 @@ sender_password) — lida pelo app mas não usada na leitura da planilha.
 """
 from __future__ import annotations
 
+import math
 import re
 from typing import Any, Dict, List, Optional
 
@@ -393,7 +394,7 @@ def aplicar_estilo() -> None:
             margin-bottom: 1.25rem;
         }}
         .vel-kpi {{
-            flex: 1 1 16%;
+            flex: 1 1 30%; /* Ajustado para se espalhar perfeitamente quando houver 3 elementos */
             background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,251,252,0.9) 100%);
             border: 1px solid rgba(226, 232, 240, 0.9);
             border-radius: 14px;
@@ -440,14 +441,17 @@ def fmt_br_milhoes(v: float) -> str:
 def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_vgv: float, vendas_qtd: int) -> None:
     """Gauge estilo velocímetro com gradiente do vermelho ao azul."""
     meta_f = float(meta) if meta and meta > 0 else 0.0
-    perc = min(150.0, (realizado / meta_f * 100.0)) if meta_f > 0 else 0.0
+    
+    # Porcentagem real sem limite (ex: 120%) para exibir o número correto na interface
+    true_perc = (realizado / meta_f * 100.0) if meta_f > 0 else 0.0
+    
     axis_max = 100
-    val_display = min(perc, axis_max) if perc <= axis_max else axis_max
+    fill_limit = min(true_perc, axis_max)
 
     # --- Lógica do Gradiente (Vermelho #cb0935 ao Azul #04428f) ---
     gradient_steps = []
     for i in range(100):
-        if i >= val_display:
+        if i >= fill_limit:
             break
         
         # Interpolação linear da cor Vermelho (203, 9, 53) para Azul (4, 66, 143)
@@ -456,18 +460,18 @@ def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_v
         g = int(9 + (66 - 9) * ratio)
         b = int(53 + (143 - 53) * ratio)
         
-        end_val = min(i + 1.0, val_display)
+        end_val = min(i + 1.0, fill_limit)
         gradient_steps.append({"range": [i, end_val], "color": f"rgba({r}, {g}, {b}, 0.9)"})
         
     # Preenche o restante vazio do arco com um cinza claro
-    if val_display < 100:
-        gradient_steps.append({"range": [val_display, 100], "color": "rgba(226, 232, 240, 0.4)"})
+    if fill_limit < 100:
+        gradient_steps.append({"range": [fill_limit, 100], "color": "rgba(226, 232, 240, 0.4)"})
     # -------------------------------------------------------------
 
     fig = go.Figure(
         go.Indicator(
             mode="gauge+number",
-            value=val_display,
+            value=true_perc, # Colocado true_perc para que o número exibido seja o real, mesmo acima de 100%
             number={
                 "suffix": "%",
                 "font": {"size": 26, "family": "Montserrat", "color": COR_AZUL_ESC},
@@ -492,20 +496,6 @@ def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_v
             },
         )
     )
-    if perc > 100:
-        fig.update_layout(
-            annotations=[
-                dict(
-                    text=f"Real: {perc:.1f}% da meta",
-                    x=0.5,
-                    y=0.15,
-                    xref="paper",
-                    yref="paper",
-                    showarrow=False,
-                    font=dict(size=12, color=COR_VERMELHO, family="Inter"),
-                )
-            ]
-        )
 
     fig.update_layout(
         height=300,
@@ -518,7 +508,7 @@ def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_v
     st.markdown(
         f"""
         <div style="text-align:center;font-size:0.85rem;color:{COR_TEXTO_LABEL};margin-top:-8px;line-height:1.4;">
-            <strong>Qtd:</strong> {int(vendas_qtd)} / {meta_f:g} <br/>
+            <strong>Qtd:</strong> {int(vendas_qtd)} / {int(meta_f)} <br/>
             <strong>VGV:</strong> {fmt_br_milhoes(float(vgv))} / {fmt_br_milhoes(float(meta_vgv))}
         </div>
         """,
@@ -730,7 +720,8 @@ def main() -> None:
     fator_meta = min(1.0, fator_meta)
     vendas_f = vendas_f[mask_vendas]
 
-    metas_f["Meta_Qtd"] = metas_f["Meta_Qtd"] * fator_meta
+    # Arredonda a Meta_Qtd para baixo (floor) após multiplicar pelo fator do canal
+    metas_f["Meta_Qtd"] = (metas_f["Meta_Qtd"] * fator_meta).apply(math.floor)
     metas_f["Meta_VGV"] = metas_f["Meta_VGV"] * fator_meta
 
     total_realizado_qtd = int(vendas_f.shape[0])
@@ -744,9 +735,11 @@ def main() -> None:
     st.markdown(
         f"""
         <div class="vel-kpi-row" style="margin-top: 1rem;">
-            <div class="vel-kpi"><div class="lbl">Qtd Meta</div><div class="val">{total_meta_qtd:g}</div></div>
+            <div class="vel-kpi"><div class="lbl">Qtd Meta</div><div class="val">{int(total_meta_qtd)}</div></div>
             <div class="vel-kpi"><div class="lbl">Qtd Realizado</div><div class="val">{total_realizado_qtd}</div></div>
             <div class="vel-kpi"><div class="lbl">% Qtd</div><div class="val">{pct_qtd:.1f}%</div></div>
+        </div>
+        <div class="vel-kpi-row">
             <div class="vel-kpi"><div class="lbl">VGV Meta</div><div class="val">{fmt_br_milhoes(total_meta_vgv)}</div></div>
             <div class="vel-kpi"><div class="lbl">VGV Realizado</div><div class="val val--red">{fmt_br_milhoes(total_vgv_realizado)}</div></div>
             <div class="vel-kpi"><div class="lbl">% VGV</div><div class="val">{pct_vgv:.1f}%</div></div>
