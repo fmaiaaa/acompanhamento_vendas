@@ -559,6 +559,8 @@ def main() -> None:
     col_valor = achar_coluna(df_vendas, ["Valor Real de Venda", "Valor Real", "Valor"])
     col_emp = achar_coluna(df_vendas, ["Empreendimento", "Obra", "Nome do Empreendimento"])
     col_venda_comercial = achar_coluna(df_vendas, ["Venda Comercial?", "Venda Comercial"])
+    col_proprietario = achar_coluna(df_vendas, ["Proprietário da oportunidade", "Proprietario da oportunidade", "Nome da conta", "Proprietario", "Corretor"])
+    col_ranking = achar_coluna(df_vendas, ["Ranking"])
 
     if not col_ano and not col_mes:
         st.error("Não foi possível encontrar as colunas de Ano e Mês na aba de vendas.")
@@ -740,7 +742,6 @@ def main() -> None:
     # -------------------------------------------------------------------------
     st.subheader("Tabela Resumo: Por Região")
     if "Região" in metas_f.columns:
-        # Agrupa vendas pela região mapeada e metas pela região
         vg_reg = (
             vendas_f.groupby("Regiao_Meta", as_index=False)
             .agg(real_qtd=("Empreendimento", "count"), real_vgv=("_vgv", "sum"))
@@ -804,6 +805,64 @@ def main() -> None:
         st.dataframe(show_emp, use_container_width=True, hide_index=True)
     else:
         st.info("Para ver o cruzamento por empreendimento, as duas abas precisam da coluna **Empreendimento**.")
+
+    # -------------------------------------------------------------------------
+    # TABELAS DE VENDAS (IMOB E REGIONAL)
+    # -------------------------------------------------------------------------
+    if col_proprietario:
+        c_imob, c_reg = st.columns(2)
+        
+        with c_imob:
+            st.subheader("Vendas por IMOB")
+            df_imob = vendas_f[vendas_f["Canal_Agrupado"] == "IMOB"].copy()
+            if not df_imob.empty:
+                df_imob[col_proprietario] = df_imob[col_proprietario].fillna("Não Informado").astype(str)
+                tab_imob = df_imob.groupby(col_proprietario, as_index=False).agg(
+                    QTD=(col_proprietario, "count"),
+                    VGV=("_vgv", "sum")
+                ).sort_values("VGV", ascending=False)
+                tab_imob["VGV"] = tab_imob["VGV"].apply(lambda x: fmt_br_milhoes(float(x)))
+                tab_imob.rename(columns={col_proprietario: "Proprietário"}, inplace=True)
+                st.dataframe(tab_imob, use_container_width=True, hide_index=True)
+            else:
+                st.info("Nenhuma venda IMOB encontrada com os filtros atuais.")
+                
+        with c_reg:
+            st.subheader("Vendas por Regional")
+            df_regional = vendas_f[vendas_f["Canal_Agrupado"] == "DV RJ"].copy()
+            if not df_regional.empty:
+                df_regional[col_proprietario] = df_regional[col_proprietario].fillna("Não Informado").astype(str)
+                tab_reg = df_regional.groupby(col_proprietario, as_index=False).agg(
+                    QTD=(col_proprietario, "count"),
+                    VGV=("_vgv", "sum")
+                ).sort_values("VGV", ascending=False)
+                tab_reg["VGV"] = tab_reg["VGV"].apply(lambda x: fmt_br_milhoes(float(x)))
+                tab_reg.rename(columns={col_proprietario: "Proprietário"}, inplace=True)
+                st.dataframe(tab_reg, use_container_width=True, hide_index=True)
+            else:
+                st.info("Nenhuma venda Regional encontrada com os filtros atuais.")
+    else:
+        st.warning("Coluna 'Proprietário da oportunidade' não encontrada na base.")
+
+    # -------------------------------------------------------------------------
+    # TABELA DE VENDAS POR RANKING
+    # -------------------------------------------------------------------------
+    st.subheader("Vendas por Ranking")
+    if col_ranking:
+        if not vendas_f.empty:
+            df_rank = vendas_f.copy()
+            df_rank[col_ranking] = df_rank[col_ranking].fillna("Não Informado").astype(str)
+            tab_rank = df_rank.groupby(col_ranking, as_index=False).agg(
+                QTD=(col_ranking, "count"),
+                VGV=("_vgv", "sum")
+            ).sort_values("VGV", ascending=False)
+            tab_rank["VGV"] = tab_rank["VGV"].apply(lambda x: fmt_br_milhoes(float(x)))
+            tab_rank.rename(columns={col_ranking: "Ranking"}, inplace=True)
+            st.dataframe(tab_rank, use_container_width=True, hide_index=True)
+        else:
+            st.info("Nenhuma venda encontrada com os filtros atuais.")
+    else:
+        st.warning("Coluna 'Ranking' não encontrada na base.")
 
     st.markdown(
         f'<div class="footer" style="text-align:center;padding:1rem 0;color:{COR_TEXTO_MUTED};font-size:0.82rem;">'
