@@ -3,6 +3,7 @@
 Análise de Concorrência — Inteligência Competitiva e Performance.
 Foco: Comparação Direta via BD GERAL e BD DETALHADA.
 Recursos: Evolução de Preço m2 vs Estoque, Gaps de 2 meses e Design Gaps.
+Fórmulas: Explicitação matemática abaixo dos gráficos.
 """
 from __future__ import annotations
 
@@ -171,6 +172,8 @@ def aplicar_estilo() -> None:
         .vel-kpi .val {{ font-family: 'Montserrat', sans-serif; font-size: 1.35rem; font-weight: 800; color: {COR_AZUL_ESC}; margin-top: 6px; }}
         .vel-kpi .val--red {{ color: {COR_VERMELHO} !important; }}
         div[data-baseweb="input"], div[data-baseweb="select"] {{ border-radius: 10px !important; border: 1px solid #e2e8f0 !important; background-color: {COR_INPUT_BG} !important; }}
+        /* Centralizar fórmulas LaTeX */
+        .stLatex {{ text-align: center !important; display: flex; justify-content: center; margin-bottom: 1.5rem; }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -298,21 +301,43 @@ def main():
         
         g1, g2 = st.columns(2)
         with g1:
-            st.markdown("**Taxa de Absorção (Vendas / Inicial)**")
-            st.plotly_chart(px.bar(df_trend, x="DATA_STR", y="Absorcao", color="EMPREENDIMENTO", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism).update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title=""), use_container_width=True)
-            st.markdown("**Taxa de Escoamento (Estoque Atual / Inicial)**")
-            st.plotly_chart(px.bar(df_trend, x="DATA_STR", y="Escoamento", color="EMPREENDIMENTO", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism).update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title=""), use_container_width=True)
+            # Grafico 1: Absorção
+            fig_abs = px.bar(df_trend, x="DATA_STR", y="Absorcao", color="EMPREENDIMENTO", 
+                             title="Taxa de Absorção", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism)
+            fig_abs.update_layout(title={'x':0.5, 'xanchor': 'center'}, yaxis_tickformat=".1%", 
+                                  paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
+            st.plotly_chart(fig_abs, use_container_width=True)
+            st.latex(r"Absorção_t = \frac{Vendas_t}{Estoque_{t-1} + Vendas_t}")
+            
+            # Grafico 2: Escoamento
+            fig_esc = px.bar(df_trend, x="DATA_STR", y="Escoamento", color="EMPREENDIMENTO", 
+                             title="Taxa de Escoamento", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism)
+            fig_esc.update_layout(title={'x':0.5, 'xanchor': 'center'}, yaxis_tickformat=".1%", 
+                                  paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
+            st.plotly_chart(fig_esc, use_container_width=True)
+            st.latex(r"Escoamento_t = \frac{Estoque_t}{Estoque_{Inicial}}")
+            
         with g2:
-            st.markdown("**Velocidade de Vendas (Vendas / Estoque Anterior)**")
-            st.plotly_chart(px.bar(df_trend, x="DATA_STR", y="Velocidade", color="EMPREENDIMENTO", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism).update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title=""), use_container_width=True)
-            st.markdown("**Variação de Preço (Dinâmica MoM)**")
-            st.plotly_chart(px.bar(df_trend, x="DATA_STR", y="Delta_Preco", color="EMPREENDIMENTO", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism).update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title=""), use_container_width=True)
+            # Grafico 3: Velocidade
+            fig_vel = px.bar(df_trend, x="DATA_STR", y="Velocidade", color="EMPREENDIMENTO", 
+                             title="Velocidade de Vendas", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism)
+            fig_vel.update_layout(title={'x':0.5, 'xanchor': 'center'}, yaxis_tickformat=".1%", 
+                                  paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
+            st.plotly_chart(fig_vel, use_container_width=True)
+            st.latex(r"Velocidade_t = \frac{Vendas_t}{Estoque_{t-1}}")
+            
+            # Grafico 4: Variação Preço
+            fig_delta = px.bar(df_trend, x="DATA_STR", y="Delta_Preco", color="EMPREENDIMENTO", 
+                               title="Variação de Preço (MoM)", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism)
+            fig_delta.update_layout(title={'x':0.5, 'xanchor': 'center'}, yaxis_tickformat=".1%", 
+                                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
+            st.plotly_chart(fig_delta, use_container_width=True)
+            st.latex(r"\Delta Preço_{m2} = \frac{Preço_t - Preço_{t-1}}{Preço_{t-1}}")
 
     # -------------------------------------------------------------------------
     # NOVO GRÁFICO: EVOLUÇÃO PREÇO M2 VS ESTOQUE
     # -------------------------------------------------------------------------
     st.markdown("<br>", unsafe_allow_html=True)
-    st.subheader("Evolução do Mercado: Preço m² (Mediana) e Estoque (Soma)")
     
     df_det_f = df_detalhada[df_detalhada["EMPREENDIMENTO"].isin(df_cluster["EMPREENDIMENTO"].unique())].copy()
     
@@ -340,9 +365,10 @@ def main():
         )
         
         fig_dual.update_layout(
+            title={'text': "Evolução do Mercado: Preço m² (Mediana) e Estoque (Soma)", 'x':0.5, 'xanchor': 'center'},
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=20, r=20, t=30, b=20),
+            margin=dict(l=20, r=20, t=50, b=20),
             font=dict(family="Inter", color=COR_TEXTO_LABEL)
         )
         
