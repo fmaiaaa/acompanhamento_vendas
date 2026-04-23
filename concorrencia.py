@@ -79,7 +79,8 @@ def aplicar_estilo() -> None:
         header[data-testid="stHeader"] {{ background: transparent !important; border: none !important; box-shadow: none !important; }}
         [data-testid="stSidebar"] {{ display: none !important; }}
         .block-container {{
-            max-width: 1700px !important; padding: 1.45rem 2.25rem 1.55rem 2.25rem !important; background: rgba(255, 255, 255, 0.78) !important;
+            max-width: 1700px !important; margin-left: auto !important; margin-right: auto !important;
+            padding: 1.45rem 2.25rem 1.55rem 2.25rem !important; background: rgba(255, 255, 255, 0.78) !important;
             backdrop-filter: blur(18px) saturate(1.15); border-radius: 24px !important;
             border: 1px solid rgba(255, 255, 255, 0.45) !important;
             box-shadow: 0 4px 6px -1px rgba({RGB_AZUL_CSS}, 0.06), 0 24px 48px -12px rgba({RGB_AZUL_CSS}, 0.18) !important;
@@ -146,7 +147,7 @@ def parse_val(v):
 def geocode_address_precision(address: str) -> tuple[Optional[float], Optional[float]]:
     if not address or str(address).lower() == "nan": return None, None
     try:
-        geolocator = Nominatim(user_agent="direcional_precision_v10")
+        geolocator = Nominatim(user_agent="direcional_precision_v11")
         clean_addr = str(address).split("(")[0].strip()
         location = geolocator.geocode(clean_addr + ", Rio de Janeiro, RJ, Brasil", timeout=15)
         if location: return location.latitude, location.longitude
@@ -185,7 +186,7 @@ def process_pipeline():
     if df_geral.empty:
         raise ValueError("A aba BD GERAL nao foi encontrada ou esta vazia.")
 
-    # Normalizar chaves
+    # Normalizar chaves para cruzamentos seguros
     for df in [df_geral, df_det, df_ref_dir, df_procv]:
         if "CHAVE" in df.columns: df["CHAVE"] = df["CHAVE"].astype(str).str.strip().str.upper()
         elif "Chave" in df.columns: df["CHAVE"] = df["Chave"].astype(str).str.strip().str.upper()
@@ -201,21 +202,22 @@ def process_pipeline():
     df_geral["DATA_DT"] = pd.to_datetime(df_geral["DATA"], dayfirst=True, errors='coerce')
     df_geral = df_geral[df_geral["DATA_DT"].notna()].sort_values(["CHAVE", "DATA_DT"])
     
-    # Indicadores Temporais BD GERAL
+    # Indicadores Temporais
     df_geral["Absorcao"] = df_geral["VENDAS"] / df_geral["ESTOQUE INICIAL"].replace(0, np.nan)
     df_geral["Velocidade"] = df_geral["VENDAS"] / (df_geral["ESTOQUE INICIAL"] - df_geral["VENDAS"]).replace(0, np.nan)
-    df_geral["Escoamento"] = df_geral["ESTOQUE"] / df_geral["ESTOQUE INICIAL"].replace(0, np.nan)
     df_geral["VGV_Rate"] = df_geral["VGV_Vendido"] / (df_geral["VGV_Vendido"] + (df_geral["ESTOQUE"] * df_geral["PRECO_MEDIO"])).replace(0, np.nan)
-    df_geral["Delta_Preco"] = df_geral.groupby("CHAVE")["PRECO_MEDIO"].pct_change()
     
     # 2. Limpeza BD DETALHADA (Precificacao por Tipologia)
     df_det["Preco_m2"] = df_det["PREÇO_M2"].apply(parse_val)
     df_det["DATA_DT"] = pd.to_datetime(df_det["DATA"], dayfirst=True, errors='coerce')
     df_det = df_det[df_det["DATA_DT"].notna()]
     
-    # 3. Identificar Direcional
+    # 3. Identificar Direcional (CORRIGIDO: Agora verifica Construtora "DIRECIONAL" além das chaves de referência)
     direcional_keys = [str(x).strip().upper() for x in df_ref_dir["CHAVE"].unique() if x]
-    df_geral["Is_Direcional"] = df_geral["CHAVE"].isin(direcional_keys)
+    df_geral["Is_Direcional"] = (
+        (df_geral["CONSTRUTORA"].astype(str).str.strip().str.upper() == "DIRECIONAL") |
+        (df_geral["CHAVE"].isin(direcional_keys))
+    )
     
     # 4. Mapeamento de Enderecos Precisos
     df_addr_dir = df_ref_dir[["CHAVE", "Endereço"]].rename(columns={"Endereço": "ENDERECO_REF"})
@@ -245,16 +247,19 @@ def main():
     c1, c2, c3 = st.columns([1.8, 1, 1.2])
     
     with c1:
+        # Pega lista de empreendimentos marcados como Direcional
         lista_direcional = sorted(df_master[df_master["Is_Direcional"]]["EMPREENDIMENTO"].unique())
         if not lista_direcional:
-            st.warning("Nenhum empreendimento Direcional identificado na BD GERAL.")
-            return
+            st.error("Nenhum empreendimento Direcional identificado. Verifique a coluna CONSTRUTORA na aba BD GERAL.")
+            # Fallback para permitir seleção manual de qualquer empreendimento se a lógica falhar
+            lista_direcional = sorted(df_master["EMPREENDIMENTO"].unique())
+            
         alvo_selecionado = st.selectbox("Selecione o Empreendimento Direcional Alvo", lista_direcional)
         
     with c2:
         df_sorted_dates = df_master[["DATA", "DATA_DT"]].drop_duplicates().sort_values("DATA_DT")
         meses_disp = df_sorted_dates["DATA"].tolist()
-        mes_estudo = st.selectbox("Mes de Referencia para o Mapa", meses_disp, index=len(meses_disp)-1)
+        mes_estudo = st.selectbox("Mes de Referencia para o Mapa", meses_disp, index=len(meses_disp)-1 if meses_disp else 0)
         
     with c3:
         raio_estudo = st.slider("Raio de Atuacao do Cluster (km)", 1, 50, 15)
@@ -262,9 +267,10 @@ def main():
     # -------------------------------------------------------------------------
     # Geocodificacao e Cluster
     # -------------------------------------------------------------------------
+    # CORREÇÃO IndexError: Busca robusta do alvo
     df_alvo_search = df_master[df_master["EMPREENDIMENTO"] == alvo_selecionado]
     if df_alvo_search.empty:
-        st.error("Produto alvo nao encontrado na base temporal.")
+        st.error(f"O produto '{alvo_selecionado}' nao foi localizado na base temporal de dados.")
         return
         
     df_alvo_info = df_alvo_search.iloc[0]
@@ -288,6 +294,7 @@ def main():
         df_reg["lat"] = df_reg["ENDERECO_REF"].map(lambda x: coords_cache.get(x, (None, None))[0])
         df_reg["lon"] = df_reg["ENDERECO_REF"].map(lambda x: coords_cache.get(x, (None, None))[1])
         
+        # Distancia Real
         df_reg["Distancia_km"] = df_reg.apply(
             lambda r: geodesic((lat_alvo, lon_alvo), (r["lat"], r["lon"])).km if pd.notna(r["lat"]) else 999, axis=1
         )
@@ -295,7 +302,7 @@ def main():
         df_cluster = df_reg[df_reg["Distancia_km"] <= raio_estudo].copy()
 
     # -------------------------------------------------------------------------
-    # KPIs Consolidados (Mes Selecionado)
+    # KPIs Consolidados (Mês Selecionado)
     # -------------------------------------------------------------------------
     df_mes = df_cluster[df_cluster["DATA"] == mes_estudo]
     df_alvo_mes = df_mes[df_mes["CHAVE"] == chave_alvo]
