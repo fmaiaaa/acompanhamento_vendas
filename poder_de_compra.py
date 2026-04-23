@@ -117,7 +117,7 @@ def _exibir_logo_topo() -> None:
     try:
         if path:
             ext = Path(path).suffix.lower().lstrip(".")
-            mime = "image/jpeg" if ext in ("jpg", "jpeg") else "image/png"
+            mime = "image/jpeg" if ext == "png" else "image/jpeg" if ext in ("jpg", "jpeg") else "image/png"
             with open(path, "rb") as f:
                 b64 = base64.b64encode(f.read()).decode("ascii")
             st.markdown(f'<div class="ficha-logo-wrap"><img src="data:{mime};base64,{b64}" alt="Direcional" /></div>', unsafe_allow_html=True)
@@ -409,6 +409,12 @@ def main() -> None:
     # Cálculo dos Gaps Nominais
     df["Gap_Dir"] = df["VGV_Dir"] - df["VGV_Real"]
     df["Gap_Emc"] = df["VGV_Emc"] - df["VGV_Real"]
+
+    # -------------------------------------------------------------------------
+    # Filtro de Intervalo: Desconsiderar gaps negativos e acima de 100k
+    # -------------------------------------------------------------------------
+    df = df[(df["Gap_Dir"] >= 0) & (df["Gap_Dir"] <= 100000) & 
+            (df["Gap_Emc"] >= 0) & (df["Gap_Emc"] <= 100000)]
 
     # Limpeza de campos categóricos nulos
     for col in [c_emp, c_reg_imob, c_imobiliaria, c_canal, c_rank]:
