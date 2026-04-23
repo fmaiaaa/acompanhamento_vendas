@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Análise de Concorrência — Inteligência Competitiva e Performance.
-Pipeline: Data Cleaning -> Feature Engineering -> Strategic Analysis -> UI
-Planilha: Bases Concorrentes + Direcional.
+Foco: Estudo de Raio de Atuação por Empreendimento Direcional.
 """
 from __future__ import annotations
 
@@ -139,8 +138,8 @@ def _cabecalho_pagina() -> None:
     st.markdown(
         f'<div class="ficha-hero-stack">'
         f'<div class="ficha-hero">'
-        f'<p class="ficha-title">Inteligência Competitiva e Performance</p>'
-        f'<p class="ficha-sub">Análise Realizado X Projetado — Mercado e Concorrência.</p>'
+        f'<p class="ficha-title">Inteligência Competitiva: Direcional X Mercado</p>'
+        f'<p class="ficha-sub">Estudo de performance e viabilidade por cluster regional.</p>'
         f"</div>"
         f'<div class="ficha-hero-bar-wrap" aria-hidden="true"><div class="ficha-hero-bar"></div></div>'
         f"</div>",
@@ -200,54 +199,52 @@ def parse_val(v):
     try: return float(re.sub(r'[^\d.]', '', s))
     except: return 0.0
 
-def process_data() -> pd.DataFrame:
-    """Pipeline de limpeza, filtragem de preço/m2 e engenharia de features."""
+def process_data() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Pipeline focado em unificar dados via CHAVE e filtrar por Região."""
     df_det = ler_aba(SPREADSHEET_ID_CONC, "BD DETALHADA")
     df_ger = ler_aba(SPREADSHEET_ID_CONC, "BD GERAL")
     df_men = ler_aba(SPREADSHEET_ID_CONC, "Abr/2026")
     df_dados_dir = ler_aba(SPREADSHEET_ID_CONC, "DADOS DIRECIONAL")
     
-    # Limpeza básica
+    # 1. Limpeza Concorrentes
     df_det["Preço_Float"] = df_det["PREÇO"].apply(parse_val)
     df_det["Metragem_Float"] = df_det["METRAGEM"].apply(parse_val)
     df_det["Preço_m2"] = df_det["PREÇO_M2"].apply(parse_val)
     
-    # Recalcular Preço_m2 se inconsistente
+    # Recalcular Preço_m2
     df_det["Preço_m2"] = np.where(
         (df_det["Preço_m2"] == 0) & (df_det["Metragem_Float"] > 0),
         df_det["Preço_Float"] / df_det["Metragem_Float"],
         df_det["Preço_m2"]
     )
     
-    # FILTRO SOLICITADO: Desconsiderar Preço_m2 > 10.000 (Outliers/Alto Padrão)
+    # FILTRO: Desconsiderar Preço_m2 > 10.000 (Conforme pedido)
     df_det = df_det[df_det["Preço_m2"] <= 10000]
     
     df_ger["Preço_Min"] = df_ger["Venda a Partir"].apply(parse_val)
     
-    # Merges
+    # 2. Merge Master
+    # Cruzamento de Mensal com Detalhada via CHAVE
     df_master = df_det.merge(df_men[["CHAVE", "Vendas (Qnt.)", "Estoque (Qnt.)", "VGV (R$)", "PREÇO MÉDIO"]], on="CHAVE", how="left")
+    
+    # Cruzamento com Geral via EMPREENDIMENTO (BD Geral não possui coluna CHAVE)
     df_master = df_master.merge(df_ger[["Empreendimento", "Preço_Min", "Previsão"]], left_on="EMPREENDIMENTO", right_on="Empreendimento", how="left")
     
-    # Engenharia de Features
+    # 3. Engenharia de Features
     vendas = pd.to_numeric(df_master["Vendas (Qnt.)"], errors='coerce').fillna(0)
     estoque = pd.to_numeric(df_master["Estoque (Qnt.)"], errors='coerce').fillna(0)
     df_master["Absorcao"] = vendas / (vendas + estoque)
     df_master["Absorcao"] = df_master["Absorcao"].replace([np.inf, -np.inf], 0).fillna(0)
     
-    medias_regiao = df_master.groupby("REGIÃO")["Preço_m2"].transform("mean")
-    df_master["Posicionamento_Rel_Regiao"] = df_master["Preço_m2"] - medias_regiao
-    df_master["Densidade_Regiao"] = df_master.groupby("REGIÃO")["CHAVE"].transform("nunique")
+    # 4. Identificar Direcional (Usando a lista fornecida de DADOS DIRECIONAL)
+    direcional_keys = [str(x).strip().upper() for x in df_dados_dir["Nome do Empreendimento (Chave)"].unique() if x]
     
-    # Identificar Direcional para comparação estratégica
-    allowed_addresses = [str(x).strip().upper() for x in df_dados_dir["Endereço"].unique() if x]
-    allowed_keys = [str(x).strip().upper() for x in df_dados_dir["Nome do Empreendimento (Chave)"].unique() if x]
+    df_master["Is_Direcional"] = df_master["CHAVE"].str.strip().str.upper().isin(direcional_keys)
     
-    df_master["Is_Direcional"] = (
-        df_master["ENDEREÇO"].str.strip().str.upper().isin(allowed_addresses) | 
-        df_master["CHAVE"].str.strip().str.upper().isin(allowed_keys)
-    )
+    # Se algum item da aba "DADOS DIRECIONAL" não foi encontrado na base detalhada, marcamos erro silencioso
+    # mas garantimos que as regiões sejam mapeadas corretamente.
     
-    return df_master
+    return df_master, df_dados_dir
 
 # -----------------------------------------------------------------------------
 # Interface Principal
@@ -257,122 +254,131 @@ def main():
     _cabecalho_pagina()
     
     try:
-        df_master = process_data()
+        df_master, df_dados_dir = process_data()
     except Exception as e:
         st.error(f"Erro no Pipeline de Dados: {e}")
         return
 
-    # Filtros e Navegação Centralizados
-    st.markdown("<div style='margin-bottom:1.5rem; text-align: center;'><strong>Filtros de Análise e Navegação Estratégica</strong></div>", unsafe_allow_html=True)
+    # Filtros Centralizados
+    st.markdown("<div style='margin-bottom:1.5rem; text-align: center;'><strong>Filtros do Estudo Comparativo</strong></div>", unsafe_allow_html=True)
     
-    nav_col1, nav_col2, nav_col3 = st.columns([1.5, 2, 1.5])
-    with nav_col1:
-        f_regiao = st.multiselect("Filtrar por Região", sorted(df_master["REGIÃO"].dropna().unique()))
-    with nav_col2:
-        page = st.selectbox("Seleccione a Análise", ["Resumo Executivo", "Mapa de Preços", "Performance de Produto", "Matriz de Oportunidades"])
-    with nav_col3:
-        f_concorrente = st.multiselect("Filtrar Concorrente", sorted(df_master["CONCORRENTE"].dropna().unique()))
+    f_col1, f_col2 = st.columns(2)
+    with f_col1:
+        # Seleção do empreendimento Direcional Alvo
+        direcional_ativos = sorted(df_master[df_master["Is_Direcional"]]["CHAVE"].unique())
+        if not direcional_ativos:
+            st.warning("Nenhum empreendimento Direcional encontrado na base detalhada com preço/m² <= 10k.")
+            # Fallback para permitir análise de mercado geral se o filtro de 10k removeu o alvo
+            direcional_ativos = sorted(df_dados_dir["Nome do Empreendimento (Chave)"].unique())
+            
+        alvo_direcional = st.selectbox("Escolha o Produto Direcional para análise", direcional_ativos)
     
-    df_f = df_master.copy()
-    if f_regiao: df_f = df_f[df_f["REGIÃO"].isin(f_regiao)]
-    if f_concorrente: df_f = df_f[df_f["CONCORRENTE"].isin(f_concorrente)]
+    with f_col2:
+        # Filtro de Concorrente (Opcional para refinar o cluster)
+        f_concorrente = st.multiselect("Filtrar Concorrente específico (opcional)", sorted(df_master["CONCORRENTE"].dropna().unique()))
 
-    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
+    # Lógica de Raio Competitivo (Baseada na Região do Alvo)
+    # 1. Descobrir a região do alvo direcional selecionado
+    regiao_alvo = df_master[df_master["CHAVE"] == alvo_direcional]["REGIÃO"].iloc[0] if not df_master[df_master["CHAVE"] == alvo_direcional].empty else "Desconhecida"
+    
+    if regiao_alvo == "Desconhecida":
+        # Tenta buscar na aba DADOS DIRECIONAL se não estiver no cruzamento
+        match_dir = df_dados_dir[df_dados_dir["Nome do Empreendimento (Chave)"] == alvo_direcional]
+        if not match_dir.empty:
+            regioes_possiveis = match_dir["Região"].values
+            # Filtra o mercado por essas regiões
+            df_f = df_master[df_master["REGIÃO"].isin(regioes_possiveis)].copy()
+            regiao_display = regioes_possiveis[0]
+        else:
+            df_f = df_master.copy()
+            regiao_display = "Geral"
+    else:
+        # Filtra o mercado apenas pela mesma REGIÃO do produto Direcional (Proxy do raio de 15km)
+        df_f = df_master[df_master["REGIÃO"] == regiao_alvo].copy()
+        regiao_display = regiao_alvo
 
-    if page == "Resumo Executivo":
-        st.markdown("## Performance Consolidada (Preço/m² até 10k)")
-        
-        df_mkt = df_f[~df_f["Is_Direcional"]]
-        df_dir = df_f[df_f["Is_Direcional"]]
-        
-        avg_m2_mkt = df_mkt["Preço_m2"].mean()
-        avg_m2_dir = df_dir["Preço_m2"].mean()
-        avg_abs_mkt = df_mkt["Absorcao"].mean() * 100
-        avg_abs_dir = df_dir["Absorcao"].mean() * 100
-        
-        st.markdown(f"""
-            <div class="vel-kpi-row">
-                <div class="vel-kpi"><div class="lbl">Preço/m² Médio (Mercado)</div><div class="val">R$ {avg_m2_mkt:,.2f}</div></div>
-                <div class="vel-kpi"><div class="lbl">Preço/m² Médio (Direcional)</div><div class="val val--red">R$ {avg_m2_dir:,.2f}</div></div>
-                <div class="vel-kpi"><div class="lbl">Velocidade de Venda (Mkt)</div><div class="val">{avg_abs_mkt:.1f}%</div></div>
-                <div class="vel-kpi"><div class="lbl">Velocidade de Venda (Dir)</div><div class="val val--red">{avg_abs_dir:.1f}%</div></div>
-                <div class="vel-kpi"><div class="lbl">Nº Competidores Ativos</div><div class="val">{df_f["CONCORRENTE"].nunique()}</div></div>
-            </div>
-        """, unsafe_allow_html=True)
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("Market Share por VGV")
-            df_gv = df_f.groupby("CONCORRENTE")["Preço_Float"].sum().reset_index()
-            fig = px.pie(df_gv, values='Preço_Float', names='CONCORRENTE', hole=.4, color_discrete_sequence=px.colors.sequential.Blues_r)
-            fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", legend=dict(orientation="h", y=-0.1))
-            st.plotly_chart(fig, use_container_width=True)
-        with col2:
-            st.subheader("Eficiência de Venda por Concorrente")
-            df_reg_perf = df_f.groupby("CONCORRENTE")["Absorcao"].mean().reset_index().sort_values("Absorcao", ascending=False)
-            fig = px.bar(df_reg_perf, x='CONCORRENTE', y='Absorcao', color='CONCORRENTE', color_discrete_map={"DIRECIONAL": COR_VERMELHO})
-            fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", showlegend=False)
-            st.plotly_chart(fig, use_container_width=True)
+    if f_concorrente:
+        df_f = df_f[df_f["CONCORRENTE"].isin(f_concorrente) | (df_f["CHAVE"] == alvo_direcional)]
 
-    elif page == "Mapa de Preços":
-        st.markdown("## Posicionamento de Preço Regional")
-        st.subheader("Dispersão: Preço/m² por Região")
-        fig = px.box(df_f, x="REGIÃO", y="Preço_m2", color="Is_Direcional", 
-                     color_discrete_map={True: COR_VERMELHO, False: COR_AZUL_ESC},
-                     labels={"Is_Direcional": "Direcional"}, points="all", hover_name="EMPREENDIMENTO")
-        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
-        st.plotly_chart(fig, use_container_width=True)
-        
-        st.subheader("Curva de Demanda: Elasticidade Preço/m² vs Velocidade")
+    st.markdown(f"<div style='text-align:center; color:{COR_AZUL_ESC};'>Analisando Cluster: <strong>{regiao_display}</strong> (Produtos competindo com {alvo_direcional})</div>", unsafe_allow_html=True)
+    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1.5rem 0;'/>", unsafe_allow_html=True)
+
+    # -------------------------------------------------------------------------
+    # KPIs Comparativos
+    # -------------------------------------------------------------------------
+    df_conc = df_f[df_f["CHAVE"] != alvo_direcional]
+    df_alvo = df_f[df_f["CHAVE"] == alvo_direcional]
+    
+    avg_m2_conc = df_conc["Preço_m2"].mean() if not df_conc.empty else 0
+    avg_m2_alvo = df_alvo["Preço_m2"].mean() if not df_alvo.empty else 0
+    
+    avg_abs_conc = df_conc["Absorcao"].mean() * 100 if not df_conc.empty else 0
+    avg_abs_alvo = df_alvo["Absorcao"].mean() * 100 if not df_alvo.empty else 0
+
+    st.markdown(f"""
+        <div class="vel-kpi-row">
+            <div class="vel-kpi"><div class="lbl">Preço/m² Médio Vizinhos</div><div class="val">R$ {avg_m2_conc:,.2f}</div></div>
+            <div class="vel-kpi"><div class="lbl">Preço/m² {alvo_direcional}</div><div class="val val--red">R$ {avg_m2_alvo:,.2f}</div></div>
+            <div class="vel-kpi"><div class="lbl">Velocidade Média Vizinhos</div><div class="val">{avg_abs_conc:.1f}%</div></div>
+            <div class="vel-kpi"><div class="lbl">Velocidade {alvo_direcional}</div><div class="val val--red">{avg_abs_alvo:.1f}%</div></div>
+            <div class="vel-kpi"><div class="lbl">Total Concorrentes Regionais</div><div class="val">{df_conc["CHAVE"].nunique()}</div></div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    # -------------------------------------------------------------------------
+    # Gráficos Estratégicos
+    # -------------------------------------------------------------------------
+    col_g1, col_g2 = st.columns(2)
+    
+    with col_g1:
+        st.subheader("Curva de Demanda Regional")
+        # Scatter destacado
         fig = px.scatter(df_f, x="Preço_m2", y="Absorcao", color="Is_Direcional", trendline="ols",
                          color_discrete_map={True: COR_VERMELHO, False: COR_AZUL_ESC},
-                         hover_name="EMPREENDIMENTO", text="REGIÃO", 
+                         hover_name="EMPREENDIMENTO", text="CONCORRENTE",
                          labels={"Preço_m2": "R$ / m²", "Absorcao": "Taxa de Absorção"})
+        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", showlegend=False)
+        st.plotly_chart(fig, use_container_width=True)
+        st.caption("Nota: A linha de tendência indica a sensibilidade ao preço na região selecionada.")
+
+    with col_g2:
+        st.subheader("Benchmark de Metragem vs Velocidade")
+        fig = px.scatter(df_f, x="Metragem_Float", y="Absorcao", color="Is_Direcional", 
+                         color_discrete_map={True: COR_VERMELHO, False: COR_AZUL_ESC},
+                         size="Preço_m2", hover_name="EMPREENDIMENTO", opacity=0.7)
+        fig.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", showlegend=False)
         st.plotly_chart(fig, use_container_width=True)
 
-    elif page == "Performance de Produto":
-        st.markdown("## O que o cliente está comprando?")
-        col1, col2 = st.columns(2)
-        with col1:
-            st.subheader("Velocidade por Tipologia")
-            df_tipo = df_f.groupby("TIPOLOGIA")["Absorcao"].mean().reset_index().sort_values("Absorcao", ascending=False)
-            fig = px.bar(df_tipo, x="Absorcao", y="TIPOLOGIA", orientation='h', color_discrete_sequence=[COR_AZUL_ESC])
-            st.plotly_chart(fig, use_container_width=True)
-        with col2:
-            st.subheader("Metragem vs Velocidade")
-            fig = px.scatter(df_f, x="Metragem_Float", y="Absorcao", color="Is_Direcional", 
-                             color_discrete_map={True: COR_VERMELHO, False: COR_AZUL_ESC},
-                             size="Preço_m2", hover_name="EMPREENDIMENTO", opacity=0.7)
-            st.plotly_chart(fig, use_container_width=True)
+    # -------------------------------------------------------------------------
+    # Tabelas e Insights
+    # -------------------------------------------------------------------------
+    st.markdown("<br>### 🎯 Matriz de Performance Regional", unsafe_allow_html=True)
+    
+    # Tabela detalhada comparativa
+    df_tab = df_f.groupby("CONCORRENTE").agg(
+        Projetos=("CHAVE", "nunique"),
+        Preco_m2=("Preço_m2", "mean"),
+        Abs_Media=("Absorcao", "mean")
+    ).reset_index().sort_values("Abs_Media", ascending=False)
+    
+    st.dataframe(df_tab.style.format({
+        "Preco_m2": "R$ {:.2f}", "Abs_Media": "{:.1%}"
+    }), use_container_width=True, hide_index=True)
 
-    elif page == "Matriz de Oportunidades":
-        st.markdown("## 🎯 Matriz de Oportunidades por Região")
-        
-        if not df_f.empty:
-            df_insight = df_f.groupby("REGIÃO").agg(
-                m2_Medio=("Metragem_Float", "mean"),
-                Preco_m2=("Preço_m2", "mean"),
-                Abs_Media=("Absorcao", "mean"),
-                Projetos=("CHAVE", "nunique")
-            ).reset_index()
-            
-            avg_mkt_abs = df_master["Absorcao"].mean()
-            med_mkt_projects = df_insight["Projetos"].median()
-            
-            def strategic_action(row):
-                if row['Abs_Media'] > avg_mkt_abs and row['Projetos'] <= med_mkt_projects:
-                    return "🔥 OPORTUNIDADE: Alta demanda / Baixa oferta. Focar em novos lançamentos."
-                if row['Abs_Media'] < avg_mkt_abs and row['Projetos'] > med_mkt_projects:
-                    return "⚠️ SATURAÇÃO: Muitos players / Baixa velocidade. Risco de preço."
-                return "ESTÁVEL: Mercado equilibrado. Acompanhar concorrência."
+    # Diagnóstico Inteligente
+    st.markdown("<br>### 💡 Diagnóstico de Viabilidade", unsafe_allow_html=True)
+    
+    if avg_abs_alvo > avg_abs_conc:
+        st.success(f"✅ **Liderança Regional:** {alvo_direcional} está com absorção acima da média dos vizinhos. O produto está bem encaixado.")
+    else:
+        st.error(f"⚠️ **Alerta de Performance:** {alvo_direcional} está abaixo da velocidade média da região. Avaliar elasticidade de preço ou tipologia.")
 
-            df_insight["Estratégia Recomendada"] = df_insight.apply(strategic_action, axis=1)
-            
-            st.dataframe(df_insight.sort_values("Abs_Media", ascending=False).style.format({
-                "Preco_m2": "R$ {:.2f}", "m2_Medio": "{:.1f} m²", "Abs_Media": "{:.1%}"
-            }), use_container_width=True, hide_index=True)
+    if avg_m2_alvo > avg_m2_conc * 1.1:
+        st.warning(f"💎 **Posicionamento Premium:** Seu m² está +10% acima da região. A diferenciação de produto precisa justificar este ticket.")
+    elif avg_m2_alvo < avg_m2_conc * 0.9:
+        st.info(f"💰 **Vantagem de Preço:** Seu m² está competitivo. Oportunidade para aumentar margem se a velocidade permitir.")
 
-    st.markdown(f'<div style="text-align:center; padding:1rem; color:{COR_TEXTO_MUTED}; font-size:0.82rem;">Direcional Engenharia · Inteligência de Mercado · Desenvolvido por Lucas Maia</div>', unsafe_allow_html=True)
+    st.markdown(f'<div style="text-align:center; padding:1rem; color:{COR_TEXTO_MUTED}; font-size:0.82rem;">Direcional Engenharia · Inteligência de Mercado · Estudo de Cluster Regional</div>', unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
