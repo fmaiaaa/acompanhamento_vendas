@@ -10,6 +10,7 @@ import base64
 import html
 import os
 import re
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -449,12 +450,12 @@ def main() -> None:
     if c_rank and sel_rank: df_f = df_f[df_f[c_rank].isin(sel_rank)]
 
     # -------------------------------------------------------------------------
-    # Funções de Resumo de Indicadores com Média, Mediana e P90
+    # Funções de Resumo de Indicadores com Média, Mediana e P10
     # -------------------------------------------------------------------------
     def render_kpi_block(df_target: pd.DataFrame, title: str):
         st.subheader(title)
         if df_target.empty:
-            st.info("Não há dados para este segmento.")
+            st.info("Não há dados para os filtros selecionados.")
             return
 
         vendas_qtd = len(df_target)
@@ -464,14 +465,14 @@ def main() -> None:
         gap_dir_tot = df_target["Gap_Dir"].sum()
         gap_dir_avg = df_target["Gap_Dir"].mean()
         gap_dir_med = df_target["Gap_Dir"].median()
-        gap_dir_p90 = df_target["Gap_Dir"].quantile(0.9)
+        gap_dir_p10 = df_target["Gap_Dir"].quantile(0.1)
         pct_gap_dir = (gap_dir_tot / vgv_real_tot * 100.0) if vgv_real_tot > 0 else 0.0
 
         # Gaps Emcash
         gap_emc_tot = df_target["Gap_Emc"].sum()
         gap_emc_avg = df_target["Gap_Emc"].mean()
         gap_emc_med = df_target["Gap_Emc"].median()
-        gap_emc_p90 = df_target["Gap_Emc"].quantile(0.9)
+        gap_emc_p10 = df_target["Gap_Emc"].quantile(0.1)
         pct_gap_emc = (gap_emc_tot / vgv_real_tot * 100.0) if vgv_real_tot > 0 else 0.0
 
         # Primeira Linha: Visão Geral do Segmento
@@ -493,7 +494,7 @@ def main() -> None:
             <div class="vel-kpi-row">
                 <div class="vel-kpi"><div class="lbl">Média Gap (Dir)</div><div class="val">{fmt_br_milhoes(gap_dir_avg)}</div></div>
                 <div class="vel-kpi"><div class="lbl">Mediana Gap (Dir)</div><div class="val">{fmt_br_milhoes(gap_dir_med)}</div></div>
-                <div class="vel-kpi"><div class="lbl">P90 Gap (Dir)</div><div class="val">{fmt_br_milhoes(gap_dir_p90)}</div></div>
+                <div class="vel-kpi"><div class="lbl">P10 Gap (Dir)</div><div class="val">{fmt_br_milhoes(gap_dir_p10)}</div></div>
                 <div class="vel-kpi"><div class="lbl">Aumento Possível (Dir)</div><div class="val">{fmt_br_porcentagem(pct_gap_dir)}</div></div>
             </div>
             """,
@@ -506,23 +507,16 @@ def main() -> None:
             <div class="vel-kpi-row" style="margin-bottom: 2rem;">
                 <div class="vel-kpi"><div class="lbl">Média Gap (Emc)</div><div class="val">{fmt_br_milhoes(gap_emc_avg)}</div></div>
                 <div class="vel-kpi"><div class="lbl">Mediana Gap (Emc)</div><div class="val">{fmt_br_milhoes(gap_emc_med)}</div></div>
-                <div class="vel-kpi"><div class="lbl">P90 Gap (Emc)</div><div class="val">{fmt_br_milhoes(gap_emc_p90)}</div></div>
+                <div class="vel-kpi"><div class="lbl">P10 Gap (Emc)</div><div class="val">{fmt_br_milhoes(gap_emc_p10)}</div></div>
                 <div class="vel-kpi"><div class="lbl">Aumento Possível (Emc)</div><div class="val">{fmt_br_porcentagem(pct_gap_emc)}</div></div>
             </div>
             """,
             unsafe_allow_html=True,
         )
 
-    # Renderização dos 3 blocos de KPI
+    # Renderização do bloco único de KPI (Tudo junto conforme solicitado)
     st.markdown("<br>", unsafe_allow_html=True)
-    render_kpi_block(df_f, "Estatísticas Gerais (Juntas)")
-    
-    if c_v_facilitada:
-        df_facilitada = df_f[pd.to_numeric(df_f[c_v_facilitada], errors='coerce') == 1]
-        df_normal = df_f[pd.to_numeric(df_f[c_v_facilitada], errors='coerce') != 1]
-        
-        render_kpi_block(df_facilitada, "Vendas Facilitadas")
-        render_kpi_block(df_normal, "Vendas Normais")
+    render_kpi_block(df_f, "Estatísticas Consolidadas")
 
     # -------------------------------------------------------------------------
     # Gráfico de Linha do Tempo (Evolução dos Gaps)
@@ -556,8 +550,42 @@ def main() -> None:
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
         )
         st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+        # -------------------------------------------------------------------------
+        # Histograma (Distribuição dos Gaps)
+        # -------------------------------------------------------------------------
+        st.subheader("Distribuição da Frequência de Gaps")
+        
+        fig_hist = go.Figure()
+        fig_hist.add_trace(go.Histogram(
+            x=df_f["Gap_Dir"],
+            name="Distribuição Direcional",
+            marker_color=COR_AZUL_ESC,
+            opacity=0.75,
+            nbinsx=40
+        ))
+        fig_hist.add_trace(go.Histogram(
+            x=df_f["Gap_Emc"],
+            name="Distribuição Emcash",
+            marker_color=COR_VERMELHO,
+            opacity=0.75,
+            nbinsx=40
+        ))
+        
+        fig_hist.update_layout(
+            barmode="overlay",
+            xaxis_title="Valor do Gap (R$)",
+            yaxis_title="Frequência (Vendas)",
+            margin=dict(l=20, r=20, t=30, b=20),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(family="Inter", color=COR_TEXTO_LABEL),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        )
+        st.plotly_chart(fig_hist, use_container_width=True, config={"displayModeBar": False})
+
     else:
-        st.info("Não há dados no período selecionado para exibir o gráfico.")
+        st.info("Não há dados no período selecionado para exibir os gráficos.")
 
     # -------------------------------------------------------------------------
     # Função Auxiliar de Geração de Tabelas de Gap
