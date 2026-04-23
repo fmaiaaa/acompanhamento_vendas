@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Análise de Concorrência — Inteligência Competitiva e Performance.
-Foco: Estudo Geográfico de Precisão via BD TEMPORAL com Raio Dinâmico.
+Foco: Estudo Geográfico de Precisão via BD GERAL e Análise de Preços via BD DETALHADA.
 """
 from __future__ import annotations
 
@@ -124,8 +124,8 @@ def _cabecalho_pagina() -> None:
     st.markdown(
         f'<div class="ficha-hero-stack">'
         f'<div class="ficha-hero">'
-        f'<p class="ficha-title">Inteligencia Competitiva - Analise Temporal</p>'
-        f'<p class="ficha-sub">Analise Realizado vs Projetado com Foco Geografico e Monetizacao.</p>'
+        f'<p class="ficha-title">Inteligencia Competitiva - Dashboard Estrategico</p>'
+        f'<p class="ficha-sub">Analise Regional de Performance e Precificacao Detalhada.</p>'
         f"</div>"
         f'<div class="ficha-hero-bar-wrap" aria-hidden="true"><div class="ficha-hero-bar"></div></div>'
         f"</div>",
@@ -133,7 +133,7 @@ def _cabecalho_pagina() -> None:
     )
 
 # -----------------------------------------------------------------------------
-# Pipeline de Dados e Geocodificacao de Precisao
+# Pipeline de Dados e Geocodificacao
 # -----------------------------------------------------------------------------
 def parse_val(v):
     if not v: return 0.0
@@ -146,7 +146,7 @@ def parse_val(v):
 def geocode_address_precision(address: str) -> tuple[Optional[float], Optional[float]]:
     if not address or str(address).lower() == "nan": return None, None
     try:
-        geolocator = Nominatim(user_agent="direcional_precision_v8")
+        geolocator = Nominatim(user_agent="direcional_precision_v10")
         clean_addr = str(address).split("(")[0].strip()
         location = geolocator.geocode(clean_addr + ", Rio de Janeiro, RJ, Brasil", timeout=15)
         if location: return location.latitude, location.longitude
@@ -154,7 +154,7 @@ def geocode_address_precision(address: str) -> tuple[Optional[float], Optional[f
     return None, None
 
 @st.cache_data(ttl=300, show_spinner=False)
-def load_base_data() -> dict[str, pd.DataFrame]:
+def load_base_master() -> dict[str, pd.DataFrame]:
     import gspread
     from google.oauth2.service_account import Credentials
     sec = st.secrets["connections"]["gsheets"]
@@ -167,7 +167,7 @@ def load_base_data() -> dict[str, pd.DataFrame]:
     
     dfs = {}
     for ws in sh.worksheets():
-        if ws.title in ["BD TEMPORAL", "DADOS DIRECIONAL", "PROCV"]:
+        if ws.title in ["BD GERAL", "BD DETALHADA", "DADOS DIRECIONAL", "PROCV"]:
             data = ws.get_all_values()
             if data:
                 df = pd.DataFrame(data[1:], columns=data[0])
@@ -176,58 +176,56 @@ def load_base_data() -> dict[str, pd.DataFrame]:
     return dfs
 
 def process_pipeline():
-    sheets = load_base_data()
-    df_temp = sheets.get("BD TEMPORAL", pd.DataFrame())
+    sheets = load_base_master()
+    df_geral = sheets.get("BD GERAL", pd.DataFrame())
+    df_det = sheets.get("BD DETALHADA", pd.DataFrame())
     df_ref_dir = sheets.get("DADOS DIRECIONAL", pd.DataFrame())
     df_procv = sheets.get("PROCV", pd.DataFrame())
     
-    if df_temp.empty:
-        raise ValueError("A aba BD TEMPORAL nao foi encontrada ou esta vazia.")
+    if df_geral.empty:
+        raise ValueError("A aba BD GERAL nao foi encontrada ou esta vazia.")
 
     # Normalizar chaves
-    for df in [df_temp, df_ref_dir, df_procv]:
+    for df in [df_geral, df_det, df_ref_dir, df_procv]:
         if "CHAVE" in df.columns: df["CHAVE"] = df["CHAVE"].astype(str).str.strip().str.upper()
         elif "Chave" in df.columns: df["CHAVE"] = df["Chave"].astype(str).str.strip().str.upper()
         elif "Nome do Empreendimento (Chave)" in df.columns: df["CHAVE"] = df["Nome do Empreendimento (Chave)"].astype(str).str.strip().str.upper()
 
-    # 1. Limpeza e Conversao BD TEMPORAL
+    # 1. Limpeza BD GERAL (Performance)
     cols_num = ["VENDAS", "ESTOQUE", "ESTOQUE INICIAL"]
     for col in cols_num:
-        df_temp[col] = pd.to_numeric(df_temp[col], errors='coerce').fillna(0)
+        df_geral[col] = pd.to_numeric(df_geral[col], errors='coerce').fillna(0)
     
-    df_temp["VGV_Vendido"] = df_temp["VGV"].apply(parse_val)
-    df_temp["PRECO_MEDIO"] = df_temp["PREÇO MÉDIO"].apply(parse_val)
-    df_temp["DATA_DT"] = pd.to_datetime(df_temp["DATA"], dayfirst=True, errors='coerce')
+    df_geral["VGV_Vendido"] = df_geral["VGV"].apply(parse_val)
+    df_geral["PRECO_MEDIO"] = df_geral["PREÇO MÉDIO"].apply(parse_val)
+    df_geral["DATA_DT"] = pd.to_datetime(df_geral["DATA"], dayfirst=True, errors='coerce')
+    df_geral = df_geral[df_geral["DATA_DT"].notna()].sort_values(["CHAVE", "DATA_DT"])
     
-    # Filtrar registros validos
-    df_temp = df_temp[df_temp["DATA_DT"].notna()].sort_values(["CHAVE", "DATA_DT"])
+    # Indicadores Temporais BD GERAL
+    df_geral["Absorcao"] = df_geral["VENDAS"] / df_geral["ESTOQUE INICIAL"].replace(0, np.nan)
+    df_geral["Velocidade"] = df_geral["VENDAS"] / (df_geral["ESTOQUE INICIAL"] - df_geral["VENDAS"]).replace(0, np.nan)
+    df_geral["Escoamento"] = df_geral["ESTOQUE"] / df_geral["ESTOQUE INICIAL"].replace(0, np.nan)
+    df_geral["VGV_Rate"] = df_geral["VGV_Vendido"] / (df_geral["VGV_Vendido"] + (df_geral["ESTOQUE"] * df_geral["PRECO_MEDIO"])).replace(0, np.nan)
+    df_geral["Delta_Preco"] = df_geral.groupby("CHAVE")["PRECO_MEDIO"].pct_change()
     
-    # 2. Engenharia de Features Individuais
-    # Taxa de Absorcao: vendas_t / estoque_inicial_t
-    df_temp["Absorcao"] = df_temp["VENDAS"] / df_temp["ESTOQUE INICIAL"].replace(0, np.nan)
-    
-    # Velocidade de Vendas: vendas_t / (estoque_inicial_t - vendas_t)
-    df_temp["Velocidade"] = df_temp["VENDAS"] / (df_temp["ESTOQUE INICIAL"] - df_temp["VENDAS"]).replace(0, np.nan)
-    
-    # Taxa de Escoamento: estoque_t / estoque_inicial_t
-    df_temp["Escoamento"] = df_temp["ESTOQUE"] / df_temp["ESTOQUE INICIAL"].replace(0, np.nan)
-    
-    # VGV Rate (Monetizacao): VGV_Vendido / (VGV_Vendido + (Estoque * Preco Medio))
-    df_temp["VGV_Rate"] = df_temp["VGV_Vendido"] / (df_temp["VGV_Vendido"] + (df_temp["ESTOQUE"] * df_temp["PRECO_MEDIO"])).replace(0, np.nan)
+    # 2. Limpeza BD DETALHADA (Precificacao por Tipologia)
+    df_det["Preco_m2"] = df_det["PREÇO_M2"].apply(parse_val)
+    df_det["DATA_DT"] = pd.to_datetime(df_det["DATA"], dayfirst=True, errors='coerce')
+    df_det = df_det[df_det["DATA_DT"].notna()]
     
     # 3. Identificar Direcional
     direcional_keys = [str(x).strip().upper() for x in df_ref_dir["CHAVE"].unique() if x]
-    df_temp["Is_Direcional"] = df_temp["CHAVE"].isin(direcional_keys)
+    df_geral["Is_Direcional"] = df_geral["CHAVE"].isin(direcional_keys)
     
     # 4. Mapeamento de Enderecos Precisos
     df_addr_dir = df_ref_dir[["CHAVE", "Endereço"]].rename(columns={"Endereço": "ENDERECO_REF"})
     df_addr_conc = df_procv[["CHAVE", "Endereço"]].rename(columns={"Endereço": "ENDERECO_REF"})
     df_all_addr = pd.concat([df_addr_dir, df_addr_conc]).drop_duplicates(subset=["CHAVE"])
     
-    df_master = df_temp.merge(df_all_addr, on="CHAVE", how="left")
-    df_master["ENDERECO_REF"] = df_master["ENDERECO_REF"].fillna(df_master["ENDEREÇO"])
+    df_master_geral = df_geral.merge(df_all_addr, on="CHAVE", how="left")
+    df_master_geral["ENDERECO_REF"] = df_master_geral["ENDERECO_REF"].fillna(df_master_geral["ENDEREÇO"])
     
-    return df_master, df_ref_dir
+    return df_master_geral, df_det, df_ref_dir
 
 # -----------------------------------------------------------------------------
 # Main Application
@@ -237,37 +235,36 @@ def main():
     _cabecalho_pagina()
     
     try:
-        df_master, df_ref_dir = process_pipeline()
+        df_master, df_detalhada, df_ref_dir = process_pipeline()
     except Exception as e:
-        st.error(f"Erro no pipeline: {e}")
+        st.error(f"Erro no pipeline de dados: {e}")
         return
 
     # Filtros de Topo
-    st.markdown("<div style='text-align: center; font-weight: bold; margin-bottom: 1rem;'>Configuracao do Estudo de Cluster Regional</div>", unsafe_allow_html=True)
+    st.markdown("<div style='text-align: center; font-weight: bold; margin-bottom: 1rem;'>Cluster Regional e Parametros de Analise</div>", unsafe_allow_html=True)
     c1, c2, c3 = st.columns([1.8, 1, 1.2])
     
     with c1:
-        # Garantir que a lista nao esteja vazia para evitar IndexError
         lista_direcional = sorted(df_master[df_master["Is_Direcional"]]["EMPREENDIMENTO"].unique())
         if not lista_direcional:
-            st.error("Nenhum empreendimento Direcional localizado na BD TEMPORAL. Verifique as chaves de ligacao.")
+            st.warning("Nenhum empreendimento Direcional identificado na BD GERAL.")
             return
-        alvo_selecionado = st.selectbox("Selecione o Produto Direcional Alvo", lista_direcional)
+        alvo_selecionado = st.selectbox("Selecione o Empreendimento Direcional Alvo", lista_direcional)
         
     with c2:
         df_sorted_dates = df_master[["DATA", "DATA_DT"]].drop_duplicates().sort_values("DATA_DT")
         meses_disp = df_sorted_dates["DATA"].tolist()
-        mes_estudo = st.selectbox("Mes de Referencia (Mapa)", meses_disp, index=len(meses_disp)-1)
+        mes_estudo = st.selectbox("Mes de Referencia para o Mapa", meses_disp, index=len(meses_disp)-1)
         
     with c3:
-        raio_estudo = st.slider("Raio de Atuacao Dinamico (km)", 1, 50, 15)
+        raio_estudo = st.slider("Raio de Atuacao do Cluster (km)", 1, 50, 15)
 
     # -------------------------------------------------------------------------
     # Geocodificacao e Cluster
     # -------------------------------------------------------------------------
     df_alvo_search = df_master[df_master["EMPREENDIMENTO"] == alvo_selecionado]
     if df_alvo_search.empty:
-        st.error(f"Empreendimento '{alvo_selecionado}' nao localizado na base.")
+        st.error("Produto alvo nao encontrado na base temporal.")
         return
         
     df_alvo_info = df_alvo_search.iloc[0]
@@ -275,39 +272,27 @@ def main():
     regiao_alvo = df_alvo_info["REGIÃO"]
     chave_alvo = df_alvo_info["CHAVE"]
     
-    with st.spinner("Sincronizando geolocalizacao e raio competitivo..."):
+    with st.spinner("Processando geolocalizacao de precisao..."):
         lat_alvo, lon_alvo = geocode_address_precision(endereco_alvo)
         if not lat_alvo:
-            st.error("Falha ao geolocalizar o centro do cluster. Verifique as tabelas de referencia.")
+            st.error("Nao foi possivel localizar o endereco central nas tabelas de referencia.")
             return
 
-        # Filtrar por Regiao primeiro para performance
+        # Filtrar Cluster Regional
         df_reg = df_master[df_master["REGIÃO"] == regiao_alvo].copy()
         
-        # Geocodificar vizinhos unicos
+        # Geocodificar vizinhos unicos no raio
         addrs_u = df_reg["ENDERECO_REF"].dropna().unique()
         coords_cache = {addr: geocode_address_precision(addr) for addr in addrs_u}
         
         df_reg["lat"] = df_reg["ENDERECO_REF"].map(lambda x: coords_cache.get(x, (None, None))[0])
         df_reg["lon"] = df_reg["ENDERECO_REF"].map(lambda x: coords_cache.get(x, (None, None))[1])
         
-        # Distancia Real
         df_reg["Distancia_km"] = df_reg.apply(
             lambda r: geodesic((lat_alvo, lon_alvo), (r["lat"], r["lon"])).km if pd.notna(r["lat"]) else 999, axis=1
         )
         
         df_cluster = df_reg[df_reg["Distancia_km"] <= raio_estudo].copy()
-
-    # -------------------------------------------------------------------------
-    # Selecao de Empreendimentos para Graficos
-    # -------------------------------------------------------------------------
-    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
-    cluster_names = sorted(df_cluster["EMPREENDIMENTO"].unique())
-    selected_emps = st.multiselect(
-        "Selecione Empreendimentos no cluster para analise detalhada nos graficos",
-        cluster_names,
-        default=[alvo_selecionado] + cluster_names[:min(2, len(cluster_names))]
-    )
 
     # -------------------------------------------------------------------------
     # KPIs Consolidados (Mes Selecionado)
@@ -326,27 +311,26 @@ def main():
             <div class="vel-kpi"><div class="lbl">Preco Medio Cluster</div><div class="val">R$ {m2_viz:,.2f}</div></div>
             <div class="vel-kpi"><div class="lbl">Preco Medio Direcional</div><div class="val val--red">R$ {m2_alvo:,.2f}</div></div>
             <div class="vel-kpi"><div class="lbl">Absorcao Direcional</div><div class="val val--red">{abs_alvo:.1f}%</div></div>
-            <div class="vel-kpi"><div class="lbl">Monetizacao (VGV Rate)</div><div class="val val--red">{vgv_rate_alvo:.1f}%</div></div>
-            <div class="vel-kpi"><div class="lbl">Competidores no Raio</div><div class="val">{df_mes["CHAVE"].nunique()}</div></div>
+            <div class="vel-kpi"><div class="lbl">VGV Rate (Monetizacao)</div><div class="val val--red">{vgv_rate_alvo:.1f}%</div></div>
+            <div class="vel-kpi"><div class="lbl">Concorrentes no Raio</div><div class="val">{df_mes["CHAVE"].nunique()}</div></div>
         </div>
     """, unsafe_allow_html=True)
 
     # -------------------------------------------------------------------------
     # MAPA GEOGRAFICO
     # -------------------------------------------------------------------------
-    st.subheader(f"Mapa do Cluster Competitivo (Raio {raio_estudo}km)")
+    st.subheader(f"Mapa Competitivo no Raio de {raio_estudo}km")
     
     df_map = df_mes.groupby("EMPREENDIMENTO").agg({
         "CONSTRUTORA": "first", "lat": "first", "lon": "first", "PRECO_MEDIO": "mean", "ESTOQUE": "sum"
     }).reset_index()
     
-    # Tamanho = Estoque, Cor = Preco Medio (Escala de Vermelhos)
     df_map["Marker_Size"] = df_map["ESTOQUE"].fillna(0) + 15
     
     fig_map = px.scatter_mapbox(df_map, lat="lat", lon="lon", 
                                 color="PRECO_MEDIO", size="Marker_Size",
                                 hover_name="EMPREENDIMENTO", 
-                                hover_data={"PRECO_MEDIO": ":.2f", "ESTOQUE": True, "lat": False, "lon": False},
+                                hover_data={"PRECO_MEDIO": ":.2f", "ESTOQUE": True},
                                 color_continuous_scale="Reds", 
                                 zoom=12, height=500, center={"lat": lat_alvo, "lon": lon_alvo})
     
@@ -354,10 +338,17 @@ def main():
     st.plotly_chart(fig_map, use_container_width=True)
 
     # -------------------------------------------------------------------------
-    # GRAFICOS TEMPORAIS POR EMPREENDIMENTO
+    # GRAFICOS DE COLUNAS (BD GERAL)
     # -------------------------------------------------------------------------
-    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:2.5rem 0;'/>", unsafe_allow_html=True)
-    st.subheader("Performance Individual ao Longo do Tempo")
+    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:2rem 0;'/>", unsafe_allow_html=True)
+    st.subheader("Indicadores de Performance (BD GERAL)")
+    
+    cluster_names = sorted(df_cluster["EMPREENDIMENTO"].unique())
+    selected_emps = st.multiselect(
+        "Selecione empreendimentos para comparar nos graficos de colunas",
+        cluster_names,
+        default=[alvo_selecionado] + cluster_names[:min(2, len(cluster_names))]
+    )
     
     if selected_emps:
         df_trend = df_cluster[df_cluster["EMPREENDIMENTO"].isin(selected_emps)].copy()
@@ -367,46 +358,81 @@ def main():
         g1, g2 = st.columns(2)
         
         with g1:
-            st.markdown("**Taxa de Absorcao (Demanda)**")
-            fig_abs = px.line(df_trend, x="DATA_STR", y="Absorcao", color="EMPREENDIMENTO", markers=True, color_discrete_sequence=px.colors.qualitative.Prism)
-            fig_abs.update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="", legend=dict(orientation="h", y=-0.2))
+            st.markdown("**Taxa de Absorcao (Barra)**")
+            fig_abs = px.bar(df_trend, x="DATA_STR", y="Absorcao", color="EMPREENDIMENTO", barmode="group",
+                             color_discrete_sequence=px.colors.qualitative.Prism)
+            fig_abs.update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
             st.plotly_chart(fig_abs, use_container_width=True)
             
-            st.markdown("**Taxa de Monetizacao (VGV Rate)**")
-            fig_vgv = px.line(df_trend, x="DATA_STR", y="VGV_Rate", color="EMPREENDIMENTO", markers=True, color_discrete_sequence=px.colors.qualitative.Prism)
-            fig_vgv.update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="", legend=dict(orientation="h", y=-0.2))
+            st.markdown("**VGV Rate (Barra)**")
+            fig_vgv = px.bar(df_trend, x="DATA_STR", y="VGV_Rate", color="EMPREENDIMENTO", barmode="group",
+                             color_discrete_sequence=px.colors.qualitative.Prism)
+            fig_vgv.update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
             st.plotly_chart(fig_vgv, use_container_width=True)
 
         with g2:
-            st.markdown("**Velocidade de Vendas**")
-            fig_vel = px.line(df_trend, x="DATA_STR", y="Velocidade", color="EMPREENDIMENTO", markers=True, color_discrete_sequence=px.colors.qualitative.Prism)
-            fig_vel.update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="", legend=dict(orientation="h", y=-0.2))
+            st.markdown("**Velocidade de Vendas (Barra)**")
+            fig_vel = px.bar(df_trend, x="DATA_STR", y="Velocidade", color="EMPREENDIMENTO", barmode="group",
+                             color_discrete_sequence=px.colors.qualitative.Prism)
+            fig_vel.update_layout(yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
             st.plotly_chart(fig_vel, use_container_width=True)
             
-            st.markdown("**Dinamica de Preco Medio**")
-            fig_prc = px.line(df_trend, x="DATA_STR", y="PRECO_MEDIO", color="EMPREENDIMENTO", markers=True, color_discrete_sequence=px.colors.qualitative.Prism)
-            fig_prc.update_layout(yaxis_tickprefix="R$ ", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="", legend=dict(orientation="h", y=-0.2))
+            st.markdown("**Preco Medio (Barra)**")
+            fig_prc = px.bar(df_trend, x="DATA_STR", y="PRECO_MEDIO", color="EMPREENDIMENTO", barmode="group",
+                             color_discrete_sequence=px.colors.qualitative.Prism)
+            fig_prc.update_layout(yaxis_tickprefix="R$ ", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
             st.plotly_chart(fig_prc, use_container_width=True)
-    else:
-        st.info("Selecione um ou mais empreendimentos acima para visualizar as tendencias.")
 
     # -------------------------------------------------------------------------
-    # TABELA DE BENCHMARKING
+    # TABELA DINAMICA DE PRECO POR TIPOLOGIA (BD DETALHADA)
+    # -------------------------------------------------------------------------
+    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:2rem 0;'/>", unsafe_allow_html=True)
+    st.subheader("Tabela Dinamica: Preco Medio por Tipologia ao Longo dos Meses (BD DETALHADA)")
+    
+    # Filtrar BD Detalhada pelos empreendimentos do cluster
+    chaves_cluster = df_cluster["CHAVE"].unique()
+    df_det_f = df_detalhada[df_detalhada["CHAVE"].isin(chaves_cluster)].copy()
+    
+    if not df_det_f.empty:
+        df_det_f["Mes_Ano"] = df_det_f["DATA_DT"].dt.strftime("%m/%Y")
+        
+        # Criar a Tabela Dinamica
+        pivot_table = pd.pivot_table(
+            df_det_f, 
+            values="Preco_m2", 
+            index=["EMPREENDIMENTO", "TIPOLOGIA"], 
+            columns="Mes_Ano", 
+            aggfunc="mean"
+        ).reset_index()
+        
+        # Reordenar colunas cronologicamente
+        cols_fixas = ["EMPREENDIMENTO", "TIPOLOGIA"]
+        cols_datas = sorted([c for c in pivot_table.columns if c not in cols_fixas], 
+                           key=lambda x: datetime.strptime(x, "%m/%Y"))
+        pivot_table = pivot_table[cols_fixas + cols_datas]
+        
+        st.dataframe(pivot_table.style.format({c: "R$ {:.2f}" for c in cols_datas}), 
+                     use_container_width=True, hide_index=True)
+    else:
+        st.info("Nenhum dado detalhado de tipologia encontrado para os empreendimentos deste cluster.")
+
+    # -------------------------------------------------------------------------
+    # TABELA DE BENCHMARKING FINAL (BD GERAL)
     # -------------------------------------------------------------------------
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:2rem 0;'/>", unsafe_allow_html=True)
     st.markdown("### Ranking de Performance do Cluster")
     
     df_tab = df_mes.groupby("EMPREENDIMENTO").agg({
-        "CONSTRUTORA": "first", "PRECO_MEDIO": "mean", "VENDAS": "sum", "ESTOQUE": "sum", "Absorcao": "mean", "VGV_Rate": "mean", "Distancia_km": "first"
+        "CONSTRUTORA": "first", "PRECO_MEDIO": "mean", "VENDAS": "sum", "ESTOQUE": "sum", "Absorcao": "mean", "Distancia_km": "first"
     }).reset_index().sort_values("Distancia_km", ascending=True)
     
     st.dataframe(df_tab.rename(columns={
-        "EMPREENDIMENTO": "Produto", "PRECO_MEDIO": "R$/m2", "ESTOQUE": "Estoque", "Absorcao": "Absorcao", "VGV_Rate": "VGV Rate", "Distancia_km": "Distancia"
+        "EMPREENDIMENTO": "Produto", "PRECO_MEDIO": "R$/m2", "ESTOQUE": "Estoque", "Absorcao": "Absorcao", "Distancia_km": "Distancia"
     }).style.format({
-        "R$/m2": "R$ {:.2f}", "Absorcao": "{:.1%}", "VGV Rate": "{:.1%}", "Distancia": "{:.1f} km"
+        "R$/m2": "R$ {:.2f}", "Absorcao": "{:.1%}", "Distancia": "{:.1f} km"
     }), use_container_width=True, hide_index=True)
 
-    st.markdown(f'<div style="text-align:center; padding:1rem; color:{COR_TEXTO_MUTED}; font-size:0.82rem;">Direcional Engenharia · Inteligencia de Mercado · Estudo Baseado em BD TEMPORAL</div>', unsafe_allow_html=True)
+    st.markdown(f'<div style="text-align:center; padding:1rem; color:{COR_TEXTO_MUTED}; font-size:0.82rem;">Direcional Engenharia · Inteligencia de Mercado · Fonte: BD GERAL & BD DETALHADA</div>', unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
