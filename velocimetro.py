@@ -49,6 +49,11 @@ MESES_COL_MAP = {
     "dez./1": 12,
 }
 
+MESES_TEXTO_MAP = {
+    "jan": 1, "fev": 2, "mar": 3, "abr": 4, "mai": 5, "jun": 6,
+    "jul": 7, "ago": 8, "set": 9, "out": 10, "nov": 11, "dez": 12
+}
+
 
 def _secrets_connections_gsheets() -> Dict[str, Any]:
     """Lê `[connections.gsheets]` do secrets.toml → dict."""
@@ -254,6 +259,45 @@ def parse_valor_br(val: Any) -> float:
         return float(s)
     except ValueError:
         return 0.0
+
+
+def extrair_mes(val: Any) -> Optional[int]:
+    """Extrai mês numérico mesmo que venha como texto (ex: Maio/2026)."""
+    if pd.isna(val): return None
+    v = str(val).strip().lower()
+    try:
+        return int(float(v))
+    except ValueError:
+        pass
+    for m_str, m_num in MESES_TEXTO_MAP.items():
+        if v.startswith(m_str):
+            return m_num
+    if '/' in v:
+        p = v.split('/')
+        if len(p) == 2:
+            try: return int(p[0])
+            except: pass
+        elif len(p) == 3:
+            try: return int(p[1])
+            except: pass
+    return None
+
+
+def extrair_ano(val: Any) -> Optional[int]:
+    """Extrai ano numérico mesmo que venha em data extensa."""
+    if pd.isna(val): return None
+    v = str(val).strip()
+    try:
+        return int(float(v))
+    except ValueError:
+        pass
+    if '/' in v:
+        p = v.split('/')
+        try:
+            ano = int(p[-1])
+            if ano > 2000: return ano
+        except: pass
+    return None
 
 
 def normalizar_colunas(df: pd.DataFrame) -> pd.DataFrame:
@@ -462,8 +506,8 @@ def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, vendas
     st.markdown(
         f"""
         <div style="text-align:center;font-size:0.9rem;color:{COR_TEXTO_LABEL};margin-top:-8px;">
-            <strong>{int(vendas_qtd)}</strong> vendas · VGV <strong>{fmt_br_milhoes(float(vgv))}</strong> ·
-            Meta <strong>{int(meta_f)}</strong> un.
+            <strong>{int(vendas_qtd)}</strong> vendas · VGV <strong>{fmt_br_milhoes(float(vgv))}</strong> · 
+            Meta <strong>{meta_f:g}</strong> un.
         </div>
         """,
         unsafe_allow_html=True,
@@ -500,27 +544,6 @@ def main() -> None:
             "Preencha pelo menos **private_key** e **client_email** (JSON da conta de serviço). "
             "O campo **type** pode ser `service_account` ou ficar vazio."
         )
-        with st.expander("Estrutura esperada no secrets.toml"):
-            st.markdown(
-                "Use a seção **`[connections.gsheets]`** com os mesmos campos do JSON baixado no Google Cloud "
-                "(Service Account). Opcional: **`spreadsheet_id`** para sobrescrever o ID fixo no código."
-            )
-            st.code(
-                "[connections.gsheets]\n"
-                'type = "service_account"\n'
-                "private_key = \"\"\"-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n\"\"\"\n"
-                'client_email = "nome@projeto.iam.gserviceaccount.com"\n'
-                "token_uri = \"https://oauth2.googleapis.com/token\"\n"
-                "auth_uri = \"https://accounts.google.com/o/oauth2/auth\"\n"
-                "# ... demais campos do JSON ...\n"
-                'spreadsheet_id = "1wpuNQvksot9CLhGgQRe7JlyDeRISEh_sc3-6VRDyQYk"\n\n'
-                "[email]\n"
-                "smtp_server = \"smtp.gmail.com\"\n"
-                "smtp_port = 587\n"
-                "sender_email = \"...\"\n"
-                "sender_password = \"...\"",
-                language="toml",
-            )
         return
 
     sid = spreadsheet_id_de_secrets(raw_gs)
@@ -537,16 +560,6 @@ def main() -> None:
             f"**Abas:** `{WS_VENDAS}`, `{WS_METAS}`  \n"
             f"**Service account:** `{info.get('client_email', '')}`"
         )
-        st.warning(
-            "Mesmo com HTTP 200, a API pode devolver erro no corpo da resposta — o gspread acima mostra a causa real. "
-            "Checklist: planilha **compartilhada** com o e-mail da service account (Leitor ou Editor); "
-            "**spreadsheet_id** correto; nomes das abas idênticos (espaços contam). "
-            "No Streamlit Cloud, use **Secrets** com a mesma estrutura `[connections.gsheets]`."
-        )
-        # SMTP (opcional): só confirma que [email] foi lido
-        _smtp = email_config_de_secrets()
-        if _smtp.get("smtp_server"):
-            st.caption("Seção **[email]** detectada (SMTP não é usada nesta tela de métricas).")
         return
 
     df_vendas = normalizar_colunas(df_vendas)
@@ -556,6 +569,7 @@ def main() -> None:
     col_ano = "Ano da Venda" if coluna_existe(df_vendas, "Ano da Venda") else None
     col_mes = "Mês Venda" if coluna_existe(df_vendas, "Mês Venda") else None
     col_regiao = "Região" if coluna_existe(df_vendas, "Região") else None
+    col_canal = "Canal" if coluna_existe(df_vendas, "Canal") else None
     col_valor = (
         "Valor Real de Venda"
         if coluna_existe(df_vendas, "Valor Real de Venda")
@@ -569,8 +583,8 @@ def main() -> None:
         )
         return
 
-    df_vendas["_ano"] = pd.to_numeric(df_vendas[col_ano], errors="coerce")
-    df_vendas["_mes"] = pd.to_numeric(df_vendas[col_mes], errors="coerce")
+    df_vendas["_ano"] = df_vendas[col_ano].apply(extrair_ano)
+    df_vendas["_mes"] = df_vendas[col_mes].apply(extrair_mes)
 
     if col_valor:
         df_vendas["_vgv"] = df_vendas[col_valor].map(parse_valor_br)
@@ -578,12 +592,39 @@ def main() -> None:
         df_vendas["_vgv"] = 0.0
         st.warning("Coluna **Valor Real de Venda** / **Valor** não encontrada — VGV ficará zerado.")
 
+    # Nova regra de criação do Canal Agrupado
+    if col_canal:
+        def agrupar_canal(c: Any) -> str:
+            c_str = str(c).strip().upper()
+            prefixo = c_str.split('-')[0].strip()
+            # Se a coluna Canal for RJ ou RJG (ou começar com isso), o valor é IMOB.
+            if prefixo in ['RJ', 'RJG'] or c_str in ['RJ', 'RJG']:
+                return 'IMOB'
+            return 'DV RJ'
+        
+        df_vendas['Canal_Agrupado'] = df_vendas[col_canal].apply(agrupar_canal)
+    else:
+        df_vendas['Canal_Agrupado'] = 'DV RJ'
+        st.warning("Coluna **Canal** não encontrada na aba de vendas — assumindo tudo como DV RJ.")
+
+    # -------------------------------------------------------------------------
+    # Sidebar - Filtros
+    # -------------------------------------------------------------------------
     st.sidebar.markdown("### Filtros")
+    
+    # Filtro principal do Canal
+    filtro_canal = st.sidebar.selectbox(
+        "Canal da Meta",
+        ["RIO", "DIR", "PARC", "RJ"],
+        index=0,
+        help="RIO (100% da Meta, Todas as Vendas) | DIR (50% Meta, Vendas DV RJ) | PARC (25% Meta, Vendas RJG) | RJ (25% Meta, Vendas RJ)"
+    )
+
     anos_disponiveis: List[int] = sorted(
         int(x) for x in df_vendas["_ano"].dropna().unique().tolist() if pd.notna(x)
     )
     if not anos_disponiveis:
-        st.warning("Nenhum ano válido encontrado na coluna de ano.")
+        st.warning("Nenhum ano numérico válido encontrado na coluna de ano.")
         return
 
     ano_sel = st.sidebar.selectbox("Ano", anos_disponiveis, index=len(anos_disponiveis) - 1)
@@ -599,8 +640,65 @@ def main() -> None:
     idx_mes_padrao = max(0, len(meses_no_ano) - 1) if meses_no_ano else 0
     mes_sel = st.sidebar.selectbox("Mês", meses_no_ano, index=idx_mes_padrao)
 
+    # Preparar listas para os novos filtros de Região e Empreendimento
+    regioes_disponiveis = []
+    if coluna_existe(df_metas, "Região"):
+        regioes_disponiveis = sorted(set(str(x).strip() for x in df_metas["Região"].dropna().unique() if str(x).strip()))
+
+    emps_comuns = []
+    if coluna_existe(df_vendas, "Empreendimento") and coluna_existe(df_metas, "Empreendimento"):
+        emps_vendas = set(str(x).strip() for x in df_vendas["Empreendimento"].dropna().unique() if str(x).strip())
+        emps_metas = set(str(x).strip() for x in df_metas["Empreendimento"].dropna().unique() if str(x).strip())
+        # Interseção: só empreendimentos que existem em ambas as abas
+        emps_comuns = sorted(list(emps_vendas & emps_metas))
+
+    filtro_regiao = st.sidebar.selectbox("Região (Metas)", ["Todas"] + regioes_disponiveis)
+    filtro_emp = st.sidebar.selectbox("Empreendimento", ["Todos"] + emps_comuns)
+
+    # -------------------------------------------------------------------------
+    # Aplicação de Filtros
+    # -------------------------------------------------------------------------
     vendas_f = df_vendas[(df_vendas["_ano"] == ano_sel) & (df_vendas["_mes"] == mes_sel)].copy()
     metas_f = df_metas[df_metas["Mes_Num"] == mes_sel].copy()
+
+    # 1. Aplica lógica do canal escolhido na Venda
+    fator_meta = 1.0
+    if filtro_canal == "RIO":
+        fator_meta = 1.0
+        # vendas_f se mantém com todos os dados
+    elif filtro_canal == "DIR":
+        fator_meta = 0.50
+        vendas_f = vendas_f[vendas_f["Canal_Agrupado"] == "DV RJ"]
+    elif filtro_canal == "PARC":
+        fator_meta = 0.25
+        if col_canal:
+            vendas_f = vendas_f[vendas_f[col_canal].astype(str).str.upper().str.strip().apply(
+                lambda x: x.split('-')[0].strip() == 'RJG' or x == 'RJG'
+            )]
+    elif filtro_canal == "RJ":
+        fator_meta = 0.25
+        if col_canal:
+            vendas_f = vendas_f[vendas_f[col_canal].astype(str).str.upper().str.strip().apply(
+                lambda x: x.split('-')[0].strip() == 'RJ' or x == 'RJ'
+            )]
+
+    # 2. Aplica filtro de Região (baseado na aba de Metas)
+    if filtro_regiao != "Todas" and coluna_existe(metas_f, "Região"):
+        metas_f = metas_f[metas_f["Região"].astype(str).str.strip() == filtro_regiao]
+        # Filtra a aba de vendas usando os empreendimentos vinculados a essa região nas metas
+        emps_da_regiao = metas_f["Empreendimento"].astype(str).str.strip().unique()
+        if coluna_existe(vendas_f, "Empreendimento"):
+            vendas_f = vendas_f[vendas_f["Empreendimento"].astype(str).str.strip().isin(emps_da_regiao)]
+
+    # 3. Aplica filtro de Empreendimento
+    if filtro_emp != "Todos":
+        if coluna_existe(vendas_f, "Empreendimento"):
+            vendas_f = vendas_f[vendas_f["Empreendimento"].astype(str).str.strip() == filtro_emp]
+        if coluna_existe(metas_f, "Empreendimento"):
+            metas_f = metas_f[metas_f["Empreendimento"].astype(str).str.strip() == filtro_emp]
+
+    # Ajusta as metas proporcionalmente ao canal escolhido (50%, 25%, etc)
+    metas_f["Meta_Qtd"] = metas_f["Meta_Qtd"] * fator_meta
 
     total_realizado = int(vendas_f.shape[0])
     total_meta = float(metas_f["Meta_Qtd"].sum()) if not metas_f.empty else 0.0
@@ -612,8 +710,9 @@ def main() -> None:
         f"""
         <div class="vel-kpi-row">
             <div class="vel-kpi"><div class="lbl">Período</div><div class="val">{mes_sel:02d}/{ano_sel}</div></div>
+            <div class="vel-kpi"><div class="lbl">Canal Filtro</div><div class="val">{filtro_canal}</div></div>
             <div class="vel-kpi"><div class="lbl">Vendas realizadas</div><div class="val">{total_realizado}</div></div>
-            <div class="vel-kpi"><div class="lbl">Meta (un.)</div><div class="val">{int(total_meta)}</div></div>
+            <div class="vel-kpi"><div class="lbl">Meta Ajustada (un.)</div><div class="val">{total_meta:g}</div></div>
             <div class="vel-kpi"><div class="lbl">VGV no mês</div><div class="val val--red">{fmt_br_milhoes(total_vgv)}</div></div>
             <div class="vel-kpi"><div class="lbl">% da meta</div><div class="val">{pct_ating:.1f}%</div></div>
         </div>
