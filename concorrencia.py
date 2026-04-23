@@ -4,6 +4,7 @@ Análise de Concorrência — Inteligência Competitiva e Performance.
 Foco: Comparação Direta via BD GERAL e BD DETALHADA.
 Recursos: Evolução de Preço m2 vs Estoque, Gaps de 2 meses e Design Gaps.
 Fórmulas: Explicitação matemática abaixo dos gráficos.
+Rótulos: Adição de labels de dados nos gráficos.
 """
 from __future__ import annotations
 
@@ -303,34 +304,42 @@ def main():
         with g1:
             # Grafico 1: Absorção
             fig_abs = px.bar(df_trend, x="DATA_STR", y="Absorcao", color="EMPREENDIMENTO", 
-                             title="Taxa de Absorção", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism)
+                             title="Taxa de Absorção", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism,
+                             text_auto='.1%')
             fig_abs.update_layout(title={'x':0.5, 'xanchor': 'center'}, yaxis_tickformat=".1%", 
                                   paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
+            fig_abs.update_traces(textposition='outside')
             st.plotly_chart(fig_abs, use_container_width=True)
             st.latex(r"Absorção_t = \frac{Vendas_t}{Estoque_{t-1} + Vendas_t}")
             
             # Grafico 2: Escoamento
             fig_esc = px.bar(df_trend, x="DATA_STR", y="Escoamento", color="EMPREENDIMENTO", 
-                             title="Taxa de Escoamento", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism)
+                             title="Taxa de Escoamento", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism,
+                             text_auto='.1%')
             fig_esc.update_layout(title={'x':0.5, 'xanchor': 'center'}, yaxis_tickformat=".1%", 
                                   paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
+            fig_esc.update_traces(textposition='outside')
             st.plotly_chart(fig_esc, use_container_width=True)
             st.latex(r"Escoamento_t = \frac{Estoque_t}{Estoque_{Inicial}}")
             
         with g2:
             # Grafico 3: Velocidade
             fig_vel = px.bar(df_trend, x="DATA_STR", y="Velocidade", color="EMPREENDIMENTO", 
-                             title="Velocidade de Vendas", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism)
+                             title="Velocidade de Vendas", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism,
+                             text_auto='.1%')
             fig_vel.update_layout(title={'x':0.5, 'xanchor': 'center'}, yaxis_tickformat=".1%", 
                                   paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
+            fig_vel.update_traces(textposition='outside')
             st.plotly_chart(fig_vel, use_container_width=True)
             st.latex(r"Velocidade_t = \frac{Vendas_t}{Estoque_{t-1}}")
             
             # Grafico 4: Variação Preço
             fig_delta = px.bar(df_trend, x="DATA_STR", y="Delta_Preco", color="EMPREENDIMENTO", 
-                               title="Variação de Preço (MoM)", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism)
+                               title="Variação de Preço (MoM)", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism,
+                               text_auto='.1%')
             fig_delta.update_layout(title={'x':0.5, 'xanchor': 'center'}, yaxis_tickformat=".1%", 
                                     paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
+            fig_delta.update_traces(textposition='outside')
             st.plotly_chart(fig_delta, use_container_width=True)
             st.latex(r"\Delta Preço_{m2} = \frac{Preço_t - Preço_{t-1}}{Preço_{t-1}}")
 
@@ -354,13 +363,16 @@ def main():
         
         fig_dual.add_trace(
             go.Scatter(x=df_merged_trend["DATA_STR"], y=df_merged_trend["Preco_m2_Mediana"], 
-                       name="Preço m² Mediano (R$)", line=dict(color=COR_VERMELHO, width=4)),
+                       name="Preço m² Mediano (R$)", line=dict(color=COR_VERMELHO, width=4),
+                       text=df_merged_trend["Preco_m2_Mediana"].map(lambda x: f"R$ {x:,.2f}"),
+                       mode='lines+markers+text', textposition="top center"),
             secondary_y=False,
         )
         
         fig_dual.add_trace(
             go.Bar(x=df_merged_trend["DATA_STR"], y=df_merged_trend["Estoque_Total"], 
-                   name="Estoque Total (Unid.)", marker_color=COR_AZUL_ESC, opacity=0.4),
+                   name="Estoque Total (Unid.)", marker_color=COR_AZUL_ESC, opacity=0.4,
+                   text=df_merged_trend["Estoque_Total"], textposition='outside'),
             secondary_y=True,
         )
         
