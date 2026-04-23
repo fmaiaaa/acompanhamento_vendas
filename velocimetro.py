@@ -438,11 +438,31 @@ def fmt_br_milhoes(v: float) -> str:
 
 
 def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_vgv: float, vendas_qtd: int) -> None:
-    """Gauge estilo velocímetro com cores da marca."""
+    """Gauge estilo velocímetro com gradiente do vermelho ao azul."""
     meta_f = float(meta) if meta and meta > 0 else 0.0
     perc = min(150.0, (realizado / meta_f * 100.0)) if meta_f > 0 else 0.0
     axis_max = 100
     val_display = min(perc, axis_max) if perc <= axis_max else axis_max
+
+    # --- Lógica do Gradiente (Vermelho #cb0935 ao Azul #04428f) ---
+    gradient_steps = []
+    for i in range(100):
+        if i >= val_display:
+            break
+        
+        # Interpolação linear da cor Vermelho (203, 9, 53) para Azul (4, 66, 143)
+        ratio = i / 100.0
+        r = int(203 + (4 - 203) * ratio)
+        g = int(9 + (66 - 9) * ratio)
+        b = int(53 + (143 - 53) * ratio)
+        
+        end_val = min(i + 1.0, val_display)
+        gradient_steps.append({"range": [i, end_val], "color": f"rgba({r}, {g}, {b}, 0.9)"})
+        
+    # Preenche o restante vazio do arco com um cinza claro
+    if val_display < 100:
+        gradient_steps.append({"range": [val_display, 100], "color": "rgba(226, 232, 240, 0.4)"})
+    # -------------------------------------------------------------
 
     fig = go.Figure(
         go.Indicator(
@@ -459,19 +479,15 @@ def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_v
             },
             gauge={
                 "axis": {"range": [0, axis_max], "tickwidth": 1, "tickcolor": COR_TEXTO_MUTED},
-                "bar": {"color": COR_AZUL_ESC},
+                "bar": {"color": "rgba(0,0,0,0)"}, # Barra transparente para mostrar os steps coloridos
                 "bgcolor": "white",
                 "borderwidth": 2,
                 "bordercolor": COR_BORDA,
-                "steps": [
-                    {"range": [0, 40], "color": "rgba(203, 9, 53, 0.25)"},
-                    {"range": [40, 80], "color": "rgba(4, 66, 143, 0.12)"},
-                    {"range": [80, 100], "color": "rgba(22, 163, 74, 0.28)"},
-                ],
+                "steps": gradient_steps,
                 "threshold": {
-                    "line": {"color": COR_VERMELHO, "width": 3},
+                    "line": {"color": COR_AZUL_ESC, "width": 3},
                     "thickness": 0.8,
-                    "value": 100,
+                    "value": 100, # Mantém um marcador sutil no objetivo de 100%
                 },
             },
         )
