@@ -398,25 +398,31 @@ def main() -> None:
     # -------------------------------------------------------------------------
     # Limpeza de Dados: Ignorar linhas com colunas vazias, 0 ou #N/A
     # -------------------------------------------------------------------------
-    def _is_invalid_value(val, is_numeric=False):
+    def _is_invalid_value(val, is_numeric=False, allow_zero=False):
         if pd.isna(val): return True
         s = str(val).strip().upper()
         if s in ("", "#N/A", "NAN", "NA", "NONE", "NULL"): return True
-        if is_numeric:
-            if parse_valor_br(val) == 0.0: return True
-        else:
-            if s == "0": return True
+        if not allow_zero:
+            if is_numeric:
+                if parse_valor_br(val) == 0.0: return True
+            else:
+                if s in ("0", "0.0", "0,0"): return True
         return False
 
-    # Filtro rigoroso (Vazio, N/A ou Zero) para numéricas
-    cols_limpeza_numericas = [c for c in [c_renda, c_val_fin, c_ato, c_pro_soluto, c_renda_procx, c_finan, c_subsi] if c]
+    # Filtro rigoroso (Vazio, N/A ou Zero) para numéricas (EXCETO Subsídio)
+    cols_limpeza_numericas = [c for c in [c_renda, c_val_fin, c_ato, c_pro_soluto, c_renda_procx, c_finan] if c]
     for col in cols_limpeza_numericas:
-        df = df[~df[col].apply(lambda x: _is_invalid_value(x, is_numeric=True))]
+        df = df[~df[col].apply(lambda x: _is_invalid_value(x, is_numeric=True, allow_zero=False))]
+
+    # Subsídio (Vazio, N/A, mas PERMITE Zero)
+    cols_limpeza_subsidio = [c for c in [c_subsi] if c]
+    for col in cols_limpeza_subsidio:
+        df = df[~df[col].apply(lambda x: _is_invalid_value(x, is_numeric=True, allow_zero=True))]
 
     # Filtro rigoroso (Vazio, N/A ou string "0") para textos (como Avaliação)
     cols_limpeza_texto = [c for c in [c_avalia] if c]
     for col in cols_limpeza_texto:
-        df = df[~df[col].apply(lambda x: _is_invalid_value(x, is_numeric=False))]
+        df = df[~df[col].apply(lambda x: _is_invalid_value(x, is_numeric=False, allow_zero=False))]
 
     # Limpeza padrão original (apenas nulos) para outras colunas se necessário
     cols_limpeza_padrao = [c for c in [c_ps_dir, c_ps_emc] if c]
