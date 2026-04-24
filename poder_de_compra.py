@@ -367,13 +367,18 @@ def main() -> None:
     c_v_comercial = achar_coluna(df, ["VENDA COMERCIAL", "Venda Comercial"])
     c_v_facilitada = achar_coluna(df, ["VENDA FACILITADA", "Venda Facilitada"])
 
-    # Colunas de Limpeza solicitadas
+    # Colunas de Limpeza antigas
     c_ps_dir = achar_coluna(df, ["PS DIRECIONAL"])
     c_ps_emc = achar_coluna(df, ["PS EMCASH"])
-    c_renda = achar_coluna(df, ["RENDA APURADA"])
-    c_finan = achar_coluna(df, ["FINANCIAMENTO MÁXIMO"])
-    c_subsi = achar_coluna(df, ["SUBSÍDIO DISPONÍVEL"])
-    # Adicionando coluna de Avaliação para filtragem (Vazia ou NA)
+    
+    # Novas colunas de limpeza solicitadas
+    c_renda = achar_coluna(df, ["RENDA APURADA", "Renda Apurada"])
+    c_val_fin = achar_coluna(df, ["Valor do Financiamento"])
+    c_ato = achar_coluna(df, ["Ato Total", "Total Ato Pago"])
+    c_pro_soluto = achar_coluna(df, ["Pro Soluto", "Pro soluto"])
+    c_renda_procx = achar_coluna(df, ["Renda PROCX", "Renda procx"])
+    c_finan = achar_coluna(df, ["FINANCIAMENTO MÁXIMO", "Financiamento Máximo"])
+    c_subsi = achar_coluna(df, ["SUBSÍDIO DISPONÍVEL", "Subsídio", "Subsidio"])
     c_avalia = achar_coluna(df, ["Avaliação", "Avaliacao", "Nome da Avaliação de crédito"])
 
     if not all([c_v_real, c_v_dir, c_v_emc]):
@@ -391,17 +396,32 @@ def main() -> None:
         df = df[pd.to_numeric(df[c_v_comercial], errors='coerce') == 1]
 
     # -------------------------------------------------------------------------
-    # Limpeza de Dados: Ignorar linhas com colunas vazias
+    # Limpeza de Dados: Ignorar linhas com colunas vazias, 0 ou #N/A
     # -------------------------------------------------------------------------
-    # Incluindo Renda Apurada e Avaliação na filtragem de vazios/NA conforme solicitado
-    cols_limpeza = [c for c in [c_ps_dir, c_ps_emc, c_renda, c_finan, c_subsi, c_avalia] if c]
-    if cols_limpeza:
-        for col in cols_limpeza:
-            df = df[df[col].notna() & (df[col].astype(str).str.strip() != "")]
+    def _is_invalid_value(val, is_numeric=False):
+        if pd.isna(val): return True
+        s = str(val).strip().upper()
+        if s in ("", "#N/A", "NAN", "NA", "NONE", "NULL"): return True
+        if is_numeric:
+            if parse_valor_br(val) == 0.0: return True
+        else:
+            if s == "0": return True
+        return False
 
-    # Adicionando a regra específica para remover todos os casos de Financiamento Máximo igual a 0
-    if c_finan:
-        df = df[df[c_finan].apply(parse_valor_br) != 0.0]
+    # Filtro rigoroso (Vazio, N/A ou Zero) para numéricas
+    cols_limpeza_numericas = [c for c in [c_renda, c_val_fin, c_ato, c_pro_soluto, c_renda_procx, c_finan, c_subsi] if c]
+    for col in cols_limpeza_numericas:
+        df = df[~df[col].apply(lambda x: _is_invalid_value(x, is_numeric=True))]
+
+    # Filtro rigoroso (Vazio, N/A ou string "0") para textos (como Avaliação)
+    cols_limpeza_texto = [c for c in [c_avalia] if c]
+    for col in cols_limpeza_texto:
+        df = df[~df[col].apply(lambda x: _is_invalid_value(x, is_numeric=False))]
+
+    # Limpeza padrão original (apenas nulos) para outras colunas se necessário
+    cols_limpeza_padrao = [c for c in [c_ps_dir, c_ps_emc] if c]
+    for col in cols_limpeza_padrao:
+        df = df[df[col].notna() & (df[col].astype(str).str.strip() != "")]
 
     # Tratamento de Dados e Datas
     df["Data_Formatada"] = pd.to_datetime(df[c_data], dayfirst=True, errors="coerce")
