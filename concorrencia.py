@@ -3,8 +3,8 @@
 Análise de Concorrência — Inteligência Competitiva e Performance.
 Foco: Comparação Direta via BD GERAL e BD DETALHADA.
 Recursos: Evolução de Preço m2 vs Estoque, Gaps de 2 meses e Design Gaps.
-Fórmulas: Explicitação matemática abaixo dos gráficos.
-Rótulos: Adição de labels de dados nos gráficos.
+Estatísticas: Tabela de Escoamento (Estoque Atual / Inicial) para o Alvo.
+Correção: Remoção das colunas CHAVE e CONSTRUTORA do pipeline.
 """
 from __future__ import annotations
 
@@ -173,7 +173,6 @@ def aplicar_estilo() -> None:
         .vel-kpi .val {{ font-family: 'Montserrat', sans-serif; font-size: 1.35rem; font-weight: 800; color: {COR_AZUL_ESC}; margin-top: 6px; }}
         .vel-kpi .val--red {{ color: {COR_VERMELHO} !important; }}
         div[data-baseweb="input"], div[data-baseweb="select"] {{ border-radius: 10px !important; border: 1px solid #e2e8f0 !important; background-color: {COR_INPUT_BG} !important; }}
-        /* Centralizar fórmulas LaTeX */
         .stLatex {{ text-align: center !important; display: flex; justify-content: center; margin-bottom: 1.5rem; }}
         </style>
         """,
@@ -218,27 +217,30 @@ def process_pipeline():
     
     if df_geral.empty: raise ValueError("BD GERAL não encontrada.")
 
-    # Normalização
+    # Normalização mínima (apenas empreendimento e concorrência)
     for df in [df_geral, df_det]:
-        if "CHAVE" in df.columns: df["CHAVE"] = df["CHAVE"].astype(str).str.strip().str.upper()
-        if "CONSTRUTORA" in df.columns: df["CONSTRUTORA"] = df["CONSTRUTORA"].astype(str).str.strip().str.upper()
         if "EMPREENDIMENTO" in df.columns: df["EMPREENDIMENTO"] = df["EMPREENDIMENTO"].astype(str).str.strip().str.upper()
         if "CONCORRE COM" in df.columns: df["CONCORRE COM"] = df["CONCORRE COM"].astype(str).str.strip().str.upper()
 
     cols_num = ["VENDAS", "ESTOQUE", "ESTOQUE INICIAL"]
-    for col in cols_num: df_geral[col] = pd.to_numeric(df_geral[col], errors='coerce').fillna(0)
+    for col in cols_num: 
+        if col in df_geral.columns:
+            df_geral[col] = pd.to_numeric(df_geral[col], errors='coerce').fillna(0)
     
-    df_geral["PRECO_MEDIO"] = df_geral["PREÇO MÉDIO"].apply(parse_val)
+    if "PREÇO MÉDIO" in df_geral.columns:
+        df_geral["PRECO_MEDIO"] = df_geral["PREÇO MÉDIO"].apply(parse_val)
+    
     df_geral["DATA_DT"] = pd.to_datetime(df_geral["DATA"], dayfirst=True, errors='coerce')
-    df_geral = df_geral[df_geral["DATA_DT"].notna()].sort_values(["CHAVE", "DATA_DT"])
+    df_geral = df_geral[df_geral["DATA_DT"].notna()].sort_values(["EMPREENDIMENTO", "DATA_DT"])
     
-    # Cálculos dos Indicadores (Fórmulas solicitadas)
+    # Cálculos dos Indicadores baseados no EMPREENDIMENTO
     df_geral["Absorcao"] = df_geral["VENDAS"] / df_geral["ESTOQUE INICIAL"].replace(0, np.nan)
     df_geral["Velocidade"] = df_geral["VENDAS"] / (df_geral["ESTOQUE INICIAL"] - df_geral["VENDAS"]).replace(0, np.nan)
     df_geral["Escoamento"] = df_geral["ESTOQUE"] / df_geral["ESTOQUE INICIAL"].replace(0, np.nan)
-    df_geral["Delta_Preco"] = df_geral.groupby("CHAVE")["PRECO_MEDIO"].pct_change()
+    df_geral["Delta_Preco"] = df_geral.groupby("EMPREENDIMENTO")["PRECO_MEDIO"].pct_change()
     
-    df_det["Preco_m2"] = df_det["PREÇO_M2"].apply(parse_val)
+    if "PREÇO_M2" in df_det.columns:
+        df_det["Preco_m2"] = df_det["PREÇO_M2"].apply(parse_val)
     df_det["DATA_DT"] = pd.to_datetime(df_det["DATA"], dayfirst=True, errors='coerce')
     return df_geral, df_det
 
@@ -258,12 +260,14 @@ def main():
         return
 
     st.markdown("<div style='text-align: center; font-weight: bold; margin-bottom: 1rem;'>Configuração da Análise Direta</div>", unsafe_allow_html=True)
-    df_direcional = df_master[df_master["CONSTRUTORA"] == "DIRECIONAL"]
-    lista_alvos = sorted(df_direcional["EMPREENDIMENTO"].unique())
-    if not lista_alvos:
-        st.error("Nenhum projeto DIRECIONAL localizado.")
+    
+    # Lista todos os empreendimentos para seleção
+    lista_todos_emps = sorted(df_master["EMPREENDIMENTO"].unique())
+    if not lista_todos_emps:
+        st.error("Nenhum empreendimento localizado na base.")
         return
-    alvo_selecionado = st.selectbox("Escolha o Produto Direcional", lista_alvos)
+    
+    alvo_selecionado = st.selectbox("Escolha o Produto Direcional para Estudo", lista_todos_emps)
 
     # Lógica de Concorrência Automática via Coluna
     df_cluster = df_master[
@@ -279,16 +283,18 @@ def main():
 
     df_mes = df_cluster[df_cluster["DATA"] == mes_estudo]
     df_alvo_mes = df_mes[df_mes["EMPREENDIMENTO"] == alvo_selecionado]
+    
     abs_alvo = df_alvo_mes["Absorcao"].iloc[0] * 100 if not df_alvo_mes.empty else 0
     m2_alvo = df_alvo_mes["PRECO_MEDIO"].iloc[0] if not df_alvo_mes.empty else 0
-    m2_conc = df_mes[df_mes["EMPREENDIMENTO"] != alvo_selecionado]["PRECO_MEDIO"].mean() if not df_mes[df_mes["EMPREENDIMENTO"] != alvo_selecionado].empty else 0
+    df_concs_mes = df_mes[df_mes["EMPREENDIMENTO"] != alvo_selecionado]
+    m2_conc = df_concs_mes["PRECO_MEDIO"].mean() if not df_concs_mes.empty else 0
 
     st.markdown(f"""
         <div class="vel-kpi-row">
             <div class="vel-kpi"><div class="lbl">Preço Médio Alvo</div><div class="val val--red">R$ {m2_alvo:,.2f}</div></div>
             <div class="vel-kpi"><div class="lbl">Preço Médio Concorrentes</div><div class="val">R$ {m2_conc:,.2f}</div></div>
             <div class="vel-kpi"><div class="lbl">Taxa de Absorção (Alvo)</div><div class="val val--red">{abs_alvo:.1f}%</div></div>
-            <div class="vel-kpi"><div class="lbl">Total Concorrentes</div><div class="val">{df_mes[df_mes["EMPREENDIMENTO"] != alvo_selecionado]["EMPREENDIMENTO"].nunique()}</div></div>
+            <div class="vel-kpi"><div class="lbl">Total Concorrentes Ativos</div><div class="val">{df_mes[df_mes["EMPREENDIMENTO"] != alvo_selecionado]["EMPREENDIMENTO"].nunique()}</div></div>
         </div>
     """, unsafe_allow_html=True)
 
@@ -296,8 +302,17 @@ def main():
     # INDICADORES DE PERFORMANCE (BD GERAL)
     # -------------------------------------------------------------------------
     st.subheader("Performance de Vendas e Preço (BD GERAL)")
+    
+    cluster_names = sorted(df_cluster["EMPREENDIMENTO"].unique())
+    selected_emps = st.multiselect(
+        "Selecione empreendimentos para comparar nos gráficos",
+        cluster_names,
+        default=[alvo_selecionado] + cluster_names[:min(2, len(cluster_names))]
+    )
+
     if not df_cluster.empty:
-        df_trend = df_cluster.sort_values("DATA_DT")
+        df_trend = df_cluster[df_cluster["EMPREENDIMENTO"].isin(selected_emps)].copy()
+        df_trend = df_trend.sort_values("DATA_DT")
         df_trend["DATA_STR"] = df_trend["DATA_DT"].dt.strftime("%m/%Y")
         
         g1, g2 = st.columns(2)
@@ -344,50 +359,77 @@ def main():
             st.latex(r"\Delta Preço_{m2} = \frac{Preço_t - Preço_{t-1}}{Preço_{t-1}}")
 
     # -------------------------------------------------------------------------
-    # NOVO GRÁFICO: EVOLUÇÃO PREÇO M2 VS ESTOQUE
+    # GRÁFICO: EVOLUÇÃO PREÇO M2 VS ESTOQUE POR EMPREENDIMENTO
     # -------------------------------------------------------------------------
     st.markdown("<br>", unsafe_allow_html=True)
     
-    df_det_f = df_detalhada[df_detalhada["EMPREENDIMENTO"].isin(df_cluster["EMPREENDIMENTO"].unique())].copy()
+    df_det_f = df_detalhada[df_detalhada["EMPREENDIMENTO"].isin(selected_emps)].copy()
     
-    if not df_det_f.empty and not df_cluster.empty:
-        # Agrupar Preço m2 por data (Mediana do Cluster)
-        df_price_trend = df_det_f.groupby("DATA_DT").agg(Preco_m2_Mediana=("Preco_m2", "median")).reset_index()
-        # Agrupar Estoque por data (Soma do Cluster)
-        df_stock_trend = df_cluster.groupby("DATA_DT").agg(Estoque_Total=("ESTOQUE", "sum")).reset_index()
-        
-        df_merged_trend = pd.merge(df_price_trend, df_stock_trend, on="DATA_DT", how="outer").sort_values("DATA_DT")
+    if not df_det_f.empty and not df_trend.empty:
+        df_price_trend = df_det_f.groupby(["DATA_DT", "EMPREENDIMENTO"]).agg(Preco_m2_Mediana=("Preco_m2", "median")).reset_index()
+        df_merged_trend = pd.merge(df_price_trend, df_trend[["DATA_DT", "EMPREENDIMENTO", "ESTOQUE"]], on=["DATA_DT", "EMPREENDIMENTO"], how="outer").sort_values("DATA_DT")
         df_merged_trend["DATA_STR"] = df_merged_trend["DATA_DT"].dt.strftime("%m/%Y")
         
+        st.subheader("Evolução Individual: Preço m² (Mediana) e Estoque (Unidades)")
+        
         fig_dual = make_subplots(specs=[[{"secondary_y": True}]])
+        palette = px.colors.qualitative.Prism
         
-        fig_dual.add_trace(
-            go.Scatter(x=df_merged_trend["DATA_STR"], y=df_merged_trend["Preco_m2_Mediana"], 
-                       name="Preço m² Mediano (R$)", line=dict(color=COR_VERMELHO, width=4),
-                       text=df_merged_trend["Preco_m2_Mediana"].map(lambda x: f"R$ {x:,.2f}"),
-                       mode='lines+markers+text', textposition="top center"),
-            secondary_y=False,
-        )
-        
-        fig_dual.add_trace(
-            go.Bar(x=df_merged_trend["DATA_STR"], y=df_merged_trend["Estoque_Total"], 
-                   name="Estoque Total (Unid.)", marker_color=COR_AZUL_ESC, opacity=0.4,
-                   text=df_merged_trend["Estoque_Total"], textposition='outside'),
-            secondary_y=True,
-        )
+        for i, emp in enumerate(selected_emps):
+            df_emp = df_merged_trend[df_merged_trend["EMPREENDIMENTO"] == emp].dropna(subset=["DATA_DT"])
+            if df_emp.empty: continue
+            color = palette[i % len(palette)]
+            
+            fig_dual.add_trace(
+                go.Scatter(x=df_emp["DATA_STR"], y=df_emp["Preco_m2_Mediana"], 
+                           name=f"R$/m² - {emp}", 
+                           line=dict(color=color, width=4),
+                           mode='lines+markers+text',
+                           text=df_emp["Preco_m2_Mediana"].map(lambda x: f"R${x:,.0f}"),
+                           textposition="top center"),
+                secondary_y=False,
+            )
+            
+            fig_dual.add_trace(
+                go.Bar(x=df_emp["DATA_STR"], y=df_emp["ESTOQUE"], 
+                       name=f"Estoque - {emp}", 
+                       marker_color=color, opacity=0.3,
+                       text=df_emp["ESTOQUE"].astype(int),
+                       textposition='inside'),
+                secondary_y=True,
+            )
         
         fig_dual.update_layout(
-            title={'text': "Evolução do Mercado: Preço m² (Mediana) e Estoque (Soma)", 'x':0.5, 'xanchor': 'center'},
+            title={'text': "Dinâmica de Preço vs Volume de Estoque por Produto", 'x':0.5, 'xanchor': 'center'},
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=20, r=20, t=50, b=20),
-            font=dict(family="Inter", color=COR_TEXTO_LABEL)
+            margin=dict(l=20, r=20, t=80, b=20),
+            font=dict(family="Inter", color=COR_TEXTO_LABEL),
+            barmode='group'
         )
         
-        fig_dual.update_yaxes(title_text="Preço m² (R$)", secondary_y=False, gridcolor="rgba(226, 232, 240, 0.4)")
-        fig_dual.update_yaxes(title_text="Estoque (Unid.)", secondary_y=True)
-        
+        fig_dual.update_yaxes(title_text="Preço m² (Mediana)", secondary_y=False, gridcolor="rgba(226, 232, 240, 0.4)")
+        fig_dual.update_yaxes(title_text="Estoque (Unidades)", secondary_y=True)
         st.plotly_chart(fig_dual, use_container_width=True, config={"displayModeBar": False})
+
+    # -------------------------------------------------------------------------
+    # TABELA DE ESCOAMENTO (ALVO SELECIONADO)
+    # -------------------------------------------------------------------------
+    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:2rem 0;'/>", unsafe_allow_html=True)
+    st.subheader(f"Análise de Escoamento de Estoque ({alvo_selecionado})")
+    
+    df_alvo_escoamento = df_master[df_master["EMPREENDIMENTO"] == alvo_selecionado].copy()
+    
+    if not df_alvo_escoamento.empty:
+        show_escoamento = df_alvo_escoamento[["EMPREENDIMENTO", "DATA", "ESTOQUE", "ESTOQUE INICIAL", "Escoamento"]].copy()
+        show_escoamento = show_escoamento.rename(columns={
+            "EMPREENDIMENTO": "Produto", "DATA": "Mês/Ano",
+            "ESTOQUE": "Estoque Atual", "ESTOQUE INICIAL": "Estoque Inicial",
+            "Escoamento": "Taxa de Escoamento"
+        })
+        st.dataframe(show_escoamento.style.format({
+            "Estoque Atual": "{:,.0f}", "Estoque Inicial": "{:,.0f}", "Taxa de Escoamento": "{:.1%}"
+        }), use_container_width=True, hide_index=True)
 
     # -------------------------------------------------------------------------
     # TABELAS DE PREÇO (BD DETALHADA) - 2 ÚLTIMOS MESES
