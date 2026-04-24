@@ -2,7 +2,7 @@
 """
 Análise de Concorrência — Inteligência Competitiva e Performance.
 Foco: Comparação Direta via BD GERAL e BD DETALHADA.
-Lógica: Filtro Múltiplo Direcional + Concorrentes via 'CONCORRE COM'.
+Lógica: Filtro Múltiplo Direcional + Cluster Completo via 'CONCORRE COM'.
 Recursos: Evolução Preço vs Estoque, Gaps 2 meses, Rótulos, Fórmulas e Design Gaps.
 """
 from __future__ import annotations
@@ -39,6 +39,7 @@ COR_TEXTO_MUTED = "#64748b"
 COR_INPUT_BG = "#f0f2f6"
 
 def _hex_rgb_triplet(hex_color: str) -> str:
+    """Converte #RRGGBB em 'r, g, b' para uso em rgba(...)."""
     x = (hex_color or "").strip().lstrip("#")
     return f"{int(x[0:2], 16)}, {int(x[2:4], 16)}, {int(x[4:6], 16)}" if len(x) == 6 else "0,0,0"
 
@@ -209,7 +210,6 @@ def main():
     st.markdown("<div style='text-align: center; font-weight: bold; margin-bottom: 1rem;'>Seleção de Estudo Competitivo</div>", unsafe_allow_html=True)
     
     # Identificar Empreendimentos DIRECIONAL (Filtro Inteligente)
-    # Procuramos por 'DIRECIONAL' em CONSTRUTORA (Geral) ou CONCORRENTE (Detalhada)
     list_dir_geral = df_master[df_master["CONSTRUTORA"] == "DIRECIONAL"]["EMPREENDIMENTO"].unique().tolist()
     list_dir_det = df_detalhada[df_detalhada["CONCORRENTE"] == "DIRECIONAL"]["EMPREENDIMENTO"].unique().tolist()
     lista_direcionais = sorted(list(set(list_dir_geral + list_dir_det)))
@@ -225,7 +225,6 @@ def main():
         return
 
     # Lógica de Cluster Automático: Alvos + Competidores (coluna CONCORRE COM)
-    # Pegamos os nomes dos concorrentes listados na coluna para cada alvo escolhido
     concorrentes_cluster = set()
     for s in selecionados_dir:
         match = df_master[df_master["EMPREENDIMENTO"] == s]
@@ -236,7 +235,8 @@ def main():
                     c_clean = c.strip().upper()
                     if c_clean: concorrentes_cluster.add(c_clean)
 
-    cluster_final = list(set(selecionados_dir) | concorrentes_cluster)
+    # O cluster final inclui as selecionadas + todos os concorrentes mapeados
+    cluster_final = sorted(list(set(selecionados_dir) | concorrentes_cluster))
     
     # Filtrar DF do Cluster
     df_cluster = df_master[df_master["EMPREENDIMENTO"].isin(cluster_final)].copy()
@@ -246,7 +246,7 @@ def main():
 
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1.5rem 0;'/>", unsafe_allow_html=True)
 
-    # KPIs Consolidados do Alvo (ou média se múltiplos)
+    # KPIs Consolidados
     df_mes = df_cluster[df_cluster["DATA"] == mes_estudo]
     df_alvo_mes = df_mes[df_mes["EMPREENDIMENTO"].isin(selecionados_dir)]
     abs_alvo = df_alvo_mes["Absorcao"].mean() * 100 if not df_alvo_mes.empty else 0
@@ -259,25 +259,34 @@ def main():
             <div class="vel-kpi"><div class="lbl">Preço Médio Alvo(s)</div><div class="val val--red">R$ {m2_alvo:,.2f}</div></div>
             <div class="vel-kpi"><div class="lbl">Preço Médio Concorrentes</div><div class="val">R$ {m2_conc:,.2f}</div></div>
             <div class="vel-kpi"><div class="lbl">Taxa de Absorção Média</div><div class="val val--red">{abs_alvo:.1f}%</div></div>
-            <div class="vel-kpi"><div class="lbl">Nº Competidores Identificados</div><div class="val">{df_mes[~df_mes["EMPREENDIMENTO"].isin(selecionados_dir)]["EMPREENDIMENTO"].nunique()}</div></div>
+            <div class="vel-kpi"><div class="lbl">Nº Competidores no Cluster</div><div class="val">{len(concorrentes_cluster)}</div></div>
         </div>
     """, unsafe_allow_html=True)
 
-    # Performance
+    # Performance - Exibe todos os membros do cluster por padrão
     st.subheader("Performance de Vendas (BD GERAL)")
     
-    if not df_cluster.empty:
-        df_trend = df_cluster.sort_values("DATA_DT")
+    # Filtro para os gráficos: Permite remover algum se o cluster for muito grande, mas inicia com todos
+    selected_emps = st.multiselect(
+        "Filtrar empreendimentos para exibição nos gráficos",
+        cluster_final,
+        default=cluster_final
+    )
+
+    if not df_cluster.empty and selected_emps:
+        df_trend = df_cluster[df_cluster["EMPREENDIMENTO"].isin(selected_emps)].sort_values("DATA_DT")
         df_trend["DATA_STR"] = df_trend["DATA_DT"].dt.strftime("%m/%Y")
         
         c1, c2 = st.columns(2)
         with c1:
+            # Grafico 1: Absorção
             fig1 = px.bar(df_trend, x="DATA_STR", y="Absorcao", color="EMPREENDIMENTO", title="Taxa de Absorção", barmode="group", text_auto='.1%', color_discrete_sequence=px.colors.qualitative.Prism)
             fig1.update_layout(title_x=0.5, yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
             fig1.update_traces(textposition='outside')
             st.plotly_chart(fig1, use_container_width=True)
             st.latex(r"Absorção_t = \frac{Vendas_t}{Estoque_{t-1} + Vendas_t}")
             
+            # Grafico 2: Escoamento
             fig2 = px.bar(df_trend, x="DATA_STR", y="Escoamento", color="EMPREENDIMENTO", title="Taxa de Escoamento", barmode="group", text_auto='.1%', color_discrete_sequence=px.colors.qualitative.Prism)
             fig2.update_layout(title_x=0.5, yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
             fig2.update_traces(textposition='outside')
@@ -285,12 +294,14 @@ def main():
             st.latex(r"Escoamento_t = \frac{Estoque_t}{Estoque_{Inicial}}")
             
         with c2:
+            # Grafico 3: Velocidade
             fig3 = px.bar(df_trend, x="DATA_STR", y="Velocidade", color="EMPREENDIMENTO", title="Velocidade de Vendas", barmode="group", text_auto='.1%', color_discrete_sequence=px.colors.qualitative.Prism)
             fig3.update_layout(title_x=0.5, yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
             fig3.update_traces(textposition='outside')
             st.plotly_chart(fig3, use_container_width=True)
             st.latex(r"Velocidade_t = \frac{Vendas_t}{Estoque_{t-1}}")
             
+            # Grafico 4: Variação Preço
             fig4 = px.bar(df_trend, x="DATA_STR", y="Delta_Preco", color="EMPREENDIMENTO", title="Variação de Preço (MoM)", barmode="group", text_auto='.1%', color_discrete_sequence=px.colors.qualitative.Prism)
             fig4.update_layout(title_x=0.5, yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
             fig4.update_traces(textposition='outside')
@@ -301,47 +312,41 @@ def main():
     st.markdown("<br>", unsafe_allow_html=True)
     df_det_f = df_detalhada[df_detalhada["EMPREENDIMENTO"].isin(cluster_final)].copy()
     
-    if not df_det_f.empty:
+    if not df_det_f.empty and selected_emps:
         df_p_trend = df_det_f.groupby(["DATA_DT", "EMPREENDIMENTO"]).agg(Mediana=("Preco_m2", "median")).reset_index()
-        df_combined = pd.merge(df_p_trend, df_trend[["DATA_DT", "EMPREENDIMENTO", "ESTOQUE"]], on=["DATA_DT", "EMPREENDIMENTO"], how="outer").sort_values("DATA_DT")
+        # No gráfico de evolução, também filtramos pelos selecionados no multiselect
+        df_combined = pd.merge(df_p_trend, df_master[["DATA_DT", "EMPREENDIMENTO", "ESTOQUE"]], on=["DATA_DT", "EMPREENDIMENTO"], how="outer").sort_values("DATA_DT")
+        df_combined = df_combined[df_combined["EMPREENDIMENTO"].isin(selected_emps)]
         df_combined["DATA_STR"] = df_combined["DATA_DT"].dt.strftime("%m/%Y")
         
         st.subheader("Evolução Individual: Preço m² (Mediana) e Estoque (Unid.)")
         fig_dual = make_subplots(specs=[[{"secondary_y": True}]])
         palette = px.colors.qualitative.Prism
         
-        for i, emp in enumerate(cluster_final):
+        for i, emp in enumerate(selected_emps):
             df_e = df_combined[df_combined["EMPREENDIMENTO"] == emp].dropna(subset=["DATA_DT"])
             if df_e.empty: continue
             color = palette[i % len(palette)]
             
             fig_dual.add_trace(go.Scatter(x=df_e["DATA_STR"], y=df_e["Mediana"], name=f"R$/m² - {emp}", line=dict(color=color, width=4), mode='lines+markers+text', text=df_e["Mediana"].map(lambda x: f"R${x:,.0f}"), textposition="top center"), secondary_y=False)
-            
-            # Correção do Erro IntCastingNaN: fillna(0) antes do astype(int)
             fig_dual.add_trace(go.Bar(x=df_e["DATA_STR"], y=df_e["ESTOQUE"], name=f"Estoque - {emp}", marker_color=color, opacity=0.3, text=df_e["ESTOQUE"].fillna(0).astype(int), textposition='inside'), secondary_y=True)
         
         fig_dual.update_layout(title={'text': "Dinâmica de Preço vs Volume de Estoque", 'x':0.5, 'xanchor': 'center'}, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", barmode='group')
         st.plotly_chart(fig_dual, use_container_width=True)
 
-    # Tabela de Escoamento (Apenas Direcional Selecionada)
-    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:2rem 0;'/>", unsafe_allow_html=True)
-    st.subheader(f"Análise de Escoamento de Estoque (Produtos Direcional Selecionados)")
-    df_esc_alvos = df_master[df_master["EMPREENDIMENTO"].isin(selecionados_dir)].copy()
-    if not df_esc_alvos.empty:
-        st.dataframe(df_esc_alvos[["EMPREENDIMENTO", "DATA", "ESTOQUE", "ESTOQUE INICIAL", "Escoamento"]].rename(columns={"EMPREENDIMENTO": "Produto", "DATA": "Mês", "ESTOQUE": "Atual", "ESTOQUE INICIAL": "Inicial", "Escoamento": "Taxa"}).style.format({"Atual": "{:,.0f}", "Inicial": "{:,.0f}", "Taxa": "{:.1%}"}), use_container_width=True, hide_index=True)
-
-    # Tabelas de Preço (Últimos 2 Meses)
+    # Tabelas de Preço (Incluindo Alvo e Concorrentes do Cluster)
     if not df_det_f.empty:
+        st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:2rem 0;'/>", unsafe_allow_html=True)
         df_det_f["Mes_Ano"] = df_det_f["DATA_DT"].dt.strftime("%m/%Y")
         all_m = sorted(df_det_f["Mes_Ano"].unique(), key=lambda x: datetime.strptime(x, "%m/%Y"))
         last_2 = all_m[-2:] if len(all_m) >= 2 else all_m
         
-        st.subheader("Mediana do Preço m² (Últimos 2 meses)")
+        st.subheader("Mediana do Preço m² (Últimos 2 meses - Cluster Completo)")
         p_med = pd.pivot_table(df_det_f, values="Preco_m2", index="EMPREENDIMENTO", columns="Mes_Ano", aggfunc="median")[last_2].reset_index()
         if len(last_2) == 2: p_med["Gap (%)"] = ((p_med[last_2[1]] / p_med[last_2[0]]) - 1) * 100
         st.dataframe(p_med.style.format({**{m: "R$ {:.2f}" for m in last_2}, "Gap (%)": "{:.1f}%"}), use_container_width=True, hide_index=True)
 
-        st.subheader("Média do Preço m² por Tipologia (Últimos 2 meses)")
+        st.subheader("Média do Preço m² por Tipologia (Últimos 2 meses - Cluster Completo)")
         p_tip = pd.pivot_table(df_det_f, values="Preco_m2", index="TIPOLOGIA", columns="Mes_Ano", aggfunc="mean")[last_2].reset_index()
         if len(last_2) == 2: p_tip["Gap (%)"] = ((p_tip[last_2[1]] / p_tip[last_2[0]]) - 1) * 100
         st.dataframe(p_tip.style.format({**{m: "R$ {:.2f}" for m in last_2}, "Gap (%)": "{:.1f}%"}), use_container_width=True, hide_index=True)
