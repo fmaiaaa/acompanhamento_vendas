@@ -413,19 +413,13 @@ def main() -> None:
     df["Gap_Dir"] = df["VGV_Dir"] - df["VGV_Real"]
     df["Gap_Emc"] = df["VGV_Emc"] - df["VGV_Real"]
 
-    # -------------------------------------------------------------------------
-    # Filtro de Intervalo: Desconsiderar gaps negativos e acima de 100k
-    # -------------------------------------------------------------------------
-    df = df[(df["Gap_Dir"] >= 0) & (df["Gap_Dir"] <= 100000) & 
-            (df["Gap_Emc"] >= 0) & (df["Gap_Emc"] <= 100000)]
-
     # Limpeza de campos categóricos nulos
     for col in [c_emp, c_reg_imob, c_imobiliaria, c_canal, c_rank]:
         if col:
             df[col] = df[col].fillna("Não Informado").astype(str).str.strip()
 
     # -------------------------------------------------------------------------
-    # Filtros
+    # Filtros da UI
     # -------------------------------------------------------------------------
     anos_disp = sorted([int(x) for x in df["_ano"].dropna().unique() if x > 2000])
     meses_disp = list(range(1, 13))
@@ -445,6 +439,13 @@ def main() -> None:
     with row2_c2: sel_imobiliaria = st.multiselect("Imobiliária", sorted(df[c_imobiliaria].unique()) if c_imobiliaria else [])
     with row2_c3: sel_rank = st.multiselect("Ranking", sorted(df[c_rank].unique()) if c_rank else [])
 
+    # Novos botões de filtros opcionais para Gaps
+    row3_c1, row3_c2 = st.columns(2)
+    with row3_c1:
+        exibir_negativos = st.checkbox("Exibir Gaps < 0 (Atos Expressivos)", value=False)
+    with row3_c2:
+        exibir_acima_100k = st.checkbox("Exibir Gaps > R$ 100k", value=False)
+
     df_f = df.copy()
     if sel_ano: df_f = df_f[df_f["_ano"].isin(sel_ano)]
     if sel_mes: df_f = df_f[df_f["_mes"].isin(sel_mes)]
@@ -453,6 +454,15 @@ def main() -> None:
     if c_emp and sel_emp: df_f = df_f[df_f[c_emp].isin(sel_emp)]
     if c_imobiliaria and sel_imobiliaria: df_f = df_f[df_f[c_imobiliaria].isin(sel_imobiliaria)]
     if c_rank and sel_rank: df_f = df_f[df_f[c_rank].isin(sel_rank)]
+
+    # -------------------------------------------------------------------------
+    # Aplicando Regras de Gaps de acordo com as caixas de seleção
+    # -------------------------------------------------------------------------
+    if not exibir_negativos:
+        df_f = df_f[(df_f["Gap_Dir"] >= 0) & (df_f["Gap_Emc"] >= 0)]
+    
+    if not exibir_acima_100k:
+        df_f = df_f[(df_f["Gap_Dir"] <= 100000) & (df_f["Gap_Emc"] <= 100000)]
 
     # -------------------------------------------------------------------------
     # Indicadores Consolidados
