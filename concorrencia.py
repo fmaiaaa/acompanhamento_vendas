@@ -2,9 +2,8 @@
 """
 Análise de Concorrência — Inteligência Competitiva e Performance.
 Foco: Comparação Direta via BD GERAL e BD DETALHADA.
-Recursos: Evolução de Preço m2 vs Estoque, Gaps de 2 meses e Design Gaps.
-Estatísticas: Tabela de Escoamento (Estoque Atual / Inicial) para o Alvo.
-Correção: Remoção das colunas CHAVE e CONSTRUTORA do pipeline.
+Lógica: Filtro Múltiplo Direcional + Concorrentes via 'CONCORRE COM'.
+Recursos: Evolução Preço vs Estoque, Gaps 2 meses, Rótulos, Fórmulas e Design Gaps.
 """
 from __future__ import annotations
 
@@ -32,23 +31,16 @@ _DIR_APP = Path(__file__).resolve().parent
 LOGO_TOPO_ARQUIVO = "502.57_LOGO DIRECIONAL_V2F-01.png"
 FAVICON_ARQUIVO = "502.57_LOGO D_COR_V3F.png"
 FUNDO_CADASTRO_ARQUIVO = "fundo_cadastrorh.jpg"
-URL_LOGO_DIRECIONAL_EMAIL = "https://logodownload.org/wp-content/uploads/2021/04/direcional-engenharia-logo.png"
 
-# Paleta alinhada à Análise de Gaps
 COR_AZUL_ESC = "#04428f"
 COR_VERMELHO = "#cb0935"
-COR_FUNDO_CARD = "rgba(255, 255, 255, 0.78)"
-COR_BORDA = "#eef2f6"
-COR_TEXTO_MUTED = "#64748b"
 COR_TEXTO_LABEL = "#1e293b"
+COR_TEXTO_MUTED = "#64748b"
 COR_INPUT_BG = "#f0f2f6"
 
 def _hex_rgb_triplet(hex_color: str) -> str:
-    """Converte #RRGGBB em 'r, g, b' para uso em rgba(...)."""
     x = (hex_color or "").strip().lstrip("#")
-    if len(x) != 6:
-        return "0, 0, 0"
-    return f"{int(x[0:2], 16)}, {int(x[2:4], 16)}, {int(x[4:6], 16)}"
+    return f"{int(x[0:2], 16)}, {int(x[2:4], 16)}, {int(x[4:6], 16)}" if len(x) == 6 else "0,0,0"
 
 RGB_AZUL_CSS = _hex_rgb_triplet(COR_AZUL_ESC)
 RGB_VERMELHO_CSS = _hex_rgb_triplet(COR_VERMELHO)
@@ -59,114 +51,54 @@ RGB_VERMELHO_CSS = _hex_rgb_triplet(COR_VERMELHO)
 def _resolver_png_raiz(nome: str) -> Path | None:
     for base in (_DIR_APP, _DIR_APP.parent):
         p = base / nome
-        if p.is_file():
-            return p
-    return None
-
-def _resolver_imagem_fundo_local(nome: str) -> Path | None:
-    for base in (_DIR_APP, _DIR_APP.parent):
-        for ext in (".jpg", ".jpeg", ".png", ".PNG"):
-            stem = Path(nome).stem
-            p = base / f"{stem}{ext}"
-            if p.is_file():
-                return p
-        p = base / nome
-        if p.is_file():
-            return p
+        if p.is_file(): return p
     return None
 
 def _css_url_fundo_cadastro() -> str:
-    p = _resolver_imagem_fundo_local(FUNDO_CADASTRO_ARQUIVO)
+    p = _resolver_png_raiz(FUNDO_CADASTRO_ARQUIVO)
     if p and p.is_file():
         try:
-            raw = p.read_bytes()
-            suf = p.suffix.lower()
-            mime = "image/jpeg" if suf in (".jpg", ".jpeg") else "image/png"
-            b64 = base64.b64encode(raw).decode("ascii")
-            return f"data:{mime};base64,{b64}"
-        except OSError:
-            pass
+            b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+            return f"data:image/jpeg;base64,{b64}"
+        except: pass
     return "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1920&q=80"
-
-def _logo_arquivo_local() -> str | None:
-    p_topo = _resolver_png_raiz(LOGO_TOPO_ARQUIVO)
-    if p_topo:
-        return str(p_topo)
-    return None
-
-def _exibir_logo_topo() -> None:
-    path = _logo_arquivo_local()
-    try:
-        if path:
-            ext = Path(path).suffix.lower().lstrip(".")
-            mime = "image/jpeg" if ext == "png" else "image/jpeg" if ext in ("jpg", "jpeg") else "image/png"
-            with open(path, "rb") as f:
-                b64 = base64.b64encode(f.read()).decode("ascii")
-            st.markdown(f'<div class="ficha-logo-wrap"><img src="data:{mime};base64,{b64}" alt="Direcional" /></div>', unsafe_allow_html=True)
-    except Exception:
-        pass
-
-def _cabecalho_pagina() -> None:
-    _exibir_logo_topo()
-    st.markdown(
-        f'<div class="ficha-hero-stack">'
-        f'<div class="ficha-hero">'
-        f'<p class="ficha-title">Inteligência Competitiva - Estudo Direcional</p>'
-        f'<p class="ficha-sub">Performance via <strong>BD GERAL</strong> e Precificação via <strong>BD DETALHADA</strong>.</p>'
-        f"</div>"
-        f'<div class="ficha-hero-bar-wrap" aria-hidden="true"><div class="ficha-hero-bar"></div></div>'
-        f"</div>",
-        unsafe_allow_html=True,
-    )
 
 def aplicar_estilo() -> None:
     bg_url = _css_url_fundo_cadastro()
-    st.markdown(
-        f"""
+    st.markdown(f"""
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800;900&family=Inter:wght@400;500;600;700&display=swap');
         @keyframes fichaFadeIn {{ from {{ opacity: 0; transform: translateY(18px); }} to {{ opacity: 1; transform: translateY(0); }} }}
         @keyframes fichaShimmer {{ 0% {{ background-position: 0% 50%; }} 100% {{ background-position: 200% 50%; }} }}
         html, body, :root, [data-testid="stApp"] {{ color-scheme: light !important; }}
-        html, body {{
-            font-family: 'Inter', sans-serif; color: {COR_TEXTO_LABEL};
-            background: transparent !important; background-color: transparent !important;
-        }}
-        .stApp, [data-testid="stApp"] {{
+        html, body {{ font-family: 'Inter', sans-serif; color: {COR_TEXTO_LABEL}; background: transparent !important; }}
+        .stApp {{
             background: linear-gradient(135deg, rgba({RGB_AZUL_CSS}, 0.82) 0%, rgba(30, 58, 95, 0.55) 38%, rgba({RGB_VERMELHO_CSS}, 0.22) 72%, rgba(15, 23, 42, 0.45) 100%),
                 url("{bg_url}") center / cover no-repeat !important;
-            background-attachment: scroll !important; background-color: transparent !important;
+            background-attachment: scroll !important;
         }}
-        [data-testid="stAppViewContainer"] {{ background: transparent !important; background-color: transparent !important; }}
-        header[data-testid="stHeader"] {{ background: transparent !important; border: none !important; box-shadow: none !important; }}
+        header[data-testid="stHeader"] {{ background: transparent !important; border: none !important; }}
         [data-testid="stSidebar"] {{ display: none !important; }}
-        [data-testid="stMain"] {{
-            padding-left: clamp(14px, 5vw, 56px) !important; padding-right: clamp(14px, 5vw, 56px) !important;
-            padding-top: clamp(12px, 3.5vh, 40px) !important; padding-bottom: clamp(14px, 4vh, 44px) !important;
-        }}
         .block-container {{
             max-width: 1700px !important; margin-left: auto !important; margin-right: auto !important;
-            margin-top: clamp(4px, 1vh, 14px) !important; margin-bottom: clamp(4px, 1vh, 14px) !important;
             padding: 1.45rem 2.25rem 1.55rem 2.25rem !important; background: rgba(255, 255, 255, 0.78) !important;
             backdrop-filter: blur(18px) saturate(1.15); border-radius: 24px !important;
             border: 1px solid rgba(255, 255, 255, 0.45) !important;
             box-shadow: 0 4px 6px -1px rgba({RGB_AZUL_CSS}, 0.06), 0 24px 48px -12px rgba({RGB_AZUL_CSS}, 0.18) !important;
-            animation: fichaFadeIn 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+            animation: fichaFadeIn 0.7s both;
         }}
         h1, h2, h3, h4 {{ font-family: 'Montserrat', sans-serif !important; color: {COR_AZUL_ESC} !important; font-weight: 800 !important; text-align: center !important; }}
         .ficha-logo-wrap {{ text-align: center; padding: 0.1rem 0 0.45rem 0; }}
         .ficha-logo-wrap img {{ max-height: 72px; width: auto; max-width: min(280px, 85vw); object-fit: contain; }}
-        .ficha-hero-stack {{ width: 100%; margin-bottom: 0.35rem; }}
-        .ficha-hero {{ text-align: center; padding: 0.5rem 0 0 0; max-width: 640px; margin: 0 auto; animation: fichaFadeIn 0.85s both; }}
+        .ficha-hero {{ text-align: center; padding: 0.5rem 0 0 0; max-width: 640px; margin: 0 auto; }}
         .ficha-hero .ficha-title {{ font-family: 'Montserrat', sans-serif; font-size: clamp(1.35rem, 3.5vw, 1.75rem); font-weight: 900; color: {COR_AZUL_ESC}; margin: 0; }}
         .ficha-hero .ficha-sub {{ color: #475569; font-size: 0.95rem; margin: 0.45rem 0 0 0; }}
-        .ficha-hero-bar-wrap {{ width: 100%; margin: clamp(0.85rem, 2.4vw, 1.2rem) 0; }}
-        .ficha-hero-bar {{ height: 4px; border-radius: 999px; background: linear-gradient(90deg, {COR_AZUL_ESC}, {COR_VERMELHO}, {COR_AZUL_ESC}); background-size: 200% 100%; animation: fichaShimmer 4s infinite alternate; }}
+        .ficha-hero-bar {{ height: 4px; border-radius: 999px; background: linear-gradient(90deg, {COR_AZUL_ESC}, {COR_VERMELHO}, {COR_AZUL_ESC}); background-size: 200% 100%; animation: fichaShimmer 4s infinite alternate; margin: 1rem 0; }}
         .vel-kpi-row {{ display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 1.25rem; }}
         .vel-kpi {{
             flex: 1 1 20%; background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,251,252,0.9) 100%);
             border: 1px solid rgba(226, 232, 240, 0.9); border-radius: 14px; padding: 14px 16px; text-align: center;
-            box-shadow: 0 2px 8px rgba({RGB_AZUL_CSS}, 0.06); transition: transform 0.3s ease, box-shadow 0.3s ease;
+            box-shadow: 0 2px 8px rgba({RGB_AZUL_CSS}, 0.06); transition: transform 0.3s ease;
         }}
         .vel-kpi:hover {{ transform: translateY(-4px); box-shadow: 0 10px 20px -5px rgba({RGB_AZUL_CSS}, 0.15); }}
         .vel-kpi .lbl {{ font-size: 0.72rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: {COR_AZUL_ESC}; opacity: 0.85; }}
@@ -175,8 +107,19 @@ def aplicar_estilo() -> None:
         div[data-baseweb="input"], div[data-baseweb="select"] {{ border-radius: 10px !important; border: 1px solid #e2e8f0 !important; background-color: {COR_INPUT_BG} !important; }}
         .stLatex {{ text-align: center !important; display: flex; justify-content: center; margin-bottom: 1.5rem; }}
         </style>
-        """,
-        unsafe_allow_html=True,
+        """, unsafe_allow_html=True)
+
+def _cabecalho_pagina() -> None:
+    path = _resolver_png_raiz(LOGO_TOPO_ARQUIVO)
+    if path:
+        with open(path, "rb") as f:
+            b64 = base64.b64encode(f.read()).decode("ascii")
+        st.markdown(f'<div class="ficha-logo-wrap"><img src="data:image/png;base64,{b64}" alt="Direcional" /></div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<div class="ficha-hero"><p class="ficha-title">Inteligência Competitiva - Estudo Direcional</p>'
+        f'<p class="ficha-sub">Performance via <strong>BD GERAL</strong> e Precificação via <strong>BD DETALHADA</strong>.</p></div>'
+        f'<div class="ficha-hero-bar"></div>',
+        unsafe_allow_html=True
     )
 
 # -----------------------------------------------------------------------------
@@ -217,11 +160,14 @@ def process_pipeline():
     
     if df_geral.empty: raise ValueError("BD GERAL não encontrada.")
 
-    # Normalização mínima (apenas empreendimento e concorrência)
+    # Normalização de Nomes e Colunas
     for df in [df_geral, df_det]:
         if "EMPREENDIMENTO" in df.columns: df["EMPREENDIMENTO"] = df["EMPREENDIMENTO"].astype(str).str.strip().str.upper()
         if "CONCORRE COM" in df.columns: df["CONCORRE COM"] = df["CONCORRE COM"].astype(str).str.strip().str.upper()
+        if "CONSTRUTORA" in df.columns: df["CONSTRUTORA"] = df["CONSTRUTORA"].astype(str).str.strip().str.upper()
+        if "CONCORRENTE" in df.columns: df["CONCORRENTE"] = df["CONCORRENTE"].astype(str).str.strip().str.upper()
 
+    # Tratamento Numérico (Prevenindo IntCastingNaNError)
     cols_num = ["VENDAS", "ESTOQUE", "ESTOQUE INICIAL"]
     for col in cols_num: 
         if col in df_geral.columns:
@@ -233,7 +179,7 @@ def process_pipeline():
     df_geral["DATA_DT"] = pd.to_datetime(df_geral["DATA"], dayfirst=True, errors='coerce')
     df_geral = df_geral[df_geral["DATA_DT"].notna()].sort_values(["EMPREENDIMENTO", "DATA_DT"])
     
-    # Cálculos dos Indicadores baseados no EMPREENDIMENTO
+    # Cálculos dos Indicadores
     df_geral["Absorcao"] = df_geral["VENDAS"] / df_geral["ESTOQUE INICIAL"].replace(0, np.nan)
     df_geral["Velocidade"] = df_geral["VENDAS"] / (df_geral["ESTOQUE INICIAL"] - df_geral["VENDAS"]).replace(0, np.nan)
     df_geral["Escoamento"] = df_geral["ESTOQUE"] / df_geral["ESTOQUE INICIAL"].replace(0, np.nan)
@@ -242,6 +188,7 @@ def process_pipeline():
     if "PREÇO_M2" in df_det.columns:
         df_det["Preco_m2"] = df_det["PREÇO_M2"].apply(parse_val)
     df_det["DATA_DT"] = pd.to_datetime(df_det["DATA"], dayfirst=True, errors='coerce')
+    
     return df_geral, df_det
 
 # -----------------------------------------------------------------------------
@@ -259,201 +206,147 @@ def main():
         st.error(f"Erro no pipeline: {e}")
         return
 
-    st.markdown("<div style='text-align: center; font-weight: bold; margin-bottom: 1rem;'>Configuração da Análise Direta</div>", unsafe_allow_html=True)
+    st.markdown("<div style='text-align: center; font-weight: bold; margin-bottom: 1rem;'>Seleção de Estudo Competitivo</div>", unsafe_allow_html=True)
     
-    # Lista todos os empreendimentos para seleção
-    lista_todos_emps = sorted(df_master["EMPREENDIMENTO"].unique())
-    if not lista_todos_emps:
-        st.error("Nenhum empreendimento localizado na base.")
+    # Identificar Empreendimentos DIRECIONAL (Filtro Inteligente)
+    # Procuramos por 'DIRECIONAL' em CONSTRUTORA (Geral) ou CONCORRENTE (Detalhada)
+    list_dir_geral = df_master[df_master["CONSTRUTORA"] == "DIRECIONAL"]["EMPREENDIMENTO"].unique().tolist()
+    list_dir_det = df_detalhada[df_detalhada["CONCORRENTE"] == "DIRECIONAL"]["EMPREENDIMENTO"].unique().tolist()
+    lista_direcionais = sorted(list(set(list_dir_geral + list_dir_det)))
+
+    if not lista_direcionais:
+        st.warning("Atenção: Nenhum empreendimento DIRECIONAL identificado nas colunas de Construtora ou Concorrente.")
+        lista_direcionais = sorted(df_master["EMPREENDIMENTO"].unique())
+
+    selecionados_dir = st.multiselect("Selecione os Empreendimentos Direcional para Estudo", lista_direcionais)
+
+    if not selecionados_dir:
+        st.info("Selecione um ou mais empreendimentos Direcional para visualizar a análise.")
         return
+
+    # Lógica de Cluster Automático: Alvos + Competidores (coluna CONCORRE COM)
+    # Pegamos os nomes dos concorrentes listados na coluna para cada alvo escolhido
+    concorrentes_cluster = set()
+    for s in selecionados_dir:
+        match = df_master[df_master["EMPREENDIMENTO"] == s]
+        if not match.empty:
+            concorrentes_str = str(match.iloc[0].get("CONCORRE COM", ""))
+            if concorrentes_str:
+                for c in concorrentes_str.split(","):
+                    c_clean = c.strip().upper()
+                    if c_clean: concorrentes_cluster.add(c_clean)
+
+    cluster_final = list(set(selecionados_dir) | concorrentes_cluster)
     
-    alvo_selecionado = st.selectbox("Escolha o Produto Direcional para Estudo", lista_todos_emps)
+    # Filtrar DF do Cluster
+    df_cluster = df_master[df_master["EMPREENDIMENTO"].isin(cluster_final)].copy()
 
-    # Lógica de Concorrência Automática via Coluna
-    df_cluster = df_master[
-        (df_master["EMPREENDIMENTO"] == alvo_selecionado) | 
-        (df_master["CONCORRE COM"].str.contains(alvo_selecionado, na=False, regex=False))
-    ].copy()
-
-    df_sorted_dates = df_master[["DATA", "DATA_DT"]].drop_duplicates().sort_values("DATA_DT")
-    meses_disp = df_sorted_dates["DATA"].tolist()
-    mes_estudo = st.selectbox("Mês de Referência", meses_disp, index=len(meses_disp)-1)
+    df_dates = df_master[["DATA", "DATA_DT"]].drop_duplicates().sort_values("DATA_DT")
+    mes_estudo = st.selectbox("Mês de Referência para Resumo", df_dates["DATA"].tolist(), index=len(df_dates)-1)
 
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1.5rem 0;'/>", unsafe_allow_html=True)
 
+    # KPIs Consolidados do Alvo (ou média se múltiplos)
     df_mes = df_cluster[df_cluster["DATA"] == mes_estudo]
-    df_alvo_mes = df_mes[df_mes["EMPREENDIMENTO"] == alvo_selecionado]
-    
-    abs_alvo = df_alvo_mes["Absorcao"].iloc[0] * 100 if not df_alvo_mes.empty else 0
-    m2_alvo = df_alvo_mes["PRECO_MEDIO"].iloc[0] if not df_alvo_mes.empty else 0
-    df_concs_mes = df_mes[df_mes["EMPREENDIMENTO"] != alvo_selecionado]
+    df_alvo_mes = df_mes[df_mes["EMPREENDIMENTO"].isin(selecionados_dir)]
+    abs_alvo = df_alvo_mes["Absorcao"].mean() * 100 if not df_alvo_mes.empty else 0
+    m2_alvo = df_alvo_mes["PRECO_MEDIO"].mean() if not df_alvo_mes.empty else 0
+    df_concs_mes = df_mes[~df_mes["EMPREENDIMENTO"].isin(selecionados_dir)]
     m2_conc = df_concs_mes["PRECO_MEDIO"].mean() if not df_concs_mes.empty else 0
 
     st.markdown(f"""
         <div class="vel-kpi-row">
-            <div class="vel-kpi"><div class="lbl">Preço Médio Alvo</div><div class="val val--red">R$ {m2_alvo:,.2f}</div></div>
+            <div class="vel-kpi"><div class="lbl">Preço Médio Alvo(s)</div><div class="val val--red">R$ {m2_alvo:,.2f}</div></div>
             <div class="vel-kpi"><div class="lbl">Preço Médio Concorrentes</div><div class="val">R$ {m2_conc:,.2f}</div></div>
-            <div class="vel-kpi"><div class="lbl">Taxa de Absorção (Alvo)</div><div class="val val--red">{abs_alvo:.1f}%</div></div>
-            <div class="vel-kpi"><div class="lbl">Total Concorrentes Ativos</div><div class="val">{df_mes[df_mes["EMPREENDIMENTO"] != alvo_selecionado]["EMPREENDIMENTO"].nunique()}</div></div>
+            <div class="vel-kpi"><div class="lbl">Taxa de Absorção Média</div><div class="val val--red">{abs_alvo:.1f}%</div></div>
+            <div class="vel-kpi"><div class="lbl">Nº Competidores Identificados</div><div class="val">{df_mes[~df_mes["EMPREENDIMENTO"].isin(selecionados_dir)]["EMPREENDIMENTO"].nunique()}</div></div>
         </div>
     """, unsafe_allow_html=True)
 
-    # -------------------------------------------------------------------------
-    # INDICADORES DE PERFORMANCE (BD GERAL)
-    # -------------------------------------------------------------------------
-    st.subheader("Performance de Vendas e Preço (BD GERAL)")
+    # Performance
+    st.subheader("Performance de Vendas (BD GERAL)")
     
-    cluster_names = sorted(df_cluster["EMPREENDIMENTO"].unique())
-    selected_emps = st.multiselect(
-        "Selecione empreendimentos para comparar nos gráficos",
-        cluster_names,
-        default=[alvo_selecionado] + cluster_names[:min(2, len(cluster_names))]
-    )
-
     if not df_cluster.empty:
-        df_trend = df_cluster[df_cluster["EMPREENDIMENTO"].isin(selected_emps)].copy()
-        df_trend = df_trend.sort_values("DATA_DT")
+        df_trend = df_cluster.sort_values("DATA_DT")
         df_trend["DATA_STR"] = df_trend["DATA_DT"].dt.strftime("%m/%Y")
         
-        g1, g2 = st.columns(2)
-        with g1:
-            # Grafico 1: Absorção
-            fig_abs = px.bar(df_trend, x="DATA_STR", y="Absorcao", color="EMPREENDIMENTO", 
-                             title="Taxa de Absorção", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism,
-                             text_auto='.1%')
-            fig_abs.update_layout(title={'x':0.5, 'xanchor': 'center'}, yaxis_tickformat=".1%", 
-                                  paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
-            fig_abs.update_traces(textposition='outside')
-            st.plotly_chart(fig_abs, use_container_width=True)
+        c1, c2 = st.columns(2)
+        with c1:
+            fig1 = px.bar(df_trend, x="DATA_STR", y="Absorcao", color="EMPREENDIMENTO", title="Taxa de Absorção", barmode="group", text_auto='.1%', color_discrete_sequence=px.colors.qualitative.Prism)
+            fig1.update_layout(title_x=0.5, yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
+            fig1.update_traces(textposition='outside')
+            st.plotly_chart(fig1, use_container_width=True)
             st.latex(r"Absorção_t = \frac{Vendas_t}{Estoque_{t-1} + Vendas_t}")
             
-            # Grafico 2: Escoamento
-            fig_esc = px.bar(df_trend, x="DATA_STR", y="Escoamento", color="EMPREENDIMENTO", 
-                             title="Taxa de Escoamento", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism,
-                             text_auto='.1%')
-            fig_esc.update_layout(title={'x':0.5, 'xanchor': 'center'}, yaxis_tickformat=".1%", 
-                                  paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
-            fig_esc.update_traces(textposition='outside')
-            st.plotly_chart(fig_esc, use_container_width=True)
+            fig2 = px.bar(df_trend, x="DATA_STR", y="Escoamento", color="EMPREENDIMENTO", title="Taxa de Escoamento", barmode="group", text_auto='.1%', color_discrete_sequence=px.colors.qualitative.Prism)
+            fig2.update_layout(title_x=0.5, yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
+            fig2.update_traces(textposition='outside')
+            st.plotly_chart(fig2, use_container_width=True)
             st.latex(r"Escoamento_t = \frac{Estoque_t}{Estoque_{Inicial}}")
             
-        with g2:
-            # Grafico 3: Velocidade
-            fig_vel = px.bar(df_trend, x="DATA_STR", y="Velocidade", color="EMPREENDIMENTO", 
-                             title="Velocidade de Vendas", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism,
-                             text_auto='.1%')
-            fig_vel.update_layout(title={'x':0.5, 'xanchor': 'center'}, yaxis_tickformat=".1%", 
-                                  paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
-            fig_vel.update_traces(textposition='outside')
-            st.plotly_chart(fig_vel, use_container_width=True)
+        with c2:
+            fig3 = px.bar(df_trend, x="DATA_STR", y="Velocidade", color="EMPREENDIMENTO", title="Velocidade de Vendas", barmode="group", text_auto='.1%', color_discrete_sequence=px.colors.qualitative.Prism)
+            fig3.update_layout(title_x=0.5, yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
+            fig3.update_traces(textposition='outside')
+            st.plotly_chart(fig3, use_container_width=True)
             st.latex(r"Velocidade_t = \frac{Vendas_t}{Estoque_{t-1}}")
             
-            # Grafico 4: Variação Preço
-            fig_delta = px.bar(df_trend, x="DATA_STR", y="Delta_Preco", color="EMPREENDIMENTO", 
-                               title="Variação de Preço (MoM)", barmode="group", color_discrete_sequence=px.colors.qualitative.Prism,
-                               text_auto='.1%')
-            fig_delta.update_layout(title={'x':0.5, 'xanchor': 'center'}, yaxis_tickformat=".1%", 
-                                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
-            fig_delta.update_traces(textposition='outside')
-            st.plotly_chart(fig_delta, use_container_width=True)
+            fig4 = px.bar(df_trend, x="DATA_STR", y="Delta_Preco", color="EMPREENDIMENTO", title="Variação de Preço (MoM)", barmode="group", text_auto='.1%', color_discrete_sequence=px.colors.qualitative.Prism)
+            fig4.update_layout(title_x=0.5, yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
+            fig4.update_traces(textposition='outside')
+            st.plotly_chart(fig4, use_container_width=True)
             st.latex(r"\Delta Preço_{m2} = \frac{Preço_t - Preço_{t-1}}{Preço_{t-1}}")
 
-    # -------------------------------------------------------------------------
-    # GRÁFICO: EVOLUÇÃO PREÇO M2 VS ESTOQUE POR EMPREENDIMENTO
-    # -------------------------------------------------------------------------
+    # Dinâmica Preço vs Estoque Individualizado
     st.markdown("<br>", unsafe_allow_html=True)
+    df_det_f = df_detalhada[df_detalhada["EMPREENDIMENTO"].isin(cluster_final)].copy()
     
-    df_det_f = df_detalhada[df_detalhada["EMPREENDIMENTO"].isin(selected_emps)].copy()
-    
-    if not df_det_f.empty and not df_trend.empty:
-        df_price_trend = df_det_f.groupby(["DATA_DT", "EMPREENDIMENTO"]).agg(Preco_m2_Mediana=("Preco_m2", "median")).reset_index()
-        df_merged_trend = pd.merge(df_price_trend, df_trend[["DATA_DT", "EMPREENDIMENTO", "ESTOQUE"]], on=["DATA_DT", "EMPREENDIMENTO"], how="outer").sort_values("DATA_DT")
-        df_merged_trend["DATA_STR"] = df_merged_trend["DATA_DT"].dt.strftime("%m/%Y")
+    if not df_det_f.empty:
+        df_p_trend = df_det_f.groupby(["DATA_DT", "EMPREENDIMENTO"]).agg(Mediana=("Preco_m2", "median")).reset_index()
+        df_combined = pd.merge(df_p_trend, df_trend[["DATA_DT", "EMPREENDIMENTO", "ESTOQUE"]], on=["DATA_DT", "EMPREENDIMENTO"], how="outer").sort_values("DATA_DT")
+        df_combined["DATA_STR"] = df_combined["DATA_DT"].dt.strftime("%m/%Y")
         
-        st.subheader("Evolução Individual: Preço m² (Mediana) e Estoque (Unidades)")
-        
+        st.subheader("Evolução Individual: Preço m² (Mediana) e Estoque (Unid.)")
         fig_dual = make_subplots(specs=[[{"secondary_y": True}]])
         palette = px.colors.qualitative.Prism
         
-        for i, emp in enumerate(selected_emps):
-            df_emp = df_merged_trend[df_merged_trend["EMPREENDIMENTO"] == emp].dropna(subset=["DATA_DT"])
-            if df_emp.empty: continue
+        for i, emp in enumerate(cluster_final):
+            df_e = df_combined[df_combined["EMPREENDIMENTO"] == emp].dropna(subset=["DATA_DT"])
+            if df_e.empty: continue
             color = palette[i % len(palette)]
             
-            fig_dual.add_trace(
-                go.Scatter(x=df_emp["DATA_STR"], y=df_emp["Preco_m2_Mediana"], 
-                           name=f"R$/m² - {emp}", 
-                           line=dict(color=color, width=4),
-                           mode='lines+markers+text',
-                           text=df_emp["Preco_m2_Mediana"].map(lambda x: f"R${x:,.0f}"),
-                           textposition="top center"),
-                secondary_y=False,
-            )
+            fig_dual.add_trace(go.Scatter(x=df_e["DATA_STR"], y=df_e["Mediana"], name=f"R$/m² - {emp}", line=dict(color=color, width=4), mode='lines+markers+text', text=df_e["Mediana"].map(lambda x: f"R${x:,.0f}"), textposition="top center"), secondary_y=False)
             
-            fig_dual.add_trace(
-                go.Bar(x=df_emp["DATA_STR"], y=df_emp["ESTOQUE"], 
-                       name=f"Estoque - {emp}", 
-                       marker_color=color, opacity=0.3,
-                       text=df_emp["ESTOQUE"].astype(int),
-                       textposition='inside'),
-                secondary_y=True,
-            )
+            # Correção do Erro IntCastingNaN: fillna(0) antes do astype(int)
+            fig_dual.add_trace(go.Bar(x=df_e["DATA_STR"], y=df_e["ESTOQUE"], name=f"Estoque - {emp}", marker_color=color, opacity=0.3, text=df_e["ESTOQUE"].fillna(0).astype(int), textposition='inside'), secondary_y=True)
         
-        fig_dual.update_layout(
-            title={'text': "Dinâmica de Preço vs Volume de Estoque por Produto", 'x':0.5, 'xanchor': 'center'},
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            margin=dict(l=20, r=20, t=80, b=20),
-            font=dict(family="Inter", color=COR_TEXTO_LABEL),
-            barmode='group'
-        )
-        
-        fig_dual.update_yaxes(title_text="Preço m² (Mediana)", secondary_y=False, gridcolor="rgba(226, 232, 240, 0.4)")
-        fig_dual.update_yaxes(title_text="Estoque (Unidades)", secondary_y=True)
-        st.plotly_chart(fig_dual, use_container_width=True, config={"displayModeBar": False})
+        fig_dual.update_layout(title={'text': "Dinâmica de Preço vs Volume de Estoque", 'x':0.5, 'xanchor': 'center'}, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", barmode='group')
+        st.plotly_chart(fig_dual, use_container_width=True)
 
-    # -------------------------------------------------------------------------
-    # TABELA DE ESCOAMENTO (ALVO SELECIONADO)
-    # -------------------------------------------------------------------------
+    # Tabela de Escoamento (Apenas Direcional Selecionada)
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:2rem 0;'/>", unsafe_allow_html=True)
-    st.subheader(f"Análise de Escoamento de Estoque ({alvo_selecionado})")
-    
-    df_alvo_escoamento = df_master[df_master["EMPREENDIMENTO"] == alvo_selecionado].copy()
-    
-    if not df_alvo_escoamento.empty:
-        show_escoamento = df_alvo_escoamento[["EMPREENDIMENTO", "DATA", "ESTOQUE", "ESTOQUE INICIAL", "Escoamento"]].copy()
-        show_escoamento = show_escoamento.rename(columns={
-            "EMPREENDIMENTO": "Produto", "DATA": "Mês/Ano",
-            "ESTOQUE": "Estoque Atual", "ESTOQUE INICIAL": "Estoque Inicial",
-            "Escoamento": "Taxa de Escoamento"
-        })
-        st.dataframe(show_escoamento.style.format({
-            "Estoque Atual": "{:,.0f}", "Estoque Inicial": "{:,.0f}", "Taxa de Escoamento": "{:.1%}"
-        }), use_container_width=True, hide_index=True)
+    st.subheader(f"Análise de Escoamento de Estoque (Produtos Direcional Selecionados)")
+    df_esc_alvos = df_master[df_master["EMPREENDIMENTO"].isin(selecionados_dir)].copy()
+    if not df_esc_alvos.empty:
+        st.dataframe(df_esc_alvos[["EMPREENDIMENTO", "DATA", "ESTOQUE", "ESTOQUE INICIAL", "Escoamento"]].rename(columns={"EMPREENDIMENTO": "Produto", "DATA": "Mês", "ESTOQUE": "Atual", "ESTOQUE INICIAL": "Inicial", "Escoamento": "Taxa"}).style.format({"Atual": "{:,.0f}", "Inicial": "{:,.0f}", "Taxa": "{:.1%}"}), use_container_width=True, hide_index=True)
 
-    # -------------------------------------------------------------------------
-    # TABELAS DE PREÇO (BD DETALHADA) - 2 ÚLTIMOS MESES
-    # -------------------------------------------------------------------------
-    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:2rem 0;'/>", unsafe_allow_html=True)
-    
+    # Tabelas de Preço (Últimos 2 Meses)
     if not df_det_f.empty:
         df_det_f["Mes_Ano"] = df_det_f["DATA_DT"].dt.strftime("%m/%Y")
-        all_months = sorted(df_det_f["Mes_Ano"].unique(), key=lambda x: datetime.strptime(x, "%m/%Y"))
-        last_two = all_months[-2:] if len(all_months) >= 2 else all_months
+        all_m = sorted(df_det_f["Mes_Ano"].unique(), key=lambda x: datetime.strptime(x, "%m/%Y"))
+        last_2 = all_m[-2:] if len(all_m) >= 2 else all_m
         
         st.subheader("Mediana do Preço m² (Últimos 2 meses)")
-        p_med = pd.pivot_table(df_det_f, values="Preco_m2", index="EMPREENDIMENTO", columns="Mes_Ano", aggfunc="median")[last_two].reset_index()
-        if len(last_two) == 2: 
-            p_med["Gap (%)"] = ((p_med[last_two[1]] / p_med[last_two[0]]) - 1) * 100
-        st.dataframe(p_med.style.format({**{m: "R$ {:.2f}" for m in last_two}, "Gap (%)": "{:.1f}%"}), use_container_width=True, hide_index=True)
+        p_med = pd.pivot_table(df_det_f, values="Preco_m2", index="EMPREENDIMENTO", columns="Mes_Ano", aggfunc="median")[last_2].reset_index()
+        if len(last_2) == 2: p_med["Gap (%)"] = ((p_med[last_2[1]] / p_med[last_2[0]]) - 1) * 100
+        st.dataframe(p_med.style.format({**{m: "R$ {:.2f}" for m in last_2}, "Gap (%)": "{:.1f}%"}), use_container_width=True, hide_index=True)
 
         st.subheader("Média do Preço m² por Tipologia (Últimos 2 meses)")
-        p_tip = pd.pivot_table(df_det_f, values="Preco_m2", index="TIPOLOGIA", columns="Mes_Ano", aggfunc="mean")[last_two].reset_index()
-        if len(last_two) == 2: 
-            p_tip["Gap (%)"] = ((p_tip[last_two[1]] / p_tip[last_two[0]]) - 1) * 100
-        st.dataframe(p_tip.style.format({**{m: "R$ {:.2f}" for m in last_two}, "Gap (%)": "{:.1f}%"}), use_container_width=True, hide_index=True)
+        p_tip = pd.pivot_table(df_det_f, values="Preco_m2", index="TIPOLOGIA", columns="Mes_Ano", aggfunc="mean")[last_2].reset_index()
+        if len(last_2) == 2: p_tip["Gap (%)"] = ((p_tip[last_2[1]] / p_tip[last_2[0]]) - 1) * 100
+        st.dataframe(p_tip.style.format({**{m: "R$ {:.2f}" for m in last_2}, "Gap (%)": "{:.1f}%"}), use_container_width=True, hide_index=True)
 
-    st.markdown(f'<div style="text-align:center; padding:1rem; color:{COR_TEXTO_MUTED}; font-size:0.82rem;">Direcional Engenharia · Inteligência de Mercado</div>', unsafe_allow_html=True)
+    st.markdown('<div style="text-align:center; padding:1rem; color:#64748b; font-size:0.82rem;">Direcional Engenharia · Inteligência de Mercado</div>', unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()
