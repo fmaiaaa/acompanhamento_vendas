@@ -235,7 +235,6 @@ def main():
         return
 
     # Lógica de Cluster Automático (Lê 'CONCORRE COM' em ambas as abas)
-    # Aqui construímos o cluster máximo para a base de dados filtrada
     cluster_max = set(selecionados_dir)
     for s in selecionados_dir:
         match_geral = df_master[df_master["CONCORRE COM"].str.contains(s, na=False, regex=False)]["EMPREENDIMENTO"].unique()
@@ -255,7 +254,6 @@ def main():
     # FILTRO DE EXIBIÇÃO NOS GRÁFICOS (APENAS DIRECIONAL)
     # -------------------------------------------------------------------------
     st.subheader("Configuração da Visualização")
-    # Filtra apenas os Direcionais presentes no cluster atual
     dir_no_cluster = [e for e in lista_direcionais if e in cluster_max_list]
     selected_dir_charts = st.multiselect(
         "Selecione o Produto Direcional para exibir nos indicadores (e seus respectivos concorrentes)",
@@ -268,26 +266,24 @@ def main():
         return
 
     # Construção da lista final de exibição baseada na seleção de Direcionais
-    display_list = set(selected_dir_charts)
+    display_list_set = set(selected_dir_charts)
     for s in selected_dir_charts:
         match_geral = df_master[df_master["CONCORRE COM"].str.contains(s, na=False, regex=False)]["EMPREENDIMENTO"].unique()
-        display_list.update(match_geral)
+        display_list_set.update(match_geral)
         match_det = df_detalhada[df_detalhada["CONCORRE COM"].str.contains(s, na=False, regex=False)]["EMPREENDIMENTO"].unique()
-        display_list.update(match_det)
+        display_list_set.update(match_det)
     
-    display_list = sorted(list(display_list))
+    display_list = sorted(list(display_list_set))
 
     # Filtragem das bases para a exibição (Gráficos e Tabelas)
     df_chart_geral = df_master[df_master["EMPREENDIMENTO"].isin(display_list)].copy()
     df_chart_det = df_detalhada[df_detalhada["EMPREENDIMENTO"].isin(display_list)].copy()
 
-    # KPIs Consolidados do(s) Alvo(s) Direcional selecionados no filtro de gráficos
+    # KPIs Consolidados
     df_mes = df_chart_geral[df_chart_geral["DATA"] == mes_estudo]
     df_alvo_mes = df_mes[df_mes["EMPREENDIMENTO"].isin(selected_dir_charts)]
     abs_alvo = df_alvo_mes["Absorcao"].mean() * 100 if not df_alvo_mes.empty else 0
     m2_alvo = df_alvo_mes["PRECO_MEDIO"].mean() if not df_alvo_mes.empty else 0
-    
-    # KPIs da Concorrência associada
     df_concs_mes = df_mes[~df_mes["EMPREENDIMENTO"].isin(selected_dir_charts)]
     m2_conc = df_concs_mes["PRECO_MEDIO"].mean() if not df_concs_mes.empty else 0
 
@@ -311,14 +307,12 @@ def main():
         
         g1, g2 = st.columns(2)
         with g1:
-            # Gráfico 1: Absorção
             fig1 = px.bar(df_trend, x="DATA_STR", y="Absorcao", color="EMPREENDIMENTO", title="Taxa de Absorção", barmode="group", text_auto='.1%', color_discrete_sequence=px.colors.qualitative.Prism)
-            fig1.update_layout(title_x=0.5, yanchor="top", yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
+            fig1.update_layout(title_x=0.5, yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
             fig1.update_traces(textposition='outside')
             st.plotly_chart(fig1, use_container_width=True)
             st.latex(r"Absorção_t = \frac{Vendas_t}{Estoque_{t-1} + Vendas_t}")
             
-            # Gráfico 2: Escoamento
             fig2 = px.bar(df_trend, x="DATA_STR", y="Escoamento", color="EMPREENDIMENTO", title="Taxa de Escoamento", barmode="group", text_auto='.1%', color_discrete_sequence=px.colors.qualitative.Prism)
             fig2.update_layout(title_x=0.5, yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
             fig2.update_traces(textposition='outside')
@@ -326,14 +320,12 @@ def main():
             st.latex(r"Escoamento_t = \frac{Estoque_t}{Estoque_{Inicial}}")
             
         with g2:
-            # Gráfico 3: Velocidade
             fig3 = px.bar(df_trend, x="DATA_STR", y="Velocidade", color="EMPREENDIMENTO", title="Velocidade de Vendas", barmode="group", text_auto='.1%', color_discrete_sequence=px.colors.qualitative.Prism)
             fig3.update_layout(title_x=0.5, yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
             fig3.update_traces(textposition='outside')
             st.plotly_chart(fig3, use_container_width=True)
             st.latex(r"Velocidade_t = \frac{Vendas_t}{Estoque_{t-1}}")
             
-            # Gráfico 4: Variação Preço
             fig4 = px.bar(df_trend, x="DATA_STR", y="Delta_Preco", color="EMPREENDIMENTO", title="Variação de Preço (MoM)", barmode="group", text_auto='.1%', color_discrete_sequence=px.colors.qualitative.Prism)
             fig4.update_layout(title_x=0.5, yaxis_tickformat=".1%", paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", xaxis_title="")
             fig4.update_traces(textposition='outside')
@@ -347,6 +339,7 @@ def main():
     if not df_chart_det.empty:
         df_p_trend = df_chart_det.groupby(["DATA_DT", "EMPREENDIMENTO"]).agg(Mediana=("Preco_m2", "median")).reset_index()
         df_combined = pd.merge(df_p_trend, df_chart_geral[["DATA_DT", "EMPREENDIMENTO", "ESTOQUE"]], on=["DATA_DT", "EMPREENDIMENTO"], how="outer").sort_values("DATA_DT")
+        df_combined = df_combined[df_combined["EMPREENDIMENTO"].isin(display_list)]
         df_combined["DATA_STR"] = df_combined["DATA_DT"].dt.strftime("%m/%Y")
         
         st.subheader("Dinâmica de Preço vs Volume de Stock por Produto")
@@ -374,33 +367,35 @@ def main():
         st.plotly_chart(fig_dual, use_container_width=True, config={"displayModeBar": False})
 
     # -------------------------------------------------------------------------
-    # TABELAS DE PREÇO (BD DETALHADA - Cluster de Exibição)
+    # TABELAS DE PREÇO (BD DETALHADA) - Cluster de Exibição
     # -------------------------------------------------------------------------
     if not df_chart_det.empty:
         st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:2rem 0;'/>", unsafe_allow_html=True)
         df_chart_det["Mes_Ano"] = df_chart_det["DATA_DT"].dt.strftime("%m/%Y")
         
-        # Ordenação cronológica segura
-        all_dates_sorted = sorted(df_chart_det["DATA_DT"].unique())
+        # Ordenação cronológica segura (Remoção de NaT e ordenação por Timestamp)
+        all_dates_sorted = sorted(df_chart_det["DATA_DT"].dropna().unique())
         last_two_dates = all_dates_sorted[-2:] if len(all_dates_sorted) >= 2 else all_dates_sorted
         last_two_str = [d.strftime("%m/%Y") for d in last_two_dates]
         
         # Tabela 1: Mediana por Empreendimento
         st.subheader("Mediana do Preço m² (Últimos 2 meses - Visão Detalhada)")
-        p_med = pd.pivot_table(df_chart_det, values="Preco_m2", index="EMPREENDIMENTO", columns="Mes_Ano", aggfunc="median")
-        # Reordena para garantir cronologia correta
-        p_med = p_med[last_two_str].reset_index()
-        if len(last_two_str) == 2: 
-            p_med["Gap (%)"] = ((p_med[last_two_str[1]] / p_med[last_two_str[0]]) - 1) * 100
-        st.dataframe(p_med.style.format({**{m: "R$ {:.2f}" for m in last_two_str}, "Gap (%)": "{:.1f}%"}), use_container_width=True, hide_index=True)
+        p_med_full = pd.pivot_table(df_chart_det, values="Preco_m2", index="EMPREENDIMENTO", columns="Mes_Ano", aggfunc="median")
+        # Filtra e reordena colunas com as datas encontradas
+        cols_available = [c for c in last_two_str if c in p_med_full.columns]
+        p_med = p_med_full[cols_available].reset_index()
+        if len(cols_available) == 2: 
+            p_med["Gap (%)"] = ((p_med[cols_available[1]] / p_med[cols_available[0]]) - 1) * 100
+        st.dataframe(p_med.style.format({**{m: "R$ {:.2f}" for m in cols_available}, "Gap (%)": "{:.1f}%"}), use_container_width=True, hide_index=True)
 
         # Tabela 2: Média por Tipologia
         st.subheader("Média do Preço m² por Tipologia (Últimos 2 meses - Visão Detalhada)")
-        p_tip = pd.pivot_table(df_chart_det, values="Preco_m2", index="TIPOLOGIA", columns="Mes_Ano", aggfunc="mean")
-        p_tip = p_tip[last_two_str].reset_index()
-        if len(last_two_str) == 2: 
-            p_tip["Gap (%)"] = ((p_tip[last_two_str[1]] / p_tip[last_two_str[0]]) - 1) * 100
-        st.dataframe(p_tip.style.format({**{m: "R$ {:.2f}" for m in last_two_str}, "Gap (%)": "{:.1f}%"}), use_container_width=True, hide_index=True)
+        p_tip_full = pd.pivot_table(df_chart_det, values="Preco_m2", index="TIPOLOGIA", columns="Mes_Ano", aggfunc="mean")
+        cols_available_tip = [c for c in last_two_str if c in p_tip_full.columns]
+        p_tip = p_tip_full[cols_available_tip].reset_index()
+        if len(cols_available_tip) == 2: 
+            p_tip["Gap (%)"] = ((p_tip[cols_available_tip[1]] / p_tip[cols_available_tip[0]]) - 1) * 100
+        st.dataframe(p_tip.style.format({**{m: "R$ {:.2f}" for m in cols_available_tip}, "Gap (%)": "{:.1f}%"}), use_container_width=True, hide_index=True)
 
     st.markdown(f'<div style="text-align:center; padding:1rem; color:{COR_TEXTO_MUTED}; font-size:0.82rem;">Direcional Engenharia · Inteligência de Mercado · Fontes: BD GERAL & BD DETALHADA</div>', unsafe_allow_html=True)
 
