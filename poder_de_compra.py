@@ -399,6 +399,10 @@ def main() -> None:
         for col in cols_limpeza:
             df = df[df[col].notna() & (df[col].astype(str).str.strip() != "")]
 
+    # Adicionando a regra específica para remover todos os casos de Financiamento Máximo igual a 0
+    if c_finan:
+        df = df[df[c_finan].apply(parse_valor_br) != 0.0]
+
     # Tratamento de Dados e Datas
     df["Data_Formatada"] = pd.to_datetime(df[c_data], dayfirst=True, errors="coerce")
     df["_ano"] = df["Data_Formatada"].dt.year
