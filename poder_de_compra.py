@@ -17,7 +17,6 @@ from typing import Any, Dict, List, Optional
 
 import pandas as pd
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import streamlit as st
 
 # -----------------------------------------------------------------------------
@@ -665,76 +664,6 @@ def main() -> None:
     if c_imobiliaria: gerar_tabela_gap(df_f, c_imobiliaria, "Imobiliária")
     if c_rank: gerar_tabela_gap(df_f, c_rank, "Ranking")
     if c_canal: gerar_tabela_gap(df_f, c_canal, "Canal")
-
-    # -------------------------------------------------------------------------
-    # Comparativo de Vendas (Dia 1 ao Dia Atual do Mês)
-    # -------------------------------------------------------------------------
-    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
-    dia_atual = datetime.now().day
-    st.subheader(f"Comparativo de Vendas (Dia 01 ao Dia {dia_atual:02d} do Mês)")
-    
-    df_parcial = df_f[df_f["Data_Formatada"].dt.day <= dia_atual].copy()
-    
-    if not df_parcial.empty:
-        df_comp = df_parcial.groupby(["_ano", "_mes"], as_index=False).agg(
-            QTD=("VGV_Real", "count"),
-            VGV=("VGV_Real", "sum")
-        ).sort_values(["_ano", "_mes"])
-        
-        df_comp["Periodo"] = df_comp["_mes"].astype(str).str.zfill(2) + "/" + df_comp["_ano"].astype(str)
-        df_comp["VGV_Formatado"] = df_comp["VGV"].apply(lambda x: fmt_br_milhoes(x))
-        
-        # Utilizando subplots para ter um eixo Y duplo (QTD x VGV) para melhor escala
-        fig_linha = make_subplots(specs=[[{"secondary_y": True}]])
-        
-        # Linha Azul para Vendas (QTD)
-        fig_linha.add_trace(
-            go.Scatter(
-                x=df_comp["Periodo"], 
-                y=df_comp["QTD"], 
-                mode="lines+markers+text",
-                name="QTD Vendas",
-                line=dict(color=COR_AZUL_ESC, width=3),
-                marker=dict(size=8, color=COR_AZUL_ESC),
-                text=df_comp["QTD"],
-                textposition="top center",
-                textfont=dict(color=COR_AZUL_ESC, size=11, family="Inter")
-            ),
-            secondary_y=False,
-        )
-        
-        # Linha Vermelha para VGV (Eixo Secundário)
-        fig_linha.add_trace(
-            go.Scatter(
-                x=df_comp["Periodo"], 
-                y=df_comp["VGV"], 
-                mode="lines+markers+text",
-                name="VGV Real",
-                line=dict(color=COR_VERMELHO, width=3),
-                marker=dict(size=8, color=COR_VERMELHO),
-                text=df_comp["VGV_Formatado"],
-                textposition="bottom center",
-                textfont=dict(color=COR_VERMELHO, size=11, family="Inter")
-            ),
-            secondary_y=True,
-        )
-        
-        fig_linha.update_layout(
-            margin=dict(l=20, r=20, t=40, b=20),
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(family="Inter", color=COR_TEXTO_LABEL),
-            legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="center", x=0.5),
-            hovermode="x unified"
-        )
-        
-        fig_linha.update_yaxes(title_text="Quantidade (Vendas)", secondary_y=False, showgrid=False)
-        fig_linha.update_yaxes(title_text="VGV Real (R$)", secondary_y=True, showgrid=True, gridcolor="rgba(226, 232, 240, 0.5)")
-        
-        st.plotly_chart(fig_linha, use_container_width=True, config={"displayModeBar": False})
-    else:
-        st.info(f"Não há dados de vendas no período do dia 01 ao dia {dia_atual:02d} para os filtros selecionados.")
-
 
     st.markdown(
         f'<div class="footer" style="text-align:center;padding:1rem 0;color:{COR_TEXTO_MUTED};font-size:0.82rem;">'
