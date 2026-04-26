@@ -228,19 +228,30 @@ def extrair_lista_coords(val: str) -> List[str]:
     if s.startswith("{") and s.endswith("}"): s = s[1:-1]
     return [c.strip() for c in s.split(",") if c.strip()]
 
-def normalizar_mes_para_int(val: Any) -> Optional[int]:
+def normalizar_mes_para_int(val: Any) -> int:
     v = str(val).strip().lower()
-    if not v: return None
+    if not v: return 0
     if v in MESES_TEXTO_MAP: return MESES_TEXTO_MAP[v]
     try:
-        # Tira decimais se vier como 4.0
-        n = int(float(v))
-        if 1 <= n <= 12: return n
-    except: pass
-    return None
+        # Se vier "4", "4.0" ou "04"
+        return int(float(v))
+    except:
+        return 0
+
+def normalizar_ano_para_int(val: Any) -> int:
+    s = str(val).strip()
+    if not s: return 0
+    # CORREÇÃO CRÍTICA: Se vier "2.026", remove o ponto de milhar para não virar float 2.026 e truncar para 2
+    s_limpo = s.replace(".", "").replace(",", "")
+    try:
+        return int(float(s_limpo))
+    except:
+        return 0
 
 def get_vendedores_do_coordenador(df_dic: pd.DataFrame, nome_coord_tabela: str) -> List[str]:
+    """Mapeia o nome da meta para os nomes reais no BD via dicionário."""
     if df_dic.empty: return []
+    # Dicionário: Coordenador | Proprietário
     col_coord = df_dic.columns[0]
     col_prop = df_dic.columns[1]
     mask = df_dic[col_coord].astype(str).str.strip().str.lower() == nome_coord_tabela.strip().lower()
@@ -295,17 +306,16 @@ def main():
     df_vendas = df_vendas_raw.copy()
     count_raw = len(df_vendas)
     
-    # Filtro Comercial: Deixe APENAS igual a 1 (Conversão numérica obrigatória)
+    # Filtro Comercial: Deixe APENAS igual a 1
     col_comercial = "Venda Comercial?"
     if col_comercial in df_vendas.columns:
-        # Converte para numérico e filtra 1
-        df_vendas["_V_COM_NUM"] = pd.to_numeric(df_vendas[col_comercial], errors='coerce').fillna(0)
-        df_vendas = df_vendas[df_vendas["_V_COM_NUM"] == 1]
+        df_vendas["_V_COM_VAL"] = pd.to_numeric(df_vendas[col_comercial], errors='coerce').fillna(0)
+        df_vendas = df_vendas[df_vendas["_V_COM_VAL"] == 1]
     count_comercial = len(df_vendas)
     
-    # Normalização de datas no BD
+    # Normalização de datas no BD (Crucial para o batimento)
     df_vendas["_MES_NUM"] = df_vendas["Mês Venda"].apply(normalizar_mes_para_int)
-    df_vendas["_ANO_NUM"] = pd.to_numeric(df_vendas["Ano da Venda"], errors='coerce').fillna(0).astype(int)
+    df_vendas["_ANO_NUM"] = df_vendas["Ano da Venda"].apply(normalizar_ano_para_int)
 
     # -------------------------------------------------------------------------
     # Filtros de Período
@@ -313,6 +323,7 @@ def main():
     st.markdown("### Filtros de Período")
     c_f1, c_f2 = st.columns(2)
     with c_f1:
+        # Pega anos únicos ignorando zeros
         anos_disponiveis = sorted([str(int(x)) for x in df_vendas["_ANO_NUM"].unique() if x > 0], reverse=True)
         if not anos_disponiveis: anos_disponiveis = [str(datetime.now().year)]
         ano_sel = st.selectbox("Selecione o Ano", anos_disponiveis)
@@ -322,13 +333,13 @@ def main():
             ("Maio", 5), ("Junho", 6), ("Julho", 7), ("Agosto", 8), 
             ("Setembro", 9), ("Outubro", 10), ("Novembro", 11), ("Dezembro", 12)
         ]
-        mes_atual_idx = datetime.now().month - 1
-        mes_sel_nome, mes_sel_val = st.selectbox("Selecione o Mês", meses_nomes, index=mes_atual_idx, format_func=lambda x: x[0])
+        mes_padrão = datetime.now().month - 1
+        mes_sel_nome, mes_sel_val = st.selectbox("Selecione o Mês", meses_nomes, index=mes_padrão, format_func=lambda x: x[0])
 
-    # Formatação da chave da meta (MM/AAAA)
+    # Chave para buscar na aba Metas (formato MM/AAAA)
     data_filtro_meta = f"{int(mes_sel_val):02d}/{ano_sel}"
     
-    # Filtrar BD Vendas para o período selecionado (Garantindo numérico vs numérico)
+    # Filtrar BD Vendas para o período selecionado
     vendas_periodo = df_vendas[
         (df_vendas["_ANO_NUM"] == int(ano_sel)) & 
         (df_vendas["_MES_NUM"] == int(mes_sel_val))
@@ -337,20 +348,23 @@ def main():
 
     # --- DEBUG GERAL ---
     if modo_debug:
-        with st.expander("🛠️ DEBUG: Fluxo de Dados", expanded=True):
+        with st.expander("🛠️ DEBUG: Auditoria de Filtros", expanded=True):
             st.write(f"**Total Bruto (BD Vendas):** `{count_raw}`")
             st.write(f"**Após Filtro 'Venda Comercial? == 1':** `{count_comercial}`")
             st.write(f"**Após Filtro Período ({data_filtro_meta}):** `{count_periodo}`")
-            st.write("**Exemplo de valores em 'Ano da Venda':**", df_vendas["Ano da Venda"].head(3).tolist())
-            st.write("**Exemplo de valores em 'Mês Venda':**", df_vendas["Mês Venda"].head(3).tolist())
+            st.write("---")
+            st.write("**Valores brutos em 'Ano da Venda' (primeiros 5):**", df_vendas_raw["Ano da Venda"].head(5).tolist())
+            st.write("**Valores normalizados em '_ANO_NUM' (primeiros 5):**", df_vendas["_ANO_NUM"].head(5).tolist())
+            st.write("**Valores brutos em 'Mês Venda' (primeiros 5):**", df_vendas_raw["Mês Venda"].head(5).tolist())
+            st.write("**Valores normalizados em '_MES_NUM' (primeiros 5):**", df_vendas["_MES_NUM"].head(5).tolist())
             if not vendas_periodo.empty:
-                st.write("**Amostra do período filtrado (3 linhas):**")
+                st.write("**Amostra do período filtrado:**")
                 st.dataframe(vendas_periodo[["Empreendimento", "Proprietário da oportunidade", "Mês Venda", "Ano da Venda"]].head(3))
             else:
-                st.warning("⚠️ O filtro de período resultou em 0 vendas. Verifique se os nomes das colunas de data no BD batem com os valores do filtro.")
+                st.warning("Atenção: O filtro resultou em 0 vendas. Verifique se o Ano e Mês no BD estão corretos.")
 
     # -------------------------------------------------------------------------
-    # Abas
+    # Abas Centralizadas
     # -------------------------------------------------------------------------
     tabs = st.tabs(["Coordenadores IMOB", "Coordenadores Comerciais", "Grandes Contas"])
 
@@ -408,13 +422,12 @@ def main():
             for c_name in unique_coords:
                 st.markdown(f"#### Coordenador: {c_name}")
                 rows_com = []
-                # Filtra linhas de meta onde o coordenador aparece
                 mask_coord = df_com_metas["COORDENADORES"].str.contains(c_name, case=False, na=False)
                 df_c_metas = df_com_metas[mask_coord]
                 
                 for _, r in df_c_metas.iterrows():
                     emp_nome = r["EMPREENDIMENTO"]
-                    # Realizado TOTAL do empreendimento (independente de coordenador)
+                    # Realizado TOTAL do empreendimento para Comerciais
                     realizado = calcular_realizado(vendas_periodo, emp=emp_nome, ignora_vendedor=True)
                     
                     m_desafio = int(parse_valor_br(r.get("META DESAFIO VENDAS", 0)))
