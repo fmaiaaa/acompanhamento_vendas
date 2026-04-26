@@ -2,7 +2,7 @@
 """
 Acompanhamento de vendas — metas vs realizado (Direcional).
 Focado em Premiações: Coordenadores IMOB, Comerciais e Grandes Contas.
-Design atualizado baseado no app de Gaps.
+Design atualizado (Gaps Style) com transparência total e detalhamento de vendas.
 """
 from __future__ import annotations
 
@@ -53,15 +53,14 @@ MESES_TEXTO_MAP = {
 def _hex_rgb_triplet(hex_color: str) -> str:
     """Converte #RRGGBB em 'r, g, b' para uso em rgba(...)."""
     x = (hex_color or "").strip().lstrip("#")
-    if len(x) != 6:
-        return "0, 0, 0"
+    if len(x) != 6: return "0, 0, 0"
     return f"{int(x[0:2], 16)}, {int(x[2:4], 16)}, {int(x[4:6], 16)}"
 
 RGB_AZUL_CSS = _hex_rgb_triplet(COR_AZUL_ESC)
 RGB_VERMELHO_CSS = _hex_rgb_triplet(COR_VERMELHO)
 
 # -----------------------------------------------------------------------------
-# Funções de Design (Padrão Gaps)
+# Funções de Design
 # -----------------------------------------------------------------------------
 def _resolver_png_raiz(nome: str) -> Path | None:
     for base in (_DIR_APP, _DIR_APP.parent):
@@ -122,8 +121,6 @@ def aplicar_estilo() -> None:
         [data-testid="stAppViewContainer"] {{ background: transparent !important; background-color: transparent !important; }}
         header[data-testid="stHeader"] {{ background: transparent !important; border: none !important; box-shadow: none !important; }}
         
-        [data-testid="stSidebar"] {{ display: block !important; }}
-        
         [data-testid="stMain"] {{
             padding-left: clamp(14px, 5vw, 56px) !important; padding-right: clamp(14px, 5vw, 56px) !important;
             padding-top: clamp(12px, 3.5vh, 40px) !important; padding-bottom: clamp(14px, 4vh, 44px) !important;
@@ -136,6 +133,23 @@ def aplicar_estilo() -> None:
             border: 1px solid rgba(255, 255, 255, 0.45) !important;
             box-shadow: 0 4px 6px -1px rgba({RGB_AZUL_CSS}, 0.06), 0 24px 48px -12px rgba({RGB_AZUL_CSS}, 0.18) !important;
             animation: fichaFadeIn 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+        }}
+
+        /* Transparência e Estilo das Tabelas e Expanders */
+        div[data-testid="stExpander"] {{
+            background-color: transparent !important;
+            border: 1px solid rgba(255, 255, 255, 0.2) !important;
+            border-radius: 12px !important;
+            margin-bottom: 10px !important;
+        }}
+        
+        /* Força transparência em tabelas estáticas */
+        [data-testid="stTable"] {{
+            background-color: transparent !important;
+        }}
+        [data-testid="stTable"] td, [data-testid="stTable"] th {{
+            background-color: rgba(255, 255, 255, 0.1) !important;
+            color: {COR_TEXTO_LABEL} !important;
         }}
 
         /* Centralização das Abas */
@@ -171,7 +185,7 @@ def aplicar_estilo() -> None:
         .ficha-hero-bar {{ height: 4px; border-radius: 999px; background: linear-gradient(90deg, {COR_AZUL_ESC}, {COR_VERMELHO}, {COR_AZUL_ESC}); background-size: 200% 100%; animation: fichaShimmer 4s infinite alternate; }}
         
         .debug-box {{
-            background: rgba(15, 23, 42, 0.9);
+            background: rgba(15, 23, 42, 0.8);
             color: #10b981;
             padding: 1rem;
             border-radius: 8px;
@@ -341,10 +355,9 @@ def main():
         (df_vendas["_MES_NUM"] == int(mes_sel_val))
     ]
 
-    # Aplicar Filtro de Venda Facilitada se selecionado
+    # Aplicar Filtro de Venda Facilitada
     col_facilitada = "Venda facilitada"
     if col_facilitada in vendas_periodo.columns and facilitada_sel != "Todas":
-        # Consideramos 1 ou Sim como facilitada
         if facilitada_sel == "Sim":
             vendas_periodo = vendas_periodo[vendas_periodo[col_facilitada].astype(str).str.strip().isin(["1", "1.0", "Sim", "SIM", "True", "TRUE"])]
         else:
@@ -355,17 +368,13 @@ def main():
         with st.expander("🛠️ DEBUG: Auditoria de Filtros", expanded=True):
             st.write(f"**Data Filtro Metas:** `{data_filtro_meta}`")
             st.write(f"**Total Vendas Comerciais no Mês:** `{len(vendas_periodo)}`")
-            st.write(f"**Filtro Facilitada:** `{facilitada_sel}`")
-            if not vendas_periodo.empty:
-                st.write("**Amostra do período filtrado:**")
-                st.dataframe(vendas_periodo[["Empreendimento", "Proprietário da oportunidade", "Mês Venda", "Ano da Venda", col_facilitada]].head(3))
 
     # -------------------------------------------------------------------------
     # Abas Centralizadas
     # -------------------------------------------------------------------------
     tabs = st.tabs(["Coordenadores IMOB", "Coordenadores Comerciais", "Grandes Contas"])
 
-    # --- ABA 1: IMOB ---
+    # --- ABA 1: IMOB (Separado por Coordenador) ---
     with tabs[0]:
         st.subheader(f"Premiação IMOB — {mes_sel_nome}/{ano_sel}")
         df_imob_metas = df_metas_imob[df_metas_imob["DATA"] == data_filtro_meta]
@@ -377,31 +386,44 @@ def main():
             for reg in regioes:
                 with st.expander(f"Região: {reg}", expanded=True):
                     df_reg = df_imob_metas[df_imob_metas["REGIÃO"] == reg]
-                    rows_imob = []
                     
-                    for _, r in df_reg.iterrows():
-                        coords_meta = extrair_lista_coords(r["COORDENADORES"])
-                        emp_nome = r["EMPREENDIMENTO"]
-                        for c_meta in coords_meta:
-                            vendedores_reais = get_vendedores_do_coordenador(df_dic, c_meta)
-                            realizado = calcular_realizado(vendas_periodo, vendedores_reais, emp_nome)
-                            
-                            m_dir = int(parse_valor_br(r.get("META DIRECIONAL", 0)))
-                            m_imob = int(parse_valor_br(r.get("META IMOB", 0)))
-                            m_imob2 = int(parse_valor_br(r.get("META IMOB 2", 0)))
-                            
-                            status = "NÃO BATEU"
-                            if realizado >= m_imob2 and m_imob2 > 0: status = "META IMOB 2 ✅"
-                            elif realizado >= m_imob and m_imob > 0: status = "META IMOB ✅"
-                            elif realizado >= m_dir and m_dir > 0: status = "META DIRECIONAL ✅"
-                            
-                            rows_imob.append({
-                                "Coordenador": c_meta, "Empreendimento": emp_nome,
-                                "Meta Dir.": m_dir, "Meta IMOB": m_imob, "Meta IMOB 2": m_imob2,
-                                "Realizado": realizado, "Resultado": status
-                            })
-                    if rows_imob:
-                        st.table(pd.DataFrame(rows_imob))
+                    # Extrair todos os coordenadores únicos desta região
+                    all_coords_reg = []
+                    for _, row_meta in df_reg.iterrows():
+                        all_coords_reg.extend(extrair_lista_coords(row_meta["COORDENADORES"]))
+                    unique_coords_reg = sorted(list(set(all_coords_reg)))
+                    
+                    # Criar uma tabela para cada coordenador dentro da região
+                    for c_meta in unique_coords_reg:
+                        st.markdown(f"**Coordenador: {c_meta}**")
+                        rows_imob = []
+                        
+                        # Filtra apenas empreendimentos onde este coordenador aparece nas metas
+                        for _, r in df_reg.iterrows():
+                            if c_meta in extrair_lista_coords(r["COORDENADORES"]):
+                                emp_nome = r["EMPREENDIMENTO"]
+                                vendedores_reais = get_vendedores_do_coordenador(df_dic, c_meta)
+                                realizado = calcular_realizado(vendas_periodo, vendedores_reais, emp_nome)
+                                
+                                m_dir = int(parse_valor_br(r.get("META DIRECIONAL", 0)))
+                                m_imob = int(parse_valor_br(r.get("META IMOB", 0)))
+                                m_imob2 = int(parse_valor_br(r.get("META IMOB 2", 0)))
+                                
+                                status = "NÃO BATEU"
+                                if realizado >= m_imob2 and m_imob2 > 0: status = "META IMOB 2 ✅"
+                                elif realizado >= m_imob and m_imob > 0: status = "META IMOB ✅"
+                                elif realizado >= m_dir and m_dir > 0: status = "META DIRECIONAL ✅"
+                                
+                                rows_imob.append({
+                                    "Empreendimento": emp_nome,
+                                    "Meta Dir.": m_dir, "Meta IMOB": m_imob, "Meta IMOB 2": m_imob2,
+                                    "Realizado": realizado, "Resultado": status
+                                })
+                        
+                        if rows_imob:
+                            st.table(pd.DataFrame(rows_imob))
+                        else:
+                            st.write("_Sem metas atribuídas._")
 
     # --- ABA 2: COMERCIAIS ---
     with tabs[1]:
@@ -440,9 +462,9 @@ def main():
                         "Meta BP 70%": m_bp70, "Realizado": realizado, "Resultado": status
                     })
                 if rows_com:
-                    st.dataframe(pd.DataFrame(rows_com), use_container_width=True, hide_index=True)
+                    st.table(pd.DataFrame(rows_com))
 
-    # --- ABA 3: GRANDES CONTAS ---
+    # --- ABA 3: GRANDES CONTAS (Separado por Coordenador e Detalhado) ---
     with tabs[2]:
         st.subheader(f"Premiação Grandes Contas — {mes_sel_nome}/{ano_sel}")
         df_gc_metas = df_metas_gc[df_metas_gc["DATA"] == data_filtro_meta]
@@ -450,31 +472,50 @@ def main():
         if df_gc_metas.empty:
             st.info(f"Nenhuma meta encontrada para {data_filtro_meta} na aba Grandes Contas.")
         else:
-            rows_gc = []
+            # Lista de coordenadores únicos em Grandes Contas
+            all_gc_coords = []
             for _, r in df_gc_metas.iterrows():
-                coords_meta = extrair_lista_coords(r["COORDENADORES"])
-                m1 = int(parse_valor_br(r.get("META 1", 0)))
-                m2 = int(parse_valor_br(r.get("META 2", 0)))
-                focos = extrair_lista_coords(r.get("PRODUTOS FOCO", ""))
-                
-                for c_meta in coords_meta:
+                all_gc_coords.extend(extrair_lista_coords(r["COORDENADORES"]))
+            unique_gc_coords = sorted(list(set(all_gc_coords)))
+            
+            for c_meta in unique_gc_coords:
+                with st.expander(f"Coordenador: {c_meta}", expanded=True):
+                    # Localiza as metas do coordenador
+                    r_meta = df_gc_metas[df_gc_metas["COORDENADORES"].str.contains(c_meta, case=False, na=False)].iloc[0]
+                    m1 = int(parse_valor_br(r_meta.get("META 1", 0)))
+                    m2 = int(parse_valor_br(r_meta.get("META 2", 0)))
+                    focos_meta = extrair_lista_coords(r_meta.get("PRODUTOS FOCO", ""))
+                    
                     vendedores_reais = get_vendedores_do_coordenador(df_dic, c_meta)
-                    real_total = calcular_realizado(vendas_periodo, vendedores_reais)
                     
-                    real_foco = 0
-                    for p_foco in focos:
-                        real_foco += calcular_realizado(vendas_periodo, vendedores_reais, p_foco)
+                    # Filtra vendas desse coordenador no período
+                    mask_coord_vendas = vendas_periodo["Proprietário da oportunidade"].astype(str).str.strip().str.lower().isin([v.lower() for v in vendedores_reais])
+                    vendas_coord = vendas_periodo[mask_coord_vendas]
                     
-                    status = "NÃO BATEU"
-                    if real_total >= m2 and m2 > 0: status = "META 2 ✅"
-                    elif real_total >= m1 and m1 > 0: status = "META 1 ✅"
+                    real_total = len(vendas_coord)
                     
-                    rows_gc.append({
-                        "Coordenador": c_meta, "Meta 1": m1, "Meta 2": m2,
-                        "Realizado Total": real_total, "Realizado Foco": real_foco, "Resultado": status
-                    })
-            if rows_gc:
-                st.dataframe(pd.DataFrame(rows_gc), use_container_width=True, hide_index=True)
+                    # Detalhamento por Empreendimento
+                    if not vendas_coord.empty:
+                        # Agrupa vendas por empreendimento
+                        vendas_detalhe = vendas_coord.groupby("Empreendimento").size().reset_index(name="Qtd Realizada")
+                        vendas_detalhe["É Foco?"] = vendas_detalhe["Empreendimento"].apply(lambda x: "Sim ✅" if x.strip().lower() in [f.lower() for f in focos_meta] else "Não")
+                        
+                        # Cálculo de Realizado Foco
+                        real_foco = vendas_detalhe[vendas_detalhe["É Foco?"] == "Sim ✅"]["Qtd Realizada"].sum()
+                        
+                        # Cabeçalho de Status
+                        status_gc = "NÃO BATEU"
+                        if real_total >= m2 and m2 > 0: status_gc = "META 2 ✅"
+                        elif real_total >= m1 and m1 > 0: status_gc = "META 1 ✅"
+                        
+                        st.markdown(f"**Meta 1:** {m1} | **Meta 2:** {m2} | **Realizado Total:** {real_total} | **Realizado Foco:** {real_foco}")
+                        st.markdown(f"**Resultado:** {status_gc}")
+                        
+                        # Exibe Tabela de Detalhamento
+                        st.table(vendas_detalhe)
+                    else:
+                        st.markdown(f"**Meta 1:** {m1} | **Meta 2:** {m2} | **Realizado Total:** 0")
+                        st.write("_Nenhuma venda realizada no período._")
 
     st.markdown(f'<div style="text-align:center; color:{COR_TEXTO_MUTED}; font-size:0.85rem; margin-top:3rem;">Direcional Engenharia • Vendas RJ — Premiações</div>', unsafe_allow_html=True)
 
