@@ -218,7 +218,9 @@ def extrair_lista_coords(val: str) -> List[str]:
 def normalizar_mes_para_int(val: Any) -> Optional[int]:
     v = str(val).strip().lower()
     if not v: return None
+    # Caso o mês seja texto (ex: Abril)
     if v in MESES_TEXTO_MAP: return MESES_TEXTO_MAP[v]
+    # Caso o mês seja número (ex: 04 ou 4.0)
     try:
         n = int(float(v))
         if 1 <= n <= 12: return n
@@ -228,6 +230,7 @@ def normalizar_mes_para_int(val: Any) -> Optional[int]:
 def get_vendedores_do_coordenador(df_dic: pd.DataFrame, nome_coord_tabela: str) -> List[str]:
     """Mapeia o nome da meta para os nomes reais no BD via dicionário."""
     if df_dic.empty: return []
+    # Usando índices para evitar problemas com nomes de colunas que tenham acentos ou espaços
     col_coord = df_dic.columns[0]
     col_prop = df_dic.columns[1]
     mask = df_dic[col_coord].astype(str).str.strip().str.lower() == nome_coord_tabela.strip().lower()
@@ -241,14 +244,15 @@ def calcular_realizado(df_vendas: pd.DataFrame, vendedores: List[str] = None, em
     col_prop = "Proprietário da oportunidade"
     col_emp = "Empreendimento"
     
+    # Filtro por vendedores (Case Insensitive e Trimmed)
     if not ignora_vendedor:
         if vendedores:
-            # Comparação case-insensitive para garantir batimento
-            vendedores_lower = [v.lower().strip() for v in vendedores]
-            mask &= df_vendas[col_prop].astype(str).str.strip().str.lower().isin(vendedores_lower)
+            vendedores_reais = [v.strip().lower() for v in vendedores]
+            mask &= df_vendas[col_prop].astype(str).str.strip().str.lower().isin(vendedores_reais)
         else:
             return 0
     
+    # Filtra pelo empreendimento
     if emp:
         mask &= (df_vendas[col_emp].astype(str).str.strip().str.lower() == str(emp).strip().lower())
     
@@ -280,13 +284,12 @@ def main():
     # --- Pré-processamento Vendas ---
     df_vendas = df_vendas_raw.copy()
     
-    # Filtro Comercial: Deixe APENAS igual a 1
+    # Filtro Comercial: Apenas igual a 1 (Lógica robusta)
     col_comercial = "Venda Comercial?"
     if col_comercial in df_vendas.columns:
-        # Normaliza para string e filtra apenas "1" ou "1.0"
         df_vendas = df_vendas[df_vendas[col_comercial].astype(str).str.strip().isin(["1", "1.0"])]
     
-    # Normalização de datas no BD para facilitar filtros
+    # Normalização de datas no BD
     df_vendas["_MES_NUM"] = df_vendas["Mês Venda"].apply(normalizar_mes_para_int)
     df_vendas["_ANO_NUM"] = pd.to_numeric(df_vendas["Ano da Venda"], errors='coerce')
 
@@ -305,18 +308,17 @@ def main():
             ("Maio", 5), ("Junho", 6), ("Julho", 7), ("Agosto", 8), 
             ("Setembro", 9), ("Outubro", 10), ("Novembro", 11), ("Dezembro", 12)
         ]
-        # Pega mês anterior como padrão ou atual
+        # Padrão: Mês atual
         mes_atual_idx = datetime.now().month - 1
         mes_sel_nome, mes_sel_val = st.selectbox("Selecione o Mês", meses_nomes, index=mes_atual_idx, format_func=lambda x: x[0])
 
-    # Chave para buscar na aba Metas (MM/AAAA) - FIX: Garantindo que mes_sel_val seja int para o formatador
+    # FIX: Formatação da chave da meta para evitar ValueError
     try:
-        val_mes_int = int(mes_sel_val)
-        data_filtro_meta = f"{val_mes_int:02d}/{ano_sel}"
+        data_filtro_meta = f"{int(mes_sel_val):02d}/{ano_sel}"
     except:
         data_filtro_meta = f"{mes_sel_val}/{ano_sel}"
     
-    # Filtrar BD Vendas pelo período selecionado
+    # Filtrar BD Vendas para o período selecionado
     vendas_periodo = df_vendas[
         (df_vendas["_ANO_NUM"] == int(ano_sel)) & 
         (df_vendas["_MES_NUM"] == int(mes_sel_val))
@@ -344,7 +346,7 @@ def main():
                         coords_meta = extrair_lista_coords(r["COORDENADORES"])
                         emp_nome = r["EMPREENDIMENTO"]
                         for c_meta in coords_meta:
-                            # Busca vendedores reais no dicionário para este coordenador
+                            # Busca proprietários reais vinculados ao coordenador
                             vendedores_reais = get_vendedores_do_coordenador(df_dic, c_meta)
                             realizado = calcular_realizado(vendas_periodo, vendedores_reais, emp_nome)
                             
@@ -381,11 +383,11 @@ def main():
             for c_name in unique_coords:
                 st.markdown(f"#### Coordenador: {c_name}")
                 rows_com = []
-                # Filtra linhas de meta onde o coordenador é mencionado
+                # Filtra metas onde o coordenador aparece
                 df_c_metas = df_com_metas[df_com_metas["COORDENADORES"].str.contains(c_name, case=False, na=False)]
                 for _, r in df_c_metas.iterrows():
                     emp_nome = r["EMPREENDIMENTO"]
-                    # Realizado TOTAL do empreendimento para Comerciais (ignora vendedor)
+                    # Realizado TOTAL do empreendimento (Conforme solicitado)
                     realizado = calcular_realizado(vendas_periodo, emp=emp_nome, ignora_vendedor=True)
                     
                     m_desafio = int(parse_valor_br(r.get("META DESAFIO VENDAS", 0)))
