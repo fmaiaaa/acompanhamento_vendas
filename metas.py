@@ -92,7 +92,7 @@ def _cabecalho_pagina() -> None:
     st.markdown(
         f'<div class="ficha-hero-stack">'
         f'<div class="ficha-hero" style="max-width: 100%;">'
-        f'<p class="ficha-title" style="white-space: nowrap;">Acompanhamento de Metas e Premiações</p>'
+        f'<p class="ficha-title" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Acompanhamento de Metas e Premiações</p>'
         f'<p class="ficha-sub">Realizado X Projetado — <strong>Vendas RJ</strong>.</p>'
         f"</div>"
         f'<div class="ficha-hero-bar-wrap" aria-hidden="true"><div class="ficha-hero-bar"></div></div>'
@@ -468,18 +468,17 @@ def main():
                     realizado_m = calcular_realizado(vendas_periodo, emp=emp_m, ignora_vendedor=True)
                     
                     for _, r in df_emp_m.iterrows():
-                        m_desafio = int(parse_valor_br(r.get("META DESAFIO VENDAS", 0)))
-                        m_bp = int(parse_valor_br(r.get("META BP", 0)))
-                        m_bp70 = int(parse_valor_br(r.get("META BP 70%", 0)))
+                        # Conforme solicitado: So tem Meta Direcional e Meta BP (Escritas Meta 2 e Meta 1)
+                        m1 = int(parse_valor_br(r.get("META BP", 0)))
+                        m2 = int(parse_valor_br(r.get("META DIRECIONAL", 0)))
                         
                         status = "NÃO BATEU ❌"
-                        if realizado_m >= m_desafio and m_desafio > 0: status = "DESAFIO ✅"
-                        elif realizado_m >= m_bp and m_bp > 0: status = "BP ✅"
-                        elif realizado_m >= m_bp70 and m_bp70 > 0: status = "BP 70% ✅"
+                        if realizado_m >= m2 and m2 > 0: status = "META 2 ✅"
+                        elif realizado_m >= m1 and m1 > 0: status = "META 1 ✅"
                         
                         rows_m.append({
-                            "Meta Desafio": m_desafio, "Meta BP": m_bp,
-                            "Meta BP 70%": m_bp70, "Realizado (Total Prod.)": realizado_m, "Resultado": status
+                            "Meta 1": m1, "Meta 2": m2,
+                            "Realizado (Total Prod.)": realizado_m, "Resultado": status
                         })
                     if rows_m:
                         st.table(pd.DataFrame(rows_m))
