@@ -2,8 +2,7 @@
 """
 Acompanhamento de vendas — metas vs realizado (Direcional).
 Focado em Premiações: Coordenadores IMOB, Comerciais e Grandes Contas.
-Design sofisticado (revertido ao original) com filtros simplificados.
-Inclui funcionalidade de Debug para auditoria de dados.
+Design atualizado baseado no app de Gaps.
 """
 from __future__ import annotations
 
@@ -36,7 +35,7 @@ LOGO_TOPO_ARQUIVO = "502.57_LOGO DIRECIONAL_V2F-01.png"
 FAVICON_ARQUIVO = "502.57_LOGO D_COR_V3F.png"
 FUNDO_CADASTRO_ARQUIVO = "fundo_cadastrorh.jpg"
 
-# Paleta Direcional
+# Paleta alinhada à Ficha de Credenciamento / Vendas RJ
 COR_AZUL_ESC = "#04428f"
 COR_VERMELHO = "#cb0935"
 COR_BORDA = "#eef2f6"
@@ -52,15 +51,17 @@ MESES_TEXTO_MAP = {
 }
 
 def _hex_rgb_triplet(hex_color: str) -> str:
+    """Converte #RRGGBB em 'r, g, b' para uso em rgba(...)."""
     x = (hex_color or "").strip().lstrip("#")
-    if len(x) != 6: return "0, 0, 0"
+    if len(x) != 6:
+        return "0, 0, 0"
     return f"{int(x[0:2], 16)}, {int(x[2:4], 16)}, {int(x[4:6], 16)}"
 
 RGB_AZUL_CSS = _hex_rgb_triplet(COR_AZUL_ESC)
 RGB_VERMELHO_CSS = _hex_rgb_triplet(COR_VERMELHO)
 
 # -----------------------------------------------------------------------------
-# Funções de Design
+# Funções de Design (Padrão Gaps)
 # -----------------------------------------------------------------------------
 def _resolver_png_raiz(nome: str) -> Path | None:
     for base in (_DIR_APP, _DIR_APP.parent):
@@ -85,6 +86,19 @@ def _exibir_logo_topo() -> None:
             st.markdown(f'<div class="ficha-logo-wrap"><img src="data:image/png;base64,{b64}" alt="Direcional" /></div>', unsafe_allow_html=True)
         except: pass
 
+def _cabecalho_pagina() -> None:
+    _exibir_logo_topo()
+    st.markdown(
+        f'<div class="ficha-hero-stack">'
+        f'<div class="ficha-hero">'
+        f'<p class="ficha-title">Acompanhamento de Metas e Premiações</p>'
+        f'<p class="ficha-sub">Realizado X Projetado — <strong>Vendas RJ</strong>.</p>'
+        f"</div>"
+        f'<div class="ficha-hero-bar-wrap" aria-hidden="true"><div class="ficha-hero-bar"></div></div>'
+        f"</div>",
+        unsafe_allow_html=True,
+    )
+
 def aplicar_estilo() -> None:
     bg_url = _css_url_fundo_cadastro()
     st.markdown(
@@ -92,15 +106,39 @@ def aplicar_estilo() -> None:
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800;900&family=Inter:wght@400;500;600;700&display=swap');
         
-        @keyframes fichaFadeIn {{
-            from {{ opacity: 0; transform: translateY(18px); }}
-            to {{ opacity: 1; transform: translateY(0); }}
+        @keyframes fichaFadeIn {{ from {{ opacity: 0; transform: translateY(18px); }} to {{ opacity: 1; transform: translateY(0); }} }}
+        @keyframes fichaShimmer {{ 0% {{ background-position: 0% 50%; }} 100% {{ background-position: 200% 50%; }} }}
+        
+        html, body, :root, [data-testid="stApp"] {{ color-scheme: light !important; }}
+        html, body {{
+            font-family: 'Inter', sans-serif; color: {COR_TEXTO_LABEL};
+            background: transparent !important; background-color: transparent !important;
         }}
-        @keyframes fichaShimmer {{
-            0% {{ background-position: 0% 50%; }}
-            100% {{ background-position: 200% 50%; }}
+        .stApp, [data-testid="stApp"] {{
+            background: linear-gradient(135deg, rgba({RGB_AZUL_CSS}, 0.82) 0%, rgba(30, 58, 95, 0.55) 38%, rgba({RGB_VERMELHO_CSS}, 0.22) 72%, rgba(15, 23, 42, 0.45) 100%),
+                url("{bg_url}") center / cover no-repeat !important;
+            background-attachment: scroll !important; background-color: transparent !important;
+        }}
+        [data-testid="stAppViewContainer"] {{ background: transparent !important; background-color: transparent !important; }}
+        header[data-testid="stHeader"] {{ background: transparent !important; border: none !important; box-shadow: none !important; }}
+        
+        [data-testid="stSidebar"] {{ display: block !important; }}
+        
+        [data-testid="stMain"] {{
+            padding-left: clamp(14px, 5vw, 56px) !important; padding-right: clamp(14px, 5vw, 56px) !important;
+            padding-top: clamp(12px, 3.5vh, 40px) !important; padding-bottom: clamp(14px, 4vh, 44px) !important;
+        }}
+        .block-container {{
+            max-width: 1700px !important; margin-left: auto !important; margin-right: auto !important;
+            margin-top: clamp(4px, 1vh, 14px) !important; margin-bottom: clamp(4px, 1vh, 14px) !important;
+            padding: 1.45rem 2.25rem 1.55rem 2.25rem !important; background: rgba(255, 255, 255, 0.78) !important;
+            backdrop-filter: blur(18px) saturate(1.15); border-radius: 24px !important;
+            border: 1px solid rgba(255, 255, 255, 0.45) !important;
+            box-shadow: 0 4px 6px -1px rgba({RGB_AZUL_CSS}, 0.06), 0 24px 48px -12px rgba({RGB_AZUL_CSS}, 0.18) !important;
+            animation: fichaFadeIn 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
         }}
 
+        /* Centralização das Abas */
         div[data-testid="stTabs"] [data-baseweb="tab-list"] {{
             display: flex;
             justify-content: center;
@@ -122,51 +160,15 @@ def aplicar_estilo() -> None:
             color: white !important;
         }}
 
-        html, body, [data-testid="stApp"] {{
-            color-scheme: light !important;
-        }}
-        .stApp {{
-            background: 
-                linear-gradient(135deg, rgba({RGB_AZUL_CSS}, 0.82) 0%, rgba(30, 58, 95, 0.55) 38%, rgba({RGB_VERMELHO_CSS}, 0.22) 72%, rgba(15, 23, 42, 0.45) 100%),
-                url("{bg_url}") center / cover no-repeat !important;
-            background-attachment: fixed !important;
-        }}
-        .block-container {{
-            max-width: 1600px !important;
-            margin-top: 1vh !important;
-            padding: 2.5rem !important;
-            background: rgba(255, 255, 255, 0.78) !important;
-            backdrop-filter: blur(18px) saturate(1.15);
-            -webkit-backdrop-filter: blur(18px) saturate(1.15);
-            border-radius: 24px !important;
-            border: 1px solid rgba(255, 255, 255, 0.45) !important;
-            box-shadow: 0 24px 48px -12px rgba({RGB_AZUL_CSS}, 0.18);
-            animation: fichaFadeIn 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
-        }}
-        
-        .ficha-logo-wrap {{ text-align: center; padding: 0.5rem 0 1rem 0; }}
-        .ficha-logo-wrap img {{ max-height: 75px; width: auto; }}
-        
-        .ficha-hero-stack {{ text-align: center; margin-bottom: 1.5rem; }}
-        .ficha-hero-bar {{
-            height: 4px; width: 100%; border-radius: 999px;
-            background: linear-gradient(90deg, {COR_AZUL_ESC}, {COR_VERMELHO}, {COR_AZUL_ESC});
-            background-size: 200% 100%;
-            animation: fichaShimmer 4s ease-in-out infinite alternate;
-            margin-top: 10px;
-        }}
-        
-        h1, h2, h3 {{ 
-            font-family: 'Montserrat', sans-serif !important; 
-            color: {COR_AZUL_ESC} !important; 
-            font-weight: 800 !important;
-        }}
-
-        [data-testid="stDataFrame"] {{
-            border-radius: 12px;
-            overflow: hidden;
-            border: 1px solid {COR_BORDA};
-        }}
+        h1, h2, h3, h4 {{ font-family: 'Montserrat', sans-serif !important; color: {COR_AZUL_ESC} !important; font-weight: 800 !important; text-align: center !important; }}
+        .ficha-logo-wrap {{ text-align: center; padding: 0.1rem 0 0.45rem 0; }}
+        .ficha-logo-wrap img {{ max-height: 72px; width: auto; max-width: min(280px, 85vw); object-fit: contain; }}
+        .ficha-hero-stack {{ width: 100%; margin-bottom: 0.35rem; }}
+        .ficha-hero {{ text-align: center; padding: 0.5rem 0 0 0; max-width: 640px; margin: 0 auto; animation: fichaFadeIn 0.85s both; }}
+        .ficha-hero .ficha-title {{ font-family: 'Montserrat', sans-serif; font-size: clamp(1.35rem, 3.5vw, 1.75rem); font-weight: 900; color: {COR_AZUL_ESC}; margin: 0; }}
+        .ficha-hero .ficha-sub {{ color: #475569; font-size: 0.95rem; margin: 0.45rem 0 0 0; }}
+        .ficha-hero-bar-wrap {{ width: 100%; margin: clamp(0.85rem, 2.4vw, 1.2rem) 0; }}
+        .ficha-hero-bar {{ height: 4px; border-radius: 999px; background: linear-gradient(90deg, {COR_AZUL_ESC}, {COR_VERMELHO}, {COR_AZUL_ESC}); background-size: 200% 100%; animation: fichaShimmer 4s infinite alternate; }}
         
         .debug-box {{
             background: rgba(15, 23, 42, 0.9);
@@ -233,7 +235,6 @@ def normalizar_mes_para_int(val: Any) -> int:
     if not v: return 0
     if v in MESES_TEXTO_MAP: return MESES_TEXTO_MAP[v]
     try:
-        # Se vier "4", "4.0" ou "04"
         return int(float(v))
     except:
         return 0
@@ -241,7 +242,6 @@ def normalizar_mes_para_int(val: Any) -> int:
 def normalizar_ano_para_int(val: Any) -> int:
     s = str(val).strip()
     if not s: return 0
-    # CORREÇÃO CRÍTICA: Se vier "2.026", remove o ponto de milhar para não virar float 2.026 e truncar para 2
     s_limpo = s.replace(".", "").replace(",", "")
     try:
         return int(float(s_limpo))
@@ -249,9 +249,7 @@ def normalizar_ano_para_int(val: Any) -> int:
         return 0
 
 def get_vendedores_do_coordenador(df_dic: pd.DataFrame, nome_coord_tabela: str) -> List[str]:
-    """Mapeia o nome da meta para os nomes reais no BD via dicionário."""
     if df_dic.empty: return []
-    # Dicionário: Coordenador | Proprietário
     col_coord = df_dic.columns[0]
     col_prop = df_dic.columns[1]
     mask = df_dic[col_coord].astype(str).str.strip().str.lower() == nome_coord_tabela.strip().lower()
@@ -283,13 +281,11 @@ def main():
     fav = _resolver_png_raiz(FAVICON_ARQUIVO)
     st.set_page_config(page_title="Premiações Direcional", page_icon=str(fav) if fav else None, layout="wide")
     aplicar_estilo()
-    _exibir_logo_topo()
+    _cabecalho_pagina()
     
-    st.markdown('<div class="ficha-hero-stack"><h2>Painel de Premiações de Vendas</h2><div class="ficha-hero-bar"></div></div>', unsafe_allow_html=True)
-
     sid = _secrets_connections_gsheets().get("spreadsheet_id", SPREADSHEET_ID)
 
-    st.sidebar.title("Configurações")
+    st.sidebar.title("Opções de Visibilidade")
     modo_debug = st.sidebar.toggle("Ativar Modo Debug", value=False)
 
     try:
@@ -304,26 +300,23 @@ def main():
 
     # --- Pré-processamento Vendas ---
     df_vendas = df_vendas_raw.copy()
-    count_raw = len(df_vendas)
     
-    # Filtro Comercial: Deixe APENAS igual a 1
+    # Filtro Comercial Global: Venda Comercial? == 1
     col_comercial = "Venda Comercial?"
     if col_comercial in df_vendas.columns:
         df_vendas["_V_COM_VAL"] = pd.to_numeric(df_vendas[col_comercial], errors='coerce').fillna(0)
         df_vendas = df_vendas[df_vendas["_V_COM_VAL"] == 1]
-    count_comercial = len(df_vendas)
     
-    # Normalização de datas no BD (Crucial para o batimento)
+    # Normalização de datas no BD
     df_vendas["_MES_NUM"] = df_vendas["Mês Venda"].apply(normalizar_mes_para_int)
     df_vendas["_ANO_NUM"] = df_vendas["Ano da Venda"].apply(normalizar_ano_para_int)
 
     # -------------------------------------------------------------------------
-    # Filtros de Período
+    # Filtros de Período e Filtro Extra de Vendas Facilitadas
     # -------------------------------------------------------------------------
-    st.markdown("### Filtros de Período")
-    c_f1, c_f2 = st.columns(2)
+    st.markdown("<div style='margin-bottom:1rem; text-align: center;'><strong>Filtros de Análise</strong></div>", unsafe_allow_html=True)
+    c_f1, c_f2, c_f3 = st.columns(3)
     with c_f1:
-        # Pega anos únicos ignorando zeros
         anos_disponiveis = sorted([str(int(x)) for x in df_vendas["_ANO_NUM"].unique() if x > 0], reverse=True)
         if not anos_disponiveis: anos_disponiveis = [str(datetime.now().year)]
         ano_sel = st.selectbox("Selecione o Ano", anos_disponiveis)
@@ -333,10 +326,13 @@ def main():
             ("Maio", 5), ("Junho", 6), ("Julho", 7), ("Agosto", 8), 
             ("Setembro", 9), ("Outubro", 10), ("Novembro", 11), ("Dezembro", 12)
         ]
-        mes_padrão = datetime.now().month - 1
-        mes_sel_nome, mes_sel_val = st.selectbox("Selecione o Mês", meses_nomes, index=mes_padrão, format_func=lambda x: x[0])
+        mes_atual_idx = datetime.now().month - 1
+        mes_sel_nome, mes_sel_val = st.selectbox("Selecione o Mês", meses_nomes, index=mes_atual_idx, format_func=lambda x: x[0])
+    with c_f3:
+        facilitada_opcoes = ["Todas", "Sim", "Não"]
+        facilitada_sel = st.selectbox("Venda Facilitada", facilitada_opcoes)
 
-    # Chave para buscar na aba Metas (formato MM/AAAA)
+    # Chave para buscar na aba Metas
     data_filtro_meta = f"{int(mes_sel_val):02d}/{ano_sel}"
     
     # Filtrar BD Vendas para o período selecionado
@@ -344,24 +340,25 @@ def main():
         (df_vendas["_ANO_NUM"] == int(ano_sel)) & 
         (df_vendas["_MES_NUM"] == int(mes_sel_val))
     ]
-    count_periodo = len(vendas_periodo)
+
+    # Aplicar Filtro de Venda Facilitada se selecionado
+    col_facilitada = "Venda facilitada"
+    if col_facilitada in vendas_periodo.columns and facilitada_sel != "Todas":
+        # Consideramos 1 ou Sim como facilitada
+        if facilitada_sel == "Sim":
+            vendas_periodo = vendas_periodo[vendas_periodo[col_facilitada].astype(str).str.strip().isin(["1", "1.0", "Sim", "SIM", "True", "TRUE"])]
+        else:
+            vendas_periodo = vendas_periodo[~vendas_periodo[col_facilitada].astype(str).str.strip().isin(["1", "1.0", "Sim", "SIM", "True", "TRUE"])]
 
     # --- DEBUG GERAL ---
     if modo_debug:
         with st.expander("🛠️ DEBUG: Auditoria de Filtros", expanded=True):
-            st.write(f"**Total Bruto (BD Vendas):** `{count_raw}`")
-            st.write(f"**Após Filtro 'Venda Comercial? == 1':** `{count_comercial}`")
-            st.write(f"**Após Filtro Período ({data_filtro_meta}):** `{count_periodo}`")
-            st.write("---")
-            st.write("**Valores brutos em 'Ano da Venda' (primeiros 5):**", df_vendas_raw["Ano da Venda"].head(5).tolist())
-            st.write("**Valores normalizados em '_ANO_NUM' (primeiros 5):**", df_vendas["_ANO_NUM"].head(5).tolist())
-            st.write("**Valores brutos em 'Mês Venda' (primeiros 5):**", df_vendas_raw["Mês Venda"].head(5).tolist())
-            st.write("**Valores normalizados em '_MES_NUM' (primeiros 5):**", df_vendas["_MES_NUM"].head(5).tolist())
+            st.write(f"**Data Filtro Metas:** `{data_filtro_meta}`")
+            st.write(f"**Total Vendas Comerciais no Mês:** `{len(vendas_periodo)}`")
+            st.write(f"**Filtro Facilitada:** `{facilitada_sel}`")
             if not vendas_periodo.empty:
                 st.write("**Amostra do período filtrado:**")
-                st.dataframe(vendas_periodo[["Empreendimento", "Proprietário da oportunidade", "Mês Venda", "Ano da Venda"]].head(3))
-            else:
-                st.warning("Atenção: O filtro resultou em 0 vendas. Verifique se o Ano e Mês no BD estão corretos.")
+                st.dataframe(vendas_periodo[["Empreendimento", "Proprietário da oportunidade", "Mês Venda", "Ano da Venda", col_facilitada]].head(3))
 
     # -------------------------------------------------------------------------
     # Abas Centralizadas
@@ -427,7 +424,6 @@ def main():
                 
                 for _, r in df_c_metas.iterrows():
                     emp_nome = r["EMPREENDIMENTO"]
-                    # Realizado TOTAL do empreendimento para Comerciais
                     realizado = calcular_realizado(vendas_periodo, emp=emp_nome, ignora_vendedor=True)
                     
                     m_desafio = int(parse_valor_br(r.get("META DESAFIO VENDAS", 0)))
