@@ -3,7 +3,7 @@
 Acompanhamento de vendas — metas vs realizado (Direcional).
 Focado em Premiações: Coordenadores IMOB, Comerciais e Grandes Contas.
 Design atualizado (Gaps Style) com transparência total e detalhamento de vendas.
-Substituição de expanders por títulos markdown.
+Remoção da funcionalidade de debug.
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 # -----------------------------------------------------------------------------
-# Identificação da planilha e Arquivos Visuais
+# Identificação da planilha e Ficheiros Visuais
 # -----------------------------------------------------------------------------
 SPREADSHEET_ID = "1wpuNQvksot9CLhGgQRe7JlyDeRISEh_sc3-6VRDyQYk"
 
@@ -177,18 +177,6 @@ def aplicar_estilo() -> None:
         .ficha-hero-bar-wrap {{ width: 100%; margin: clamp(0.85rem, 2.4vw, 1.2rem) 0; }}
         .ficha-hero-bar {{ height: 4px; border-radius: 999px; background: linear-gradient(90deg, {COR_AZUL_ESC}, {COR_VERMELHO}, {COR_AZUL_ESC}); background-size: 200% 100%; animation: fichaShimmer 4s infinite alternate; }}
         
-        .debug-box {{
-            background: rgba(15, 23, 42, 0.8);
-            color: #10b981;
-            padding: 1rem;
-            border-radius: 8px;
-            font-family: 'Courier New', Courier, monospace;
-            font-size: 0.85rem;
-            margin: 10px 0;
-            border-left: 5px solid #10b981;
-            overflow-x: auto;
-        }}
-
         /* Estilização para separar seções sem expanders */
         .section-separator {{
             border-top: 1px solid rgba(255, 255, 255, 0.3);
@@ -298,9 +286,6 @@ def main():
     
     sid = _secrets_connections_gsheets().get("spreadsheet_id", SPREADSHEET_ID)
 
-    st.sidebar.title("Opções de Visibilidade")
-    modo_debug = st.sidebar.toggle("Ativar Modo Debug", value=False)
-
     try:
         df_vendas_raw = ler_aba_df(sid, WS_VENDAS)
         df_dic = ler_aba_df(sid, WS_DICIONARIO)
@@ -361,12 +346,6 @@ def main():
             vendas_periodo = vendas_periodo[vendas_periodo[col_facilitada].astype(str).str.strip().isin(["1", "1.0", "Sim", "SIM", "True", "TRUE"])]
         else:
             vendas_periodo = vendas_periodo[~vendas_periodo[col_facilitada].astype(str).str.strip().isin(["1", "1.0", "Sim", "SIM", "True", "TRUE"])]
-
-    # --- DEBUG GERAL ---
-    if modo_debug:
-        with st.expander("🛠️ DEBUG: Auditoria de Filtros", expanded=True):
-            st.write(f"**Data Filtro Metas:** `{data_filtro_meta}`")
-            st.write(f"**Total Vendas Comerciais no Mês:** `{len(vendas_periodo)}`")
 
     # -------------------------------------------------------------------------
     # Abas Centralizadas
