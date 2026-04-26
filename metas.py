@@ -4,6 +4,7 @@ Acompanhamento de vendas — metas vs realizado (Direcional).
 Focado em Premiações: Coordenadores IMOB, Comerciais e Grandes Contas.
 Design atualizado (Gaps Style) com transparência total e detalhamento de vendas.
 Remoção da funcionalidade de debug.
+Ajuste na aba Comerciais para separar produtos individuais de múltiplos coordenadores.
 """
 from __future__ import annotations
 
@@ -401,7 +402,7 @@ def main():
                         st.write("_Sem metas atribuídas._")
                 st.markdown('<div class="section-separator"></div>', unsafe_allow_html=True)
 
-    # --- ABA 2: COMERCIAIS ---
+    # --- ABA 2: COMERCIAIS (Produtos Individuais vs Múltiplos) ---
     with tabs[1]:
         st.subheader(f"Premiação Comerciais — {mes_sel_nome}/{ano_sel}")
         df_com_metas = df_metas_comerciais[df_metas_comerciais["DATA"] == data_filtro_meta]
@@ -409,37 +410,84 @@ def main():
         if df_com_metas.empty:
             st.info(f"Nenhuma meta encontrada para {data_filtro_meta} na aba Comerciais.")
         else:
-            all_coords = []
+            # Mapeia quantos coordenadores cada produto possui
+            prod_coords_map = {}
             for _, r in df_com_metas.iterrows():
-                all_coords.extend(extrair_lista_coords(r["COORDENADORES"]))
-            unique_coords = sorted(list(set(all_coords)))
+                emp = r["EMPREENDIMENTO"]
+                coords = extrair_lista_coords(r["COORDENADORES"])
+                if emp not in prod_coords_map:
+                    prod_coords_map[emp] = set()
+                for c in coords:
+                    prod_coords_map[emp].add(c)
             
-            for c_name in unique_coords:
+            # Divide entre individuais e múltiplos
+            p_individuais = [e for e, c_set in prod_coords_map.items() if len(c_set) == 1]
+            p_multiplos = [e for e, c_set in prod_coords_map.items() if len(c_set) > 1]
+            
+            # --- PARTE 1: Individuais por Coordenador ---
+            st.markdown("### Produtos com Coordenador Único")
+            # Lista única de coordenadores desses produtos individuais
+            coords_indiv = sorted(list(set([list(prod_coords_map[p])[0] for p in p_individuais])))
+            
+            for c_name in coords_indiv:
                 st.markdown(f"#### Coordenador: {c_name}")
                 rows_com = []
+                # Filtra apenas produtos deste coordenador que são individuais
                 mask_coord = df_com_metas["COORDENADORES"].str.contains(c_name, case=False, na=False)
                 df_c_metas = df_com_metas[mask_coord]
                 
                 for _, r in df_c_metas.iterrows():
                     emp_nome = r["EMPREENDIMENTO"]
-                    realizado = calcular_realizado(vendas_periodo, emp=emp_nome, ignora_vendedor=True)
-                    
-                    m_desafio = int(parse_valor_br(r.get("META DESAFIO VENDAS", 0)))
-                    m_bp = int(parse_valor_br(r.get("META BP", 0)))
-                    m_bp70 = int(parse_valor_br(r.get("META BP 70%", 0)))
-                    
-                    status = "NÃO BATEU"
-                    if realizado >= m_desafio and m_desafio > 0: status = "DESAFIO ✅"
-                    elif realizado >= m_bp and m_bp > 0: status = "BP ✅"
-                    elif realizado >= m_bp70 and m_bp70 > 0: status = "BP 70% ✅"
-                    
-                    rows_com.append({
-                        "Empreendimento": emp_nome, "Meta Desafio": m_desafio, "Meta BP": m_bp,
-                        "Meta BP 70%": m_bp70, "Realizado": realizado, "Resultado": status
-                    })
+                    if emp_nome in p_individuais:
+                        realizado = calcular_realizado(vendas_periodo, emp=emp_nome, ignora_vendedor=True)
+                        m_desafio = int(parse_valor_br(r.get("META DESAFIO VENDAS", 0)))
+                        m_bp = int(parse_valor_br(r.get("META BP", 0)))
+                        m_bp70 = int(parse_valor_br(r.get("META BP 70%", 0)))
+                        
+                        status = "NÃO BATEU"
+                        if realizado >= m_desafio and m_desafio > 0: status = "DESAFIO ✅"
+                        elif realizado >= m_bp and m_bp > 0: status = "BP ✅"
+                        elif realizado >= m_bp70 and m_bp70 > 0: status = "BP 70% ✅"
+                        
+                        rows_com.append({
+                            "Empreendimento": emp_nome, "Meta Desafio": m_desafio, "Meta BP": m_bp,
+                            "Meta BP 70%": m_bp70, "Realizado": realizado, "Resultado": status
+                        })
                 if rows_com:
                     st.table(pd.DataFrame(rows_com))
+
+            # --- PARTE 2: Múltiplos Coordenadores no Final ---
+            if p_multiplos:
                 st.markdown('<div class="section-separator"></div>', unsafe_allow_html=True)
+                st.markdown("### Produtos com Múltiplos Coordenadores")
+                
+                for emp_m in sorted(p_multiplos):
+                    st.markdown(f"#### Empreendimento: {emp_m}")
+                    # Lista de coordenadores responsáveis por este produto
+                    res_coords = ", ".join(sorted(list(prod_coords_map[emp_m])))
+                    st.write(f"_Coordenadores responsáveis: {res_coords}_")
+                    
+                    # Busca as metas deste produto específico
+                    df_emp_m = df_com_metas[df_com_metas["EMPREENDIMENTO"] == emp_m]
+                    rows_m = []
+                    realizado_m = calcular_realizado(vendas_periodo, emp=emp_m, ignora_vendedor=True)
+                    
+                    for _, r in df_emp_m.iterrows():
+                        m_desafio = int(parse_valor_br(r.get("META DESAFIO VENDAS", 0)))
+                        m_bp = int(parse_valor_br(r.get("META BP", 0)))
+                        m_bp70 = int(parse_valor_br(r.get("META BP 70%", 0)))
+                        
+                        status = "NÃO BATEU"
+                        if realizado_m >= m_desafio and m_desafio > 0: status = "DESAFIO ✅"
+                        elif realizado_m >= m_bp and m_bp > 0: status = "BP ✅"
+                        elif realizado_m >= m_bp70 and m_bp70 > 0: status = "BP 70% ✅"
+                        
+                        rows_m.append({
+                            "Meta Desafio": m_desafio, "Meta BP": m_bp,
+                            "Meta BP 70%": m_bp70, "Realizado (Total Prod.)": realizado_m, "Resultado": status
+                        })
+                    if rows_m:
+                        st.table(pd.DataFrame(rows_m))
 
     # --- ABA 3: GRANDES CONTAS (Separado por Coordenador e Detalhado) ---
     with tabs[2]:
@@ -457,7 +505,6 @@ def main():
             for c_meta in unique_gc_coords:
                 st.markdown(f"### Coordenador: {c_meta}")
                 
-                # Localiza as metas do coordenador
                 r_meta_rows = df_gc_metas[df_gc_metas["COORDENADORES"].str.contains(c_meta, case=False, na=False)]
                 if not r_meta_rows.empty:
                     r_meta = r_meta_rows.iloc[0]
@@ -466,15 +513,12 @@ def main():
                     focos_meta = extrair_lista_coords(r_meta.get("PRODUTOS FOCO", ""))
                     
                     vendedores_reais = get_vendedores_do_coordenador(df_dic, c_meta)
-                    
-                    # Filtra vendas desse coordenador no período
                     mask_coord_vendas = vendas_periodo["Proprietário da oportunidade"].astype(str).str.strip().str.lower().isin([v.lower() for v in vendedores_reais])
                     vendas_coord = vendas_periodo[mask_coord_vendas]
                     
                     real_total = len(vendas_coord)
                     
                     if not vendas_coord.empty:
-                        # Agrupa vendas por empreendimento
                         vendas_detalhe = vendas_coord.groupby("Empreendimento").size().reset_index(name="Qtd Realizada")
                         vendas_detalhe["É Foco?"] = vendas_detalhe["Empreendimento"].apply(lambda x: "Sim ✅" if x.strip().lower() in [f.lower() for f in focos_meta] else "Não")
                         
