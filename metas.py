@@ -91,8 +91,8 @@ def _cabecalho_pagina() -> None:
     _exibir_logo_topo()
     st.markdown(
         f'<div class="ficha-hero-stack">'
-        f'<div class="ficha-hero">'
-        f'<p class="ficha-title">Acompanhamento de Metas e Premiações</p>'
+        f'<div class="ficha-hero" style="max-width: 100%;">'
+        f'<p class="ficha-title" style="white-space: nowrap;">Acompanhamento de Metas e Premiações</p>'
         f'<p class="ficha-sub">Realizado X Projetado — <strong>Vendas RJ</strong>.</p>'
         f"</div>"
         f'<div class="ficha-hero-bar-wrap" aria-hidden="true"><div class="ficha-hero-bar"></div></div>'
@@ -385,7 +385,7 @@ def main():
                             m_imob = int(parse_valor_br(r.get("META IMOB", 0)))
                             m_imob2 = int(parse_valor_br(r.get("META IMOB 2", 0)))
                             
-                            status = "NÃO BATEU"
+                            status = "NÃO BATEU ❌"
                             if realizado >= m_imob2 and m_imob2 > 0: status = "META IMOB 2 ✅"
                             elif realizado >= m_imob and m_imob > 0: status = "META IMOB ✅"
                             elif realizado >= m_dir and m_dir > 0: status = "META DIRECIONAL ✅"
@@ -425,14 +425,11 @@ def main():
             p_multiplos = [e for e, c_set in prod_coords_map.items() if len(c_set) > 1]
             
             # --- PARTE 1: Individuais por Coordenador ---
-            st.markdown("### Produtos com Coordenador Único")
-            # Lista única de coordenadores desses produtos individuais
             coords_indiv = sorted(list(set([list(prod_coords_map[p])[0] for p in p_individuais])))
             
             for c_name in coords_indiv:
                 st.markdown(f"#### Coordenador: {c_name}")
                 rows_com = []
-                # Filtra apenas produtos deste coordenador que são individuais
                 mask_coord = df_com_metas["COORDENADORES"].str.contains(c_name, case=False, na=False)
                 df_c_metas = df_com_metas[mask_coord]
                 
@@ -444,7 +441,7 @@ def main():
                         m_bp = int(parse_valor_br(r.get("META BP", 0)))
                         m_bp70 = int(parse_valor_br(r.get("META BP 70%", 0)))
                         
-                        status = "NÃO BATEU"
+                        status = "NÃO BATEU ❌"
                         if realizado >= m_desafio and m_desafio > 0: status = "DESAFIO ✅"
                         elif realizado >= m_bp and m_bp > 0: status = "BP ✅"
                         elif realizado >= m_bp70 and m_bp70 > 0: status = "BP 70% ✅"
@@ -456,18 +453,16 @@ def main():
                 if rows_com:
                     st.table(pd.DataFrame(rows_com))
 
-            # --- PARTE 2: Múltiplos Coordenadores no Final ---
+            # --- PARTE 2: Múltiplos Coordenadores (Contabilizados Separadamente) ---
             if p_multiplos:
                 st.markdown('<div class="section-separator"></div>', unsafe_allow_html=True)
-                st.markdown("### Produtos com Múltiplos Coordenadores")
+                st.markdown("### Produtos Contabilizados Separadamente")
                 
                 for emp_m in sorted(p_multiplos):
-                    st.markdown(f"#### Empreendimento: {emp_m}")
-                    # Lista de coordenadores responsáveis por este produto
+                    st.markdown(f"#### {emp_m}")
                     res_coords = ", ".join(sorted(list(prod_coords_map[emp_m])))
                     st.write(f"_Coordenadores responsáveis: {res_coords}_")
                     
-                    # Busca as metas deste produto específico
                     df_emp_m = df_com_metas[df_com_metas["EMPREENDIMENTO"] == emp_m]
                     rows_m = []
                     realizado_m = calcular_realizado(vendas_periodo, emp=emp_m, ignora_vendedor=True)
@@ -477,7 +472,7 @@ def main():
                         m_bp = int(parse_valor_br(r.get("META BP", 0)))
                         m_bp70 = int(parse_valor_br(r.get("META BP 70%", 0)))
                         
-                        status = "NÃO BATEU"
+                        status = "NÃO BATEU ❌"
                         if realizado_m >= m_desafio and m_desafio > 0: status = "DESAFIO ✅"
                         elif realizado_m >= m_bp and m_bp > 0: status = "BP ✅"
                         elif realizado_m >= m_bp70 and m_bp70 > 0: status = "BP 70% ✅"
@@ -524,7 +519,7 @@ def main():
                         
                         real_foco = vendas_detalhe[vendas_detalhe["É Foco?"] == "Sim ✅"]["Qtd Realizada"].sum()
                         
-                        status_gc = "NÃO BATEU"
+                        status_gc = "NÃO BATEU ❌"
                         if real_total >= m2 and m2 > 0: status_gc = "META 2 ✅"
                         elif real_total >= m1 and m1 > 0: status_gc = "META 1 ✅"
                         
