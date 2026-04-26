@@ -43,6 +43,13 @@ COR_TEXTO_MUTED = "#64748b"
 COR_TEXTO_LABEL = "#1e293b"
 COR_INPUT_BG = "#f0f2f6"
 
+MESES_TEXTO_MAP = {
+    "janeiro": 1, "fevereiro": 2, "março": 3, "abril": 4, "maio": 5, "junho": 6,
+    "julho": 7, "agosto": 8, "setembro": 9, "outubro": 10, "novembro": 11, "dezembro": 12,
+    "jan": 1, "fev": 2, "mar": 3, "abr": 4, "mai": 5, "jun": 6,
+    "jul": 7, "ago": 8, "set": 9, "out": 10, "nov": 11, "dez": 12
+}
+
 def _hex_rgb_triplet(hex_color: str) -> str:
     x = (hex_color or "").strip().lstrip("#")
     if len(x) != 6: return "0, 0, 0"
@@ -52,7 +59,7 @@ RGB_AZUL_CSS = _hex_rgb_triplet(COR_AZUL_ESC)
 RGB_VERMELHO_CSS = _hex_rgb_triplet(COR_VERMELHO)
 
 # -----------------------------------------------------------------------------
-# Funções de Design (Revertido ao Estilo Inicial)
+# Funções de Design
 # -----------------------------------------------------------------------------
 def _resolver_png_raiz(nome: str) -> Path | None:
     for base in (_DIR_APP, _DIR_APP.parent):
@@ -93,7 +100,6 @@ def aplicar_estilo() -> None:
             100% {{ background-position: 200% 50%; }}
         }}
 
-        /* Centralização das Abas */
         div[data-testid="stTabs"] [data-baseweb="tab-list"] {{
             display: flex;
             justify-content: center;
@@ -155,7 +161,6 @@ def aplicar_estilo() -> None:
             font-weight: 800 !important;
         }}
 
-        /* Tabelas */
         [data-testid="stDataFrame"] {{
             border-radius: 12px;
             overflow: hidden;
@@ -167,7 +172,7 @@ def aplicar_estilo() -> None:
     )
 
 # -----------------------------------------------------------------------------
-# Integração GSheets
+# Lógicas de Tratamento de Dados
 # -----------------------------------------------------------------------------
 def _secrets_connections_gsheets() -> Dict[str, Any]:
     try: return dict(st.secrets["connections"]["gsheets"])
@@ -200,7 +205,7 @@ def ler_aba_df(sid: str, worksheet: str) -> pd.DataFrame:
     return df
 
 def parse_valor_br(val: Any) -> float:
-    if pd.isna(val) or val == "" or val == "None": return 0.0
+    if pd.isna(val) or val == "" or str(val).lower() == "none": return 0.0
     s = str(val).replace("R$", "").replace(".", "").replace(",", ".").strip()
     try: return float(s)
     except: return 0.0
@@ -210,36 +215,42 @@ def extrair_lista_coords(val: str) -> List[str]:
     if s.startswith("{") and s.endswith("}"): s = s[1:-1]
     return [c.strip() for c in s.split(",") if c.strip()]
 
-# -----------------------------------------------------------------------------
-# Lógica do Dicionário e Realizado
-# -----------------------------------------------------------------------------
+def normalizar_mes_para_int(val: Any) -> Optional[int]:
+    v = str(val).strip().lower()
+    if not v: return None
+    if v in MESES_TEXTO_MAP: return MESES_TEXTO_MAP[v]
+    try:
+        n = int(float(v))
+        if 1 <= n <= 12: return n
+    except: pass
+    return None
+
 def get_vendedores_do_coordenador(df_dic: pd.DataFrame, nome_coord_tabela: str) -> List[str]:
-    """Busca no dicionário os proprietários vinculados ao coordenador."""
-    # Garante que as colunas sejam as corretas
-    # Dicionário: Coordenador | Proprietário da Oportunidade
-    df_dic.columns = ["COORDENADOR", "PROPRIETARIO"]
-    mask = df_dic["COORDENADOR"].astype(str).str.strip().str.lower() == nome_coord_tabela.strip().lower()
-    return df_dic[mask]["PROPRIETARIO"].astype(str).str.strip().unique().tolist()
+    """Mapeia o nome da meta para os nomes reais no BD via dicionário."""
+    # Assume colunas: COORDENADOR (nome curto) e PROPRIETÁRIO DA OPORTUNIDADE (nome longo)
+    col_coord = df_dic.columns[0]
+    col_prop = df_dic.columns[1]
+    mask = df_dic[col_coord].astype(str).str.strip().str.lower() == nome_coord_tabela.strip().lower()
+    return df_dic[mask][col_prop].astype(str).str.strip().unique().tolist()
 
 def calcular_realizado(df_vendas: pd.DataFrame, vendedores: List[str] = None, emp: Optional[str] = None, ignora_vendedor: bool = False) -> int:
-    """Soma as vendas filtradas pelo dicionário ou apenas por empreendimento."""
-    mask = pd.Series([True] * len(df_vendas), index=df_vendas.index)
+    """Conta vendas comerciais filtradas por vendedor e/ou empreendimento."""
+    if df_vendas.empty: return 0
     
+    mask = pd.Series([True] * len(df_vendas), index=df_vendas.index)
     col_prop = "Proprietário da oportunidade"
     col_emp = "Empreendimento"
     
-    # Filtro por vendedores (apenas se não for para ignorar)
     if not ignora_vendedor:
         if vendedores:
             mask &= df_vendas[col_prop].astype(str).str.strip().isin(vendedores)
         else:
             return 0
     
-    # Filtra pelo empreendimento se houver
     if emp:
         mask &= (df_vendas[col_emp].astype(str).str.strip().str.lower() == str(emp).strip().lower())
     
-    return int(len(df_vendas[mask]))
+    return int(mask.sum())
 
 # -----------------------------------------------------------------------------
 # Main App
@@ -264,159 +275,156 @@ def main():
         st.error(f"Erro ao carregar dados: {e}")
         return
 
-    # --- Limpeza e Filtro Inicial (Venda Comercial? == 1) ---
+    # --- Pré-processamento Vendas ---
     df_vendas = df_vendas_raw.copy()
     
-    col_venda_comercial = "Venda Comercial?"
-    if col_venda_comercial in df_vendas.columns:
-        # Filtra apenas Vendas Comerciais iguais a 1
-        df_vendas = df_vendas[df_vendas[col_venda_comercial].astype(str).str.strip() == "1"]
+    # Filtro Comercial: Apenas igual a 1
+    col_comercial = "Venda Comercial?"
+    if col_comercial in df_vendas.columns:
+        df_vendas = df_vendas[df_vendas[col_comercial].astype(str).str.strip().isin(["1", "1.0", "Sim", "SIM", "True", "TRUE"])]
     
+    # Normalização de datas no BD
+    df_vendas["_MES_NUM"] = df_vendas["Mês Venda"].apply(normalizar_mes_para_int)
+    df_vendas["_ANO_NUM"] = pd.to_numeric(df_vendas["Ano da Venda"], errors='coerce')
+
     # -------------------------------------------------------------------------
-    # Filtros de Período (Ano e Mês)
+    # Filtros de Período
     # -------------------------------------------------------------------------
     st.markdown("### Filtros de Período")
     c_f1, c_f2 = st.columns(2)
     with c_f1:
-        anos_list = sorted(df_vendas["Ano da Venda"].astype(str).unique(), reverse=True)
-        ano_sel = st.selectbox("Selecione o Ano", anos_list if anos_list else [str(datetime.now().year)])
+        anos_disponiveis = sorted([str(int(x)) for x in df_vendas["_ANO_NUM"].dropna().unique()], reverse=True)
+        if not anos_disponiveis: anos_disponiveis = [str(datetime.now().year)]
+        ano_sel = st.selectbox("Selecione o Ano", anos_disponiveis)
     with c_f2:
-        meses_list = [
-            ("Janeiro", "01"), ("Fevereiro", "02"), ("Março", "03"), ("Abril", "04"), 
-            ("Maio", "05"), ("Junho", "06"), ("Julho", "07"), ("Agosto", "08"), 
-            ("Setembro", "09"), ("Outubro", "10"), ("Novembro", "11"), ("Dezembro", "12")
+        meses_nomes = [
+            ("Janeiro", 1), ("Fevereiro", 2), ("Março", 3), ("Abril", 4), 
+            ("Maio", 5), ("Junho", 6), ("Julho", 7), ("Agosto", 8), 
+            ("Setembro", 9), ("Outubro", 10), ("Novembro", 11), ("Dezembro", 12)
         ]
-        mes_atual_idx = datetime.now().month - 1
-        mes_sel_nome, mes_sel_val = st.selectbox("Selecione o Mês", meses_list, index=mes_atual_idx, format_func=lambda x: x[0])
+        mes_padrão = datetime.now().month - 1
+        mes_sel_nome, mes_sel_val = st.selectbox("Selecione o Mês", meses_nomes, index=mes_padrão, format_func=lambda x: x[0])
 
-    data_filtro = f"{mes_sel_val}/{ano_sel}"
+    # Chave para buscar na aba Metas (MM/AAAA)
+    data_filtro_meta = f"{mes_sel_val:02d}/{ano_sel}"
     
-    # Filtra vendas pelo período selecionado
-    vendas_f = df_vendas[
-        (df_vendas["Ano da Venda"].astype(str) == str(ano_sel)) & 
-        (df_vendas["Mês Venda"].astype(str).str.zfill(2) == str(mes_sel_val))
+    # Filtrar BD Vendas
+    vendas_periodo = df_vendas[
+        (df_vendas["_ANO_NUM"] == int(ano_sel)) & 
+        (df_vendas["_MES_NUM"] == mes_sel_val)
     ]
 
     # -------------------------------------------------------------------------
-    # Interface de Abas Centralizada
+    # Abas
     # -------------------------------------------------------------------------
     tabs = st.tabs(["Coordenadores IMOB", "Coordenadores Comerciais", "Grandes Contas"])
 
-    # --- ABA 1: IMOB (Filtrado por Coordenador + Empreendimento) ---
+    # --- ABA 1: IMOB ---
     with tabs[0]:
         st.subheader(f"Premiação IMOB — {mes_sel_nome}/{ano_sel}")
-        df_imob = df_metas_imob[df_metas_imob["DATA"] == data_filtro]
+        df_imob_metas = df_metas_imob[df_metas_imob["DATA"] == data_filtro_meta]
         
-        if df_imob.empty:
-            st.info("Nenhuma meta cadastrada para este período na aba IMOB.")
+        if df_imob_metas.empty:
+            st.info(f"Nenhuma meta encontrada para {data_filtro_meta} na aba IMOB.")
         else:
-            regioes = sorted(df_imob["REGIÃO"].unique())
+            regioes = sorted(df_imob_metas["REGIÃO"].unique())
             for reg in regioes:
                 with st.expander(f"Região: {reg}", expanded=True):
-                    df_reg = df_imob[df_imob["REGIÃO"] == reg]
-                    rows = []
+                    df_reg = df_imob_metas[df_imob_metas["REGIÃO"] == reg]
+                    rows_imob = []
                     for _, r in df_reg.iterrows():
-                        coords = extrair_lista_coords(r["COORDENADORES"])
-                        emp = r["EMPREENDIMENTO"]
-                        for c in coords:
-                            vendedores = get_vendedores_do_coordenador(df_dic, c)
-                            realizado = calcular_realizado(vendas_f, vendedores, emp)
+                        coords_meta = extrair_lista_coords(r["COORDENADORES"])
+                        emp_nome = r["EMPREENDIMENTO"]
+                        for c_meta in coords_meta:
+                            vendedores_reais = get_vendedores_do_coordenador(df_dic, c_meta)
+                            realizado = calcular_realizado(vendas_periodo, vendedores_reais, emp_nome)
                             
                             m_dir = int(parse_valor_br(r.get("META DIRECIONAL", 0)))
                             m_imob = int(parse_valor_br(r.get("META IMOB", 0)))
                             m_imob2 = int(parse_valor_br(r.get("META IMOB 2", 0)))
                             
-                            res = "NÃO BATEU"
-                            if realizado >= m_imob2 and m_imob2 > 0: res = "META IMOB 2 ✅"
-                            elif realizado >= m_imob and m_imob > 0: res = "META IMOB ✅"
-                            elif realizado >= m_dir and m_dir > 0: res = "META DIRECIONAL ✅"
+                            status = "NÃO BATEU"
+                            if realizado >= m_imob2 and m_imob2 > 0: status = "META IMOB 2 ✅"
+                            elif realizado >= m_imob and m_imob > 0: status = "META IMOB ✅"
+                            elif realizado >= m_dir and m_dir > 0: status = "META DIRECIONAL ✅"
                             
-                            rows.append({
-                                "Coordenador": c, "Empreendimento": emp,
+                            rows_imob.append({
+                                "Coordenador": c_meta, "Empreendimento": emp_nome,
                                 "Meta Dir.": m_dir, "Meta IMOB": m_imob, "Meta IMOB 2": m_imob2,
-                                "Realizado": realizado, "Resultado": res
+                                "Realizado": realizado, "Resultado": status
                             })
-                    if rows:
-                        st.table(pd.DataFrame(rows))
+                    if rows_imob:
+                        st.table(pd.DataFrame(rows_imob))
 
-    # --- ABA 2: COMERCIAIS (Realizado é o Total do Empreendimento) ---
+    # --- ABA 2: COMERCIAIS ---
     with tabs[1]:
         st.subheader(f"Premiação Comerciais — {mes_sel_nome}/{ano_sel}")
-        df_com = df_metas_comerciais[df_metas_comerciais["DATA"] == data_filtro]
+        df_com_metas = df_metas_comerciais[df_metas_comerciais["DATA"] == data_filtro_meta]
         
-        if df_com.empty:
-            st.info("Nenhuma meta cadastrada para este período na aba Comerciais.")
+        if df_com_metas.empty:
+            st.info(f"Nenhuma meta encontrada para {data_filtro_meta} na aba Comerciais.")
         else:
-            # Lista única de coordenadores presentes nas metas do mês para separação visual
-            all_coords_in_month = []
-            for _, r in df_com.iterrows():
-                all_coords_in_month.extend(extrair_lista_coords(r["COORDENADORES"]))
-            unique_coords = sorted(list(set(all_coords_in_month)))
+            all_coords = []
+            for _, r in df_com_metas.iterrows():
+                all_coords.extend(extrair_lista_coords(r["COORDENADORES"]))
+            unique_coords = sorted(list(set(all_coords)))
             
             for c_name in unique_coords:
                 st.markdown(f"#### Coordenador: {c_name}")
-                rows_c = []
-                # Filtrar metas onde este coordenador está incluído
-                df_c_metas = df_com[df_com["COORDENADORES"].str.contains(c_name, case=False, na=False)]
+                rows_com = []
+                # Filtra metas onde este coordenador aparece
+                df_c_metas = df_com_metas[df_com_metas["COORDENADORES"].str.contains(c_name, case=False, na=False)]
                 for _, r in df_c_metas.iterrows():
-                    emp = r["EMPREENDIMENTO"]
-                    
-                    # Conforme solicitado: Coordenadores não importam para o cômputo.
-                    # Deve ser computado o valor TOTAL de cada empreendimento no período.
-                    realizado = calcular_realizado(vendas_f, emp=emp, ignora_vendedor=True)
+                    emp_nome = r["EMPREENDIMENTO"]
+                    # Realizado TOTAL do empreendimento (independente de coordenador)
+                    realizado = calcular_realizado(vendas_periodo, emp=emp_nome, ignora_vendedor=True)
                     
                     m_desafio = int(parse_valor_br(r.get("META DESAFIO VENDAS", 0)))
                     m_bp = int(parse_valor_br(r.get("META BP", 0)))
                     m_bp70 = int(parse_valor_br(r.get("META BP 70%", 0)))
                     
-                    res = "NÃO BATEU"
-                    if realizado >= m_desafio and m_desafio > 0: res = "DESAFIO ✅"
-                    elif realizado >= m_bp and m_bp > 0: res = "BP ✅"
-                    elif realizado >= m_bp70 and m_bp70 > 0: res = "BP 70% ✅"
+                    status = "NÃO BATEU"
+                    if realizado >= m_desafio and m_desafio > 0: status = "DESAFIO ✅"
+                    elif realizado >= m_bp and m_bp > 0: status = "BP ✅"
+                    elif realizado >= m_bp70 and m_bp70 > 0: status = "BP 70% ✅"
                     
-                    rows_c.append({
-                        "Empreendimento": emp, 
-                        "Meta Desafio": m_desafio, 
-                        "Meta BP": m_bp,
-                        "Meta BP 70%": m_bp70, 
-                        "Realizado": realizado, 
-                        "Resultado": res
+                    rows_com.append({
+                        "Empreendimento": emp_nome, "Meta Desafio": m_desafio, "Meta BP": m_bp,
+                        "Meta BP 70%": m_bp70, "Realizado": realizado, "Resultado": status
                     })
-                if rows_c:
-                    st.dataframe(pd.DataFrame(rows_c), use_container_width=True, hide_index=True)
+                if rows_com:
+                    st.dataframe(pd.DataFrame(rows_com), use_container_width=True, hide_index=True)
 
-    # --- ABA 3: GRANDES CONTAS (Filtrado por Coordenador) ---
+    # --- ABA 3: GRANDES CONTAS ---
     with tabs[2]:
         st.subheader(f"Premiação Grandes Contas — {mes_sel_nome}/{ano_sel}")
-        df_gc_periodo = df_metas_gc[df_metas_gc["DATA"] == data_filtro]
+        df_gc_metas = df_metas_gc[df_metas_gc["DATA"] == data_filtro_meta]
         
-        if df_gc_periodo.empty:
-            st.info("Nenhuma meta cadastrada para este período na aba Grandes Contas.")
+        if df_gc_metas.empty:
+            st.info(f"Nenhuma meta encontrada para {data_filtro_meta} na aba Grandes Contas.")
         else:
             rows_gc = []
-            for _, r in df_gc_periodo.iterrows():
-                coords = extrair_lista_coords(r["COORDENADORES"])
+            for _, r in df_gc_metas.iterrows():
+                coords_meta = extrair_lista_coords(r["COORDENADORES"])
                 m1 = int(parse_valor_br(r.get("META 1", 0)))
                 m2 = int(parse_valor_br(r.get("META 2", 0)))
-                foco_list = extrair_lista_coords(r.get("PRODUTOS FOCO", ""))
+                focos = extrair_lista_coords(r.get("PRODUTOS FOCO", ""))
                 
-                for c in coords:
-                    vendedores = get_vendedores_do_coordenador(df_dic, c)
-                    # Realizado total do coordenador (sem filtro de empreendimento)
-                    real_total = calcular_realizado(vendas_f, vendedores)
+                for c_meta in coords_meta:
+                    vendedores_reais = get_vendedores_do_coordenador(df_dic, c_meta)
+                    real_total = calcular_realizado(vendas_periodo, vendedores_reais)
                     
-                    # Realizado Foco (apenas nos produtos da lista)
                     real_foco = 0
-                    for p_foco in foco_list:
-                        real_foco += calcular_realizado(vendas_f, vendedores, p_foco)
+                    for p_foco in focos:
+                        real_foco += calcular_realizado(vendas_periodo, vendedores_reais, p_foco)
                     
-                    res = "NÃO BATEU"
-                    if real_total >= m2 and m2 > 0: res = "META 2 ✅"
-                    elif real_total >= m1 and m1 > 0: res = "META 1 ✅"
+                    status = "NÃO BATEU"
+                    if real_total >= m2 and m2 > 0: status = "META 2 ✅"
+                    elif real_total >= m1 and m1 > 0: status = "META 1 ✅"
                     
                     rows_gc.append({
-                        "Coordenador": c, "Meta 1": m1, "Meta 2": m2,
-                        "Realizado Total": real_total, "Realizado Foco": real_foco, "Resultado": res
+                        "Coordenador": c_meta, "Meta 1": m1, "Meta 2": m2,
+                        "Realizado Total": real_total, "Realizado Foco": real_foco, "Resultado": status
                     })
             if rows_gc:
                 st.dataframe(pd.DataFrame(rows_gc), use_container_width=True, hide_index=True)
