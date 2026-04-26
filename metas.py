@@ -343,8 +343,9 @@ def main():
         mes_atual_idx = datetime.now().month - 1
         mes_sel_nome, mes_sel_val = st.selectbox("Selecione o Mês", meses_nomes, index=mes_atual_idx, format_func=lambda x: x[0])
     with c_f3:
-        facilitada_opcoes = ["Todas", "Sim", "Não"]
-        facilitada_sel = st.selectbox("Venda Facilitada", facilitada_opcoes)
+        # Alteração: Nomes conforme solicitado e valor padrão "Apenas Normais"
+        facilitada_opcoes = ["Todas", "Apenas Facilitadas", "Apenas Normais"]
+        facilitada_sel = st.selectbox("Venda Facilitada", facilitada_opcoes, index=2)
 
     # Chave para buscar na aba Metas
     data_filtro_meta = f"{int(mes_sel_val):02d}/{ano_sel}"
@@ -358,9 +359,11 @@ def main():
     # Aplicar Filtro de Venda Facilitada
     col_facilitada = "Venda facilitada"
     if col_facilitada in vendas_periodo.columns and facilitada_sel != "Todas":
-        if facilitada_sel == "Sim":
+        # "Apenas Facilitadas" busca por records com 1, Sim, etc.
+        if facilitada_sel == "Apenas Facilitadas":
             vendas_periodo = vendas_periodo[vendas_periodo[col_facilitada].astype(str).str.strip().isin(["1", "1.0", "Sim", "SIM", "True", "TRUE"])]
         else:
+            # "Apenas Normais" busca pelo inverso
             vendas_periodo = vendas_periodo[~vendas_periodo[col_facilitada].astype(str).str.strip().isin(["1", "1.0", "Sim", "SIM", "True", "TRUE"])]
 
     # --- DEBUG GERAL ---
