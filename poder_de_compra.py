@@ -195,6 +195,10 @@ def aplicar_estilo() -> None:
         .vel-kpi .val--red {{ color: {COR_VERMELHO} !important; }}
         div[data-baseweb="input"] {{ border-radius: 10px !important; border: 1px solid #e2e8f0 !important; background-color: {COR_INPUT_BG} !important; }}
         div[data-baseweb="input"]:focus-within {{ border-color: rgba({RGB_AZUL_CSS}, 0.35) !important; box-shadow: 0 0 0 3px rgba({RGB_AZUL_CSS}, 0.08) !important; }}
+        /* Estilização Extra para as Abas */
+        div[data-baseweb="tab-list"] {{ gap: 10px; }}
+        div[data-baseweb="tab"] {{ background: rgba(255,255,255,0.6); border-radius: 8px 8px 0 0; padding: 10px 20px; font-weight: 600; color: {COR_AZUL_ESC}; }}
+        div[data-baseweb="tab"][aria-selected="true"] {{ background: rgba(255,255,255,0.95); border-bottom: 3px solid {COR_VERMELHO}; }}
         </style>
         """,
         unsafe_allow_html=True,
@@ -371,18 +375,22 @@ def main() -> None:
     c_ps_dir = achar_coluna(df, ["PS DIRECIONAL"])
     c_ps_emc = achar_coluna(df, ["PS EMCASH"])
     
-    # Novas colunas de limpeza solicitadas
+    # Novas colunas solicitadas e de limpeza
     c_renda = achar_coluna(df, ["RENDA APURADA", "Renda Apurada"])
     c_val_fin = achar_coluna(df, ["Valor do Financiamento"])
     c_ato = achar_coluna(df, ["Ato Total", "Total Ato Pago"])
     c_pro_soluto = achar_coluna(df, ["Pro Soluto", "Pro soluto"])
     c_renda_procx = achar_coluna(df, ["Renda PROCX", "Renda procx"])
     c_finan = achar_coluna(df, ["FINANCIAMENTO MÁXIMO", "Financiamento Máximo"])
-    c_subsi = achar_coluna(df, ["SUBSÍDIO DISPONÍVEL", "Subsídio", "Subsidio"])
+    c_subsi = achar_coluna(df, ["SUBSÍDIO DISPONÍVEL", "Subsídio Disponível", "Subsidio Disponivel"])
     c_avalia = achar_coluna(df, ["Avaliação", "Avaliacao", "Nome da Avaliação de crédito"])
+    
+    c_fin_real = achar_coluna(df, ["FINANCIAMENTO REAL", "Financiamento Real"])
+    c_sub_real = achar_coluna(df, ["SUBSÍDIO REAL", "Subsídio Real", "Subsidio Real"])
+    c_val_fin_sub_real = achar_coluna(df, ["VALOR C/ FIN E SUB REAIS", "Valor c/ Fin e Sub Reais"])
 
     if not all([c_v_real, c_v_dir, c_v_emc]):
-        st.error("Colunas essenciais de valores não encontradas.")
+        st.error("Colunas essenciais de valores (Real, Direcional, Emcash) não encontradas.")
         return
 
     if not c_data:
@@ -392,7 +400,7 @@ def main() -> None:
     # -------------------------------------------------------------------------
     # Filtro Obrigatório: Venda Comercial == 1
     # -------------------------------------------------------------------------
-    if c_v_comercial:
+    if c_v_comercial and c_v_comercial in df.columns:
         df = df[pd.to_numeric(df[c_v_comercial], errors='coerce') == 1]
 
     # -------------------------------------------------------------------------
@@ -410,22 +418,22 @@ def main() -> None:
         return False
 
     # Filtro rigoroso (Vazio, N/A ou Zero) para numéricas (EXCETO Subsídio)
-    cols_limpeza_numericas = [c for c in [c_renda, c_val_fin, c_ato, c_pro_soluto, c_renda_procx, c_finan] if c]
+    cols_limpeza_numericas = [c for c in [c_renda, c_val_fin, c_ato, c_pro_soluto, c_renda_procx, c_finan, c_fin_real, c_val_fin_sub_real] if c and c in df.columns]
     for col in cols_limpeza_numericas:
         df = df[~df[col].apply(lambda x: _is_invalid_value(x, is_numeric=True, allow_zero=False))]
 
     # Subsídio (Vazio, N/A, mas PERMITE Zero)
-    cols_limpeza_subsidio = [c for c in [c_subsi] if c]
+    cols_limpeza_subsidio = [c for c in [c_subsi, c_sub_real] if c and c in df.columns]
     for col in cols_limpeza_subsidio:
         df = df[~df[col].apply(lambda x: _is_invalid_value(x, is_numeric=True, allow_zero=True))]
 
     # Filtro rigoroso (Vazio, N/A ou string "0") para textos (como Avaliação)
-    cols_limpeza_texto = [c for c in [c_avalia] if c]
+    cols_limpeza_texto = [c for c in [c_avalia] if c and c in df.columns]
     for col in cols_limpeza_texto:
         df = df[~df[col].apply(lambda x: _is_invalid_value(x, is_numeric=False, allow_zero=False))]
 
     # Limpeza padrão original (apenas nulos) para outras colunas se necessário
-    cols_limpeza_padrao = [c for c in [c_ps_dir, c_ps_emc] if c]
+    cols_limpeza_padrao = [c for c in [c_ps_dir, c_ps_emc] if c and c in df.columns]
     for col in cols_limpeza_padrao:
         df = df[df[col].notna() & (df[col].astype(str).str.strip() != "")]
 
@@ -435,17 +443,41 @@ def main() -> None:
     df["_mes"] = df["Data_Formatada"].dt.month
     
     # Tratamento Financeiro
-    df["VGV_Real"] = df[c_v_real].apply(parse_valor_br)
-    df["VGV_Dir"] = df[c_v_dir].apply(parse_valor_br)
-    df["VGV_Emc"] = df[c_v_emc].apply(parse_valor_br)
+    if c_v_real in df.columns: df["VGV_Real"] = df[c_v_real].apply(parse_valor_br)
+    if c_v_dir in df.columns: df["VGV_Dir"] = df[c_v_dir].apply(parse_valor_br)
+    if c_v_emc in df.columns: df["VGV_Emc"] = df[c_v_emc].apply(parse_valor_br)
+    
+    # Tratamento Financeiro (Novos Campos)
+    if c_fin_real and c_fin_real in df.columns: df["Financiamento_Real"] = df[c_fin_real].apply(parse_valor_br)
+    else: df["Financiamento_Real"] = 0.0
 
-    # Cálculo dos Gaps Nominais
-    df["Gap_Dir"] = df["VGV_Dir"] - df["VGV_Real"]
-    df["Gap_Emc"] = df["VGV_Emc"] - df["VGV_Real"]
+    if c_finan and c_finan in df.columns: df["Financiamento_Max"] = df[c_finan].apply(parse_valor_br)
+    else: df["Financiamento_Max"] = 0.0
+
+    if c_sub_real and c_sub_real in df.columns: df["Subsidio_Real"] = df[c_sub_real].apply(parse_valor_br)
+    else: df["Subsidio_Real"] = 0.0
+
+    if c_subsi and c_subsi in df.columns: df["Subsidio_Disp"] = df[c_subsi].apply(parse_valor_br)
+    else: df["Subsidio_Disp"] = 0.0
+
+    if c_val_fin_sub_real and c_val_fin_sub_real in df.columns: df["Valor_FinSub_Real"] = df[c_val_fin_sub_real].apply(parse_valor_br)
+    else: df["Valor_FinSub_Real"] = 0.0
+
+    # Cálculo dos Gaps Nominais Originais
+    if "VGV_Dir" in df.columns and "VGV_Real" in df.columns: df["Gap_Dir"] = df["VGV_Dir"] - df["VGV_Real"]
+    if "VGV_Emc" in df.columns and "VGV_Real" in df.columns: df["Gap_Emc"] = df["VGV_Emc"] - df["VGV_Real"]
+
+    # Cálculo dos Novos Gaps (c/ Fin e Sub Reais)
+    if "VGV_Dir" in df.columns and "Valor_FinSub_Real" in df.columns: df["Gap_FinSub_Dir"] = df["VGV_Dir"] - df["Valor_FinSub_Real"]
+    if "VGV_Emc" in df.columns and "Valor_FinSub_Real" in df.columns: df["Gap_FinSub_Emc"] = df["VGV_Emc"] - df["Valor_FinSub_Real"]
+
+    # Diferenças de Crédito
+    df["Dif_Financiamento"] = df["Financiamento_Max"] - df["Financiamento_Real"]
+    df["Dif_Subsidio"] = df["Subsidio_Disp"] - df["Subsidio_Real"]
 
     # Limpeza de campos categóricos nulos
     for col in [c_emp, c_reg_imob, c_imobiliaria, c_canal, c_rank]:
-        if col:
+        if col and col in df.columns:
             df[col] = df[col].fillna("Não Informado").astype(str).str.strip()
 
     # -------------------------------------------------------------------------
@@ -461,13 +493,13 @@ def main() -> None:
     row1_c1, row1_c2, row1_c3, row1_c4 = st.columns(4)
     with row1_c1: sel_ano = st.multiselect("Ano", anos_disp, default=[anos_disp[-1]] if anos_disp else [])
     with row1_c2: sel_mes = st.multiselect("Mês", meses_disp, default=[mes_padrao])
-    with row1_c3: sel_canal = st.multiselect("Canal", sorted(df[c_canal].unique()) if c_canal else [])
-    with row1_c4: sel_reg_imob_filt = st.multiselect("Regional ou Imob", sorted(df[c_reg_imob].unique()) if c_reg_imob else [])
+    with row1_c3: sel_canal = st.multiselect("Canal", sorted(df[c_canal].unique()) if c_canal and c_canal in df.columns else [])
+    with row1_c4: sel_reg_imob_filt = st.multiselect("Regional ou Imob", sorted(df[c_reg_imob].unique()) if c_reg_imob and c_reg_imob in df.columns else [])
 
     row2_c1, row2_c2, row2_c3 = st.columns(3)
-    with row2_c1: sel_emp = st.multiselect("Empreendimento", sorted(df[c_emp].unique()) if c_emp else [])
-    with row2_c2: sel_imobiliaria = st.multiselect("Imobiliária", sorted(df[c_imobiliaria].unique()) if c_imobiliaria else [])
-    with row2_c3: sel_rank = st.multiselect("Ranking", sorted(df[c_rank].unique()) if c_rank else [])
+    with row2_c1: sel_emp = st.multiselect("Empreendimento", sorted(df[c_emp].unique()) if c_emp and c_emp in df.columns else [])
+    with row2_c2: sel_imobiliaria = st.multiselect("Imobiliária", sorted(df[c_imobiliaria].unique()) if c_imobiliaria and c_imobiliaria in df.columns else [])
+    with row2_c3: sel_rank = st.multiselect("Ranking", sorted(df[c_rank].unique()) if c_rank and c_rank in df.columns else [])
 
     # Novos botões de filtros opcionais para Gaps
     row3_c1, row3_c2 = st.columns(2)
@@ -479,50 +511,50 @@ def main() -> None:
     df_f = df.copy()
     if sel_ano: df_f = df_f[df_f["_ano"].isin(sel_ano)]
     if sel_mes: df_f = df_f[df_f["_mes"].isin(sel_mes)]
-    if c_canal and sel_canal: df_f = df_f[df_f[c_canal].isin(sel_canal)]
-    if c_reg_imob and sel_reg_imob_filt: df_f = df_f[df_f[c_reg_imob].isin(sel_reg_imob_filt)]
-    if c_emp and sel_emp: df_f = df_f[df_f[c_emp].isin(sel_emp)]
-    if c_imobiliaria and sel_imobiliaria: df_f = df_f[df_f[c_imobiliaria].isin(sel_imobiliaria)]
-    if c_rank and sel_rank: df_f = df_f[df_f[c_rank].isin(sel_rank)]
+    if c_canal and sel_canal and c_canal in df_f.columns: df_f = df_f[df_f[c_canal].isin(sel_canal)]
+    if c_reg_imob and sel_reg_imob_filt and c_reg_imob in df_f.columns: df_f = df_f[df_f[c_reg_imob].isin(sel_reg_imob_filt)]
+    if c_emp and sel_emp and c_emp in df_f.columns: df_f = df_f[df_f[c_emp].isin(sel_emp)]
+    if c_imobiliaria and sel_imobiliaria and c_imobiliaria in df_f.columns: df_f = df_f[df_f[c_imobiliaria].isin(sel_imobiliaria)]
+    if c_rank and sel_rank and c_rank in df_f.columns: df_f = df_f[df_f[c_rank].isin(sel_rank)]
 
     # -------------------------------------------------------------------------
-    # Aplicando Regras de Gaps de acordo com as caixas de seleção
+    # Aplicando Regras de Gaps (Aplica aos Gaps Originais)
     # -------------------------------------------------------------------------
-    if not exibir_negativos:
+    if not exibir_negativos and "Gap_Dir" in df_f.columns and "Gap_Emc" in df_f.columns:
         df_f = df_f[(df_f["Gap_Dir"] >= 0) & (df_f["Gap_Emc"] >= 0)]
     
-    if not exibir_acima_100k:
+    if not exibir_acima_100k and "Gap_Dir" in df_f.columns and "Gap_Emc" in df_f.columns:
         df_f = df_f[(df_f["Gap_Dir"] <= 100000) & (df_f["Gap_Emc"] <= 100000)]
 
     # -------------------------------------------------------------------------
-    # Indicadores Consolidados
+    # Componentes de Renderização
     # -------------------------------------------------------------------------
-    def render_kpi_block(df_target: pd.DataFrame, title: str):
+    def render_kpi_block(df_target: pd.DataFrame, title: str, col_vgv="VGV_Real", col_dir="Gap_Dir", col_emc="Gap_Emc", label_vgv="VGV Real Total"):
         st.subheader(title)
         if df_target.empty:
             st.info("Não há dados para os filtros selecionados.")
             return
 
         vendas_qtd = len(df_target)
-        vgv_real_tot = df_target["VGV_Real"].sum()
+        vgv_tot = df_target[col_vgv].sum() if col_vgv in df_target.columns else 0.0
         
-        gap_dir_tot = df_target["Gap_Dir"].sum()
-        gap_dir_avg = df_target["Gap_Dir"].mean()
-        gap_dir_med = df_target["Gap_Dir"].median()
-        gap_dir_p10 = df_target["Gap_Dir"].quantile(0.1) # Alterado de P90 para P10
-        pct_gap_dir = (gap_dir_tot / vgv_real_tot * 100.0) if vgv_real_tot > 0 else 0.0
+        gap_dir_tot = df_target[col_dir].sum() if col_dir in df_target.columns else 0.0
+        gap_dir_avg = df_target[col_dir].mean() if col_dir in df_target.columns else 0.0
+        gap_dir_med = df_target[col_dir].median() if col_dir in df_target.columns else 0.0
+        gap_dir_p10 = df_target[col_dir].quantile(0.1) if col_dir in df_target.columns else 0.0
+        pct_gap_dir = (gap_dir_tot / vgv_tot * 100.0) if vgv_tot > 0 else 0.0
 
-        gap_emc_tot = df_target["Gap_Emc"].sum()
-        gap_emc_avg = df_target["Gap_Emc"].mean()
-        gap_emc_med = df_target["Gap_Emc"].median()
-        gap_emc_p10 = df_target["Gap_Emc"].quantile(0.1) # Alterado de P90 para P10
-        pct_gap_emc = (gap_emc_tot / vgv_real_tot * 100.0) if vgv_real_tot > 0 else 0.0
+        gap_emc_tot = df_target[col_emc].sum() if col_emc in df_target.columns else 0.0
+        gap_emc_avg = df_target[col_emc].mean() if col_emc in df_target.columns else 0.0
+        gap_emc_med = df_target[col_emc].median() if col_emc in df_target.columns else 0.0
+        gap_emc_p10 = df_target[col_emc].quantile(0.1) if col_emc in df_target.columns else 0.0
+        pct_gap_emc = (gap_emc_tot / vgv_tot * 100.0) if vgv_tot > 0 else 0.0
 
         st.markdown(
             f"""
             <div class="vel-kpi-row">
                 <div class="vel-kpi"><div class="lbl">Vendas (QTD)</div><div class="val">{vendas_qtd}</div></div>
-                <div class="vel-kpi"><div class="lbl">VGV Real Total</div><div class="val">{fmt_br_milhoes(vgv_real_tot)}</div></div>
+                <div class="vel-kpi"><div class="lbl">{label_vgv}</div><div class="val">{fmt_br_milhoes(vgv_tot)}</div></div>
                 <div class="vel-kpi"><div class="lbl">Gap Direcional (Tot)</div><div class="val val--red">{fmt_br_milhoes(gap_dir_tot)}</div></div>
                 <div class="vel-kpi"><div class="lbl">Gap Emcash (Tot)</div><div class="val val--red">{fmt_br_milhoes(gap_emc_tot)}</div></div>
             </div>
@@ -542,128 +574,177 @@ def main() -> None:
             unsafe_allow_html=True,
         )
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    render_kpi_block(df_f, "Estatísticas Consolidadas")
+    def render_graficos_gaps(df_target, col_dir="Gap_Dir", col_emc="Gap_Emc"):
+        st.subheader("Evolução Mensal")
+        if not df_target.empty and col_dir in df_target.columns and col_emc in df_target.columns:
+            df_chart = df_target.groupby(["_ano", "_mes"], as_index=False).agg(
+                G_Dir=(col_dir, "sum"),
+                G_Emc=(col_emc, "sum")
+            ).sort_values(["_ano", "_mes"])
+            
+            df_chart["Periodo"] = df_chart["_mes"].astype(str).str.zfill(2) + "/" + df_chart["_ano"].astype(str)
+            
+            fig = go.Figure()
+            fig.add_trace(go.Bar(x=df_chart["Periodo"], y=df_chart["G_Dir"], name="Gap Direcional (R$)", marker_color=COR_AZUL_ESC))
+            fig.add_trace(go.Bar(x=df_chart["Periodo"], y=df_chart["G_Emc"], name="Gap Emcash (R$)", marker_color=COR_VERMELHO))
+            
+            fig.update_layout(barmode="group", bargap=0.4, margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter", color=COR_TEXTO_LABEL), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+            st.subheader("Distribuição da Frequência de Gaps")
+            fig_hist = go.Figure()
+            fig_hist.add_trace(go.Histogram(x=df_target[col_dir], name="Distribuição Direcional", marker_color=COR_AZUL_ESC, opacity=0.75, xbins=dict(size=5000)))
+            fig_hist.add_trace(go.Histogram(x=df_target[col_emc], name="Distribuição Emcash", marker_color=COR_VERMELHO, opacity=0.75, xbins=dict(size=5000)))
+            fig_hist.update_layout(barmode="overlay", xaxis_title="Valor do Gap (R$)", yaxis_title="Frequência (Vendas)", margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter", color=COR_TEXTO_LABEL), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+            st.plotly_chart(fig_hist, use_container_width=True, config={"displayModeBar": False})
+        else:
+            st.info("Não há dados para exibir gráficos.")
+
+    def gerar_tabelas_gaps(df_target, col_vgv="VGV_Real", col_dir="Gap_Dir", col_emc="Gap_Emc", vgv_label="VGV Real"):
+        def gerar_tabela_gap_local(df_input, coluna_agrupamento, label_tabela):
+            if not coluna_agrupamento or coluna_agrupamento not in df_input.columns or df_input.empty: return
+            st.subheader(f"Gaps por {label_tabela}")
+            
+            tab = df_input.groupby(coluna_agrupamento, as_index=False).agg(
+                QTD=(coluna_agrupamento, "count"),
+                ValBase=(col_vgv, "sum"),
+                Gap_Dir=(col_dir, "sum"),
+                Gap_Emc=(col_emc, "sum")
+            )
+            
+            tab["% Gap Dir"] = tab.apply(lambda r: (r["Gap_Dir"] / r["ValBase"] * 100) if r["ValBase"] > 0 else 0, axis=1)
+            tab["% Gap Emc"] = tab.apply(lambda r: (r["Gap_Emc"] / r["ValBase"] * 100) if r["ValBase"] > 0 else 0, axis=1)
+            tab = tab.sort_values("Gap_Dir", ascending=False)
+            
+            show = tab.rename(columns={
+                coluna_agrupamento: label_tabela,
+                "ValBase": vgv_label,
+                "Gap_Dir": "Gap Direcional (R$)",
+                "Gap_Emc": "Gap Emcash (R$)"
+            })
+            
+            show[vgv_label] = show[vgv_label].map(lambda x: fmt_br_milhoes(float(x)))
+            show["Gap Direcional (R$)"] = show["Gap Direcional (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
+            show["Gap Emcash (R$)"] = show["Gap Emcash (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
+            show["% Gap Dir"] = show["% Gap Dir"].map(lambda x: f"{x:.1f}%")
+            show["% Gap Emc"] = show["% Gap Emc"].map(lambda x: f"{x:.1f}%")
+            
+            st.dataframe(show, use_container_width=True, hide_index=True)
+
+        if c_emp and c_emp in df_target.columns: gerar_tabela_gap_local(df_target, c_emp, "Empreendimento")
+        if c_reg_imob and c_reg_imob in df_target.columns and c_canal and c_canal in df_target.columns:
+            df_regionais = df_target[df_target[c_canal].isin(['DIR', 'RIV'])]
+            if not df_regionais.empty: gerar_tabela_gap_local(df_regionais, c_reg_imob, "Regional (Canais DIR/RIV)")
+            
+            df_imobs = df_target[df_target[c_canal].isin(['RJ', 'RJG'])]
+            if not df_imobs.empty: gerar_tabela_gap_local(df_imobs, c_reg_imob, "Imob (Canais RJ/RJG)")
+                
+        if c_imobiliaria and c_imobiliaria in df_target.columns: gerar_tabela_gap_local(df_target, c_imobiliaria, "Imobiliária")
+        if c_rank and c_rank in df_target.columns: gerar_tabela_gap_local(df_target, c_rank, "Ranking")
+        if c_canal and c_canal in df_target.columns: gerar_tabela_gap_local(df_target, c_canal, "Canal")
 
     # -------------------------------------------------------------------------
-    # Evolução Mensal
+    # Renderização da Estrutura em Abas
     # -------------------------------------------------------------------------
-    st.subheader("Evolução Mensal")
-    
-    if not df_f.empty:
-        df_chart = df_f.groupby(["_ano", "_mes"], as_index=False).agg(
-            Gap_Dir=("Gap_Dir", "sum"),
-            Gap_Emc=("Gap_Emc", "sum")
-        ).sort_values(["_ano", "_mes"])
-        
-        df_chart["Periodo"] = df_chart["_mes"].astype(str).str.zfill(2) + "/" + df_chart["_ano"].astype(str)
-        
-        fig = go.Figure()
-        fig.add_trace(go.Bar(
-            x=df_chart["Periodo"], y=df_chart["Gap_Dir"],
-            name="Gap Direcional (R$)", marker_color=COR_AZUL_ESC
-        ))
-        fig.add_trace(go.Bar(
-            x=df_chart["Periodo"], y=df_chart["Gap_Emc"],
-            name="Gap Emcash (R$)", marker_color=COR_VERMELHO
-        ))
-        
-        fig.update_layout(
-            barmode="group",
-            bargap=0.4,
-            margin=dict(l=20, r=20, t=30, b=20),
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(family="Inter", color=COR_TEXTO_LABEL),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-        )
-        st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-        # -------------------------------------------------------------------------
-        # Histograma (Distribuição dos Gaps de 5 em 5k)
-        # -------------------------------------------------------------------------
-        st.subheader("Distribuição da Frequência de Gaps")
-        
-        fig_hist = go.Figure()
-        fig_hist.add_trace(go.Histogram(
-            x=df_f["Gap_Dir"],
-            name="Distribuição Direcional",
-            marker_color=COR_AZUL_ESC,
-            opacity=0.75,
-            xbins=dict(size=5000)
-        ))
-        fig_hist.add_trace(go.Histogram(
-            x=df_f["Gap_Emc"],
-            name="Distribuição Emcash",
-            marker_color=COR_VERMELHO,
-            opacity=0.75,
-            xbins=dict(size=5000)
-        ))
-        
-        fig_hist.update_layout(
-            barmode="overlay",
-            xaxis_title="Valor do Gap (R$)",
-            yaxis_title="Frequência (Vendas)",
-            margin=dict(l=20, r=20, t=30, b=20),
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(family="Inter", color=COR_TEXTO_LABEL),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-        )
-        st.plotly_chart(fig_hist, use_container_width=True, config={"displayModeBar": False})
-
-    else:
-        st.info("Não há dados no período selecionado para exibir os gráficos.")
-
-    # -------------------------------------------------------------------------
-    # Tabelas
-    # -------------------------------------------------------------------------
-    def gerar_tabela_gap(df_input: pd.DataFrame, coluna_agrupamento: str, label_tabela: str):
-        if not coluna_agrupamento or df_input.empty: return
-        st.subheader(f"Gaps por {label_tabela}")
-        
-        tab = df_input.groupby(coluna_agrupamento, as_index=False).agg(
-            QTD=(coluna_agrupamento, "count"),
-            VGV_Real=("VGV_Real", "sum"),
-            Gap_Dir=("Gap_Dir", "sum"),
-            Gap_Emc=("Gap_Emc", "sum")
-        )
-        
-        tab["% Gap Dir"] = tab.apply(lambda r: (r["Gap_Dir"] / r["VGV_Real"] * 100) if r["VGV_Real"] > 0 else 0, axis=1)
-        tab["% Gap Emc"] = tab.apply(lambda r: (r["Gap_Emc"] / r["VGV_Real"] * 100) if r["VGV_Real"] > 0 else 0, axis=1)
-        tab = tab.sort_values("Gap_Dir", ascending=False)
-        
-        show = tab.rename(columns={
-            coluna_agrupamento: label_tabela,
-            "VGV_Real": "VGV Real",
-            "Gap_Dir": "Gap Direcional (R$)",
-            "Gap_Emc": "Gap Emcash (R$)"
-        })
-        
-        show["VGV Real"] = show["VGV Real"].map(lambda x: fmt_br_milhoes(float(x)))
-        show["Gap Direcional (R$)"] = show["Gap Direcional (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
-        show["Gap Emcash (R$)"] = show["Gap Emcash (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
-        show["% Gap Dir"] = show["% Gap Dir"].map(lambda x: f"{x:.1f}%")
-        show["% Gap Emc"] = show["% Gap Emc"].map(lambda x: f"{x:.1f}%")
-        
-        st.dataframe(show, use_container_width=True, hide_index=True)
-
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
     
-    if c_emp: gerar_tabela_gap(df_f, c_emp, "Empreendimento")
-    
-    if c_reg_imob and c_canal:
-        df_regionais = df_f[df_f[c_canal].isin(['DIR', 'RIV'])]
-        if not df_regionais.empty:
-            gerar_tabela_gap(df_regionais, c_reg_imob, "Regional (Canais DIR/RIV)")
-        
-        df_imobs = df_f[df_f[c_canal].isin(['RJ', 'RJG'])]
-        if not df_imobs.empty:
-            gerar_tabela_gap(df_imobs, c_reg_imob, "Imob (Canais RJ/RJG)")
+    tab_orig, tab_fin, tab_credito = st.tabs([
+        "📊 Gaps (Base: VGV Real)", 
+        "📊 Gaps (Base: Valor c/ Fin e Sub Reais)", 
+        "💰 Análise de Crédito (Fin e Sub)"
+    ])
+
+    with tab_orig:
+        render_kpi_block(df_f, "Estatísticas Consolidadas - VGV Real", col_vgv="VGV_Real", col_dir="Gap_Dir", col_emc="Gap_Emc", label_vgv="VGV Real Total")
+        render_graficos_gaps(df_f, col_dir="Gap_Dir", col_emc="Gap_Emc")
+        gerar_tabelas_gaps(df_f, col_vgv="VGV_Real", col_dir="Gap_Dir", col_emc="Gap_Emc", vgv_label="VGV Real")
+
+    with tab_fin:
+        render_kpi_block(df_f, "Estatísticas Consolidadas - Valor c/ Fin e Sub Reais", col_vgv="Valor_FinSub_Real", col_dir="Gap_FinSub_Dir", col_emc="Gap_FinSub_Emc", label_vgv="Valor c/ Fin e Sub Reais (Tot)")
+        render_graficos_gaps(df_f, col_dir="Gap_FinSub_Dir", col_emc="Gap_FinSub_Emc")
+        gerar_tabelas_gaps(df_f, col_vgv="Valor_FinSub_Real", col_dir="Gap_FinSub_Dir", col_emc="Gap_FinSub_Emc", vgv_label="Valor c/ Fin e Sub")
+
+    with tab_credito:
+        st.subheader("Indicadores de Crédito")
+        if not df_f.empty:
+            tot_fin_real = df_f["Financiamento_Real"].sum()
+            tot_fin_max = df_f["Financiamento_Max"].sum()
+            tot_dif_fin = df_f["Dif_Financiamento"].sum()
             
-    if c_imobiliaria: gerar_tabela_gap(df_f, c_imobiliaria, "Imobiliária")
-    if c_rank: gerar_tabela_gap(df_f, c_rank, "Ranking")
-    if c_canal: gerar_tabela_gap(df_f, c_canal, "Canal")
+            tot_sub_real = df_f["Subsidio_Real"].sum()
+            tot_sub_disp = df_f["Subsidio_Disp"].sum()
+            tot_dif_sub = df_f["Dif_Subsidio"].sum()
+
+            st.markdown(
+                f"""
+                <div class="vel-kpi-row">
+                    <div class="vel-kpi"><div class="lbl">Financiamento Real (Tot)</div><div class="val">{fmt_br_milhoes(tot_fin_real)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">Financiamento Máximo (Tot)</div><div class="val">{fmt_br_milhoes(tot_fin_max)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">Dif. Financiamento (Dinheiro na Mesa)</div><div class="val val--red">{fmt_br_milhoes(tot_dif_fin)}</div></div>
+                </div>
+                <div class="vel-kpi-row" style="margin-bottom: 2rem;">
+                    <div class="vel-kpi"><div class="lbl">Subsídio Real (Tot)</div><div class="val">{fmt_br_milhoes(tot_sub_real)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">Subsídio Disponível (Tot)</div><div class="val">{fmt_br_milhoes(tot_sub_disp)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">Dif. Subsídio (Dinheiro na Mesa)</div><div class="val val--red">{fmt_br_milhoes(tot_dif_sub)}</div></div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            # Gráficos de Crédito
+            st.subheader("Evolução Mensal - Crédito")
+            df_cred_chart = df_f.groupby(["_ano", "_mes"], as_index=False).agg(
+                Fin_Real=("Financiamento_Real", "sum"),
+                Fin_Max=("Financiamento_Max", "sum"),
+                Sub_Real=("Subsidio_Real", "sum"),
+                Sub_Disp=("Subsidio_Disp", "sum")
+            ).sort_values(["_ano", "_mes"])
+            df_cred_chart["Periodo"] = df_cred_chart["_mes"].astype(str).str.zfill(2) + "/" + df_cred_chart["_ano"].astype(str)
+            
+            col_chart1, col_chart2 = st.columns(2)
+            with col_chart1:
+                fig_fin = go.Figure()
+                fig_fin.add_trace(go.Bar(x=df_cred_chart["Periodo"], y=df_cred_chart["Fin_Real"], name="Financiamento Real", marker_color=COR_AZUL_ESC))
+                fig_fin.add_trace(go.Bar(x=df_cred_chart["Periodo"], y=df_cred_chart["Fin_Max"], name="Financiamento Máximo", marker_color="#3b82f6")) # Azul claro
+                fig_fin.update_layout(title="Financiamento Real x Máximo", barmode="group", margin=dict(l=20, r=20, t=40, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter", color=COR_TEXTO_LABEL), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                st.plotly_chart(fig_fin, use_container_width=True, config={"displayModeBar": False})
+
+            with col_chart2:
+                fig_sub = go.Figure()
+                fig_sub.add_trace(go.Bar(x=df_cred_chart["Periodo"], y=df_cred_chart["Sub_Real"], name="Subsídio Real", marker_color=COR_VERMELHO))
+                fig_sub.add_trace(go.Bar(x=df_cred_chart["Periodo"], y=df_cred_chart["Sub_Disp"], name="Subsídio Disponível", marker_color="#f87171")) # Vermelho claro
+                fig_sub.update_layout(title="Subsídio Real x Disponível", barmode="group", margin=dict(l=20, r=20, t=40, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter", color=COR_TEXTO_LABEL), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+                st.plotly_chart(fig_sub, use_container_width=True, config={"displayModeBar": False})
+
+            # Tabela de Crédito por Empreendimento
+            if c_emp and c_emp in df_f.columns:
+                st.subheader("Desempenho de Crédito por Empreendimento")
+                tab_cred = df_f.groupby(c_emp, as_index=False).agg(
+                    QTD=(c_emp, "count"),
+                    Fin_Real=("Financiamento_Real", "sum"),
+                    Fin_Max=("Financiamento_Max", "sum"),
+                    Dif_Fin=("Dif_Financiamento", "sum"),
+                    Sub_Real=("Subsidio_Real", "sum"),
+                    Sub_Disp=("Subsidio_Disp", "sum"),
+                    Dif_Sub=("Dif_Subsidio", "sum")
+                ).sort_values("Dif_Fin", ascending=False)
+                
+                show_cred = tab_cred.rename(columns={
+                    c_emp: "Empreendimento",
+                    "Fin_Real": "Fin. Real",
+                    "Fin_Max": "Fin. Máximo",
+                    "Dif_Fin": "Dif. Financiamento",
+                    "Sub_Real": "Sub. Real",
+                    "Sub_Disp": "Sub. Disponível",
+                    "Dif_Sub": "Dif. Subsídio"
+                })
+
+                for c in ["Fin. Real", "Fin. Máximo", "Dif. Financiamento", "Sub. Real", "Sub. Disponível", "Dif. Subsídio"]:
+                    show_cred[c] = show_cred[c].map(lambda x: fmt_br_milhoes(float(x)))
+                
+                st.dataframe(show_cred, use_container_width=True, hide_index=True)
+        else:
+            st.info("Não há dados para exibir a Análise de Crédito.")
 
     st.markdown(
         f'<div class="footer" style="text-align:center;padding:1rem 0;color:{COR_TEXTO_MUTED};font-size:0.82rem;">'
