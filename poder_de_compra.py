@@ -39,7 +39,7 @@ COR_BORDA = "#eef2f6"
 COR_TEXTO_MUTED = "#64748b"
 COR_TEXTO_LABEL = "#1e293b"
 COR_INPUT_BG = "#f0f2f6"
-COR_VERDE_ESMERALDA = "#10b981" # Cor para o novo Gap Fin+Sub
+COR_VERDE_ESMERALDA = "#10b981" # Cor para o novo Gap Fin+Sub Reais
 
 
 def _hex_rgb_triplet(hex_color: str) -> str:
@@ -564,7 +564,7 @@ def main() -> None:
                 <div class="vel-kpi"><div class="lbl">{label_vgv}</div><div class="val">{fmt_br_milhoes(vgv_tot)}</div></div>
                 <div class="vel-kpi"><div class="lbl">Gap Direcional (Tot)</div><div class="val val--red">{fmt_br_milhoes(gap_dir_tot)}</div></div>
                 <div class="vel-kpi"><div class="lbl">Gap Emcash (Tot)</div><div class="val val--red">{fmt_br_milhoes(gap_emc_tot)}</div></div>
-                <div class="vel-kpi"><div class="lbl">Gap Fin+Sub (Tot)</div><div class="val val--red">{fmt_br_milhoes(gap_finsub_tot)}</div></div>
+                <div class="vel-kpi"><div class="lbl">Gap Fin+Sub Reais (Tot)</div><div class="val val--red">{fmt_br_milhoes(gap_finsub_tot)}</div></div>
             </div>
             <div class="vel-kpi-row">
                 <div class="vel-kpi"><div class="lbl">Média Gap (Dir)</div><div class="val">{fmt_br_milhoes(gap_dir_avg)}</div></div>
@@ -579,10 +579,10 @@ def main() -> None:
                 <div class="vel-kpi"><div class="lbl">Aumento Possível (Emc)</div><div class="val">{fmt_br_porcentagem(pct_gap_emc)}</div></div>
             </div>
             <div class="vel-kpi-row" style="margin-bottom: 2rem;">
-                <div class="vel-kpi"><div class="lbl">Média Gap (Fin+Sub)</div><div class="val">{fmt_br_milhoes(gap_finsub_avg)}</div></div>
-                <div class="vel-kpi"><div class="lbl">Mediana Gap (Fin+Sub)</div><div class="val">{fmt_br_milhoes(gap_finsub_med)}</div></div>
-                <div class="vel-kpi"><div class="lbl">P10 Gap (Fin+Sub)</div><div class="val">{fmt_br_milhoes(gap_finsub_p10)}</div></div>
-                <div class="vel-kpi"><div class="lbl">Aumento Possível (Fin+Sub)</div><div class="val">{fmt_br_porcentagem(pct_gap_finsub)}</div></div>
+                <div class="vel-kpi"><div class="lbl">Média Gap (Fin+Sub Reais)</div><div class="val">{fmt_br_milhoes(gap_finsub_avg)}</div></div>
+                <div class="vel-kpi"><div class="lbl">Mediana Gap (Fin+Sub Reais)</div><div class="val">{fmt_br_milhoes(gap_finsub_med)}</div></div>
+                <div class="vel-kpi"><div class="lbl">P10 Gap (Fin+Sub Reais)</div><div class="val">{fmt_br_milhoes(gap_finsub_p10)}</div></div>
+                <div class="vel-kpi"><div class="lbl">Aumento Possível (Fin+Sub Reais)</div><div class="val">{fmt_br_porcentagem(pct_gap_finsub)}</div></div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -602,7 +602,7 @@ def main() -> None:
             fig = go.Figure()
             fig.add_trace(go.Bar(x=df_chart["Periodo"], y=df_chart["G_Dir"], name="Gap Direcional (R$)", marker_color=COR_AZUL_ESC))
             fig.add_trace(go.Bar(x=df_chart["Periodo"], y=df_chart["G_Emc"], name="Gap Emcash (R$)", marker_color=COR_VERMELHO))
-            fig.add_trace(go.Bar(x=df_chart["Periodo"], y=df_chart["G_FinSub"], name="Gap Fin+Sub (R$)", marker_color=COR_VERDE_ESMERALDA))
+            fig.add_trace(go.Bar(x=df_chart["Periodo"], y=df_chart["G_FinSub"], name="Gap Fin+Sub Reais (R$)", marker_color=COR_VERDE_ESMERALDA))
             
             fig.update_layout(barmode="group", bargap=0.4, margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter", color=COR_TEXTO_LABEL), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -611,7 +611,7 @@ def main() -> None:
             fig_hist = go.Figure()
             fig_hist.add_trace(go.Histogram(x=df_target[col_dir], name="Distribuição Direcional", marker_color=COR_AZUL_ESC, opacity=0.75, xbins=dict(size=5000)))
             fig_hist.add_trace(go.Histogram(x=df_target[col_emc], name="Distribuição Emcash", marker_color=COR_VERMELHO, opacity=0.75, xbins=dict(size=5000)))
-            fig_hist.add_trace(go.Histogram(x=df_target[col_finsub], name="Distribuição Fin+Sub", marker_color=COR_VERDE_ESMERALDA, opacity=0.75, xbins=dict(size=5000)))
+            fig_hist.add_trace(go.Histogram(x=df_target[col_finsub], name="Distribuição Fin+Sub Reais", marker_color=COR_VERDE_ESMERALDA, opacity=0.75, xbins=dict(size=5000)))
             fig_hist.update_layout(barmode="overlay", xaxis_title="Valor do Gap (R$)", yaxis_title="Frequência (Vendas)", margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter", color=COR_TEXTO_LABEL), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
             st.plotly_chart(fig_hist, use_container_width=True, config={"displayModeBar": False})
         else:
@@ -640,13 +640,13 @@ def main() -> None:
                 "ValBase": vgv_label,
                 "Gap_Dir": "Gap Direcional (R$)",
                 "Gap_Emc": "Gap Emcash (R$)",
-                "Gap_FinSub": "Gap Fin+Sub (R$)"
+                "Gap_FinSub": "Gap Fin+Sub Reais (R$)"
             })
             
             show[vgv_label] = show[vgv_label].map(lambda x: fmt_br_milhoes(float(x)))
             show["Gap Direcional (R$)"] = show["Gap Direcional (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
             show["Gap Emcash (R$)"] = show["Gap Emcash (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
-            show["Gap Fin+Sub (R$)"] = show["Gap Fin+Sub (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
+            show["Gap Fin+Sub Reais (R$)"] = show["Gap Fin+Sub Reais (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
             show["% Gap Dir"] = show["% Gap Dir"].map(lambda x: f"{x:.1f}%")
             show["% Gap Emc"] = show["% Gap Emc"].map(lambda x: f"{x:.1f}%")
             show["% Gap FinSub"] = show["% Gap FinSub"].map(lambda x: f"{x:.1f}%")
