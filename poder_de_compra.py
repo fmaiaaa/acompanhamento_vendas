@@ -197,7 +197,7 @@ def aplicar_estilo() -> None:
         div[data-baseweb="input"] {{ border-radius: 10px !important; border: 1px solid #e2e8f0 !important; background-color: {COR_INPUT_BG} !important; }}
         div[data-baseweb="input"]:focus-within {{ border-color: rgba({RGB_AZUL_CSS}, 0.35) !important; box-shadow: 0 0 0 3px rgba({RGB_AZUL_CSS}, 0.08) !important; }}
         /* Estilização Extra para as Abas */
-        div[data-baseweb="tab-list"] {{ gap: 10px; }}
+        div[data-baseweb="tab-list"] {{ gap: 10px; justify-content: center !important; }}
         div[data-baseweb="tab"] {{ background: rgba(255,255,255,0.6); border-radius: 8px 8px 0 0; padding: 10px 20px; font-weight: 600; color: {COR_AZUL_ESC}; }}
         div[data-baseweb="tab"][aria-selected="true"] {{ background: rgba(255,255,255,0.95); border-bottom: 3px solid {COR_VERMELHO}; }}
         </style>
@@ -528,7 +528,7 @@ def main() -> None:
         df_f = df_f[(df_f["Gap_Dir"] <= 100000) & (df_f["Gap_Emc"] <= 100000) & (df_f["Gap_FinSub"] <= 100000)]
 
     # -------------------------------------------------------------------------
-    # Componentes de Renderização
+    # Componentes de Renderização - GAPS
     # -------------------------------------------------------------------------
     def render_kpi_block(df_target: pd.DataFrame, title: str, col_vgv="VGV_Real", col_dir="Gap_Dir", col_emc="Gap_Emc", col_finsub="Gap_FinSub", label_vgv="VGV Real Total"):
         st.subheader(title)
@@ -666,13 +666,59 @@ def main() -> None:
         if c_canal and c_canal in df_target.columns: gerar_tabela_gap_local(df_target, c_canal, "Canal")
 
     # -------------------------------------------------------------------------
+    # Componentes de Renderização - CRÉDITO
+    # -------------------------------------------------------------------------
+    def gerar_tabelas_credito(df_target):
+        def gerar_tabela_credito_local(df_input, coluna_agrupamento, label_tabela):
+            if not coluna_agrupamento or coluna_agrupamento not in df_input.columns or df_input.empty: return
+            st.subheader(f"Desempenho de Crédito por {label_tabela}")
+            
+            tab = df_input.groupby(coluna_agrupamento, as_index=False).agg(
+                QTD=(coluna_agrupamento, "count"),
+                Fin_Real=("Financiamento_Real", "sum"),
+                Fin_Max=("Financiamento_Max", "sum"),
+                Dif_Fin=("Dif_Financiamento", "sum"),
+                Sub_Real=("Subsidio_Real", "sum"),
+                Sub_Disp=("Subsidio_Disp", "sum"),
+                Dif_Sub=("Dif_Subsidio", "sum")
+            ).sort_values("Dif_Fin", ascending=False)
+            
+            show = tab.rename(columns={
+                coluna_agrupamento: label_tabela,
+                "Fin_Real": "Fin. Real",
+                "Fin_Max": "Fin. Máximo",
+                "Dif_Fin": "Dif. Financiamento",
+                "Sub_Real": "Sub. Real",
+                "Sub_Disp": "Sub. Disponível",
+                "Dif_Sub": "Dif. Subsídio"
+            })
+
+            for c in ["Fin. Real", "Fin. Máximo", "Dif. Financiamento", "Sub. Real", "Sub. Disponível", "Dif. Subsídio"]:
+                show[c] = show[c].map(lambda x: fmt_br_milhoes(float(x)))
+            
+            st.dataframe(show, use_container_width=True, hide_index=True)
+
+        if c_emp and c_emp in df_target.columns: gerar_tabela_credito_local(df_target, c_emp, "Empreendimento")
+        if c_reg_imob and c_reg_imob in df_target.columns and c_canal and c_canal in df_target.columns:
+            df_regionais = df_target[df_target[c_canal].isin(['DIR', 'RIV'])]
+            if not df_regionais.empty: gerar_tabela_credito_local(df_regionais, c_reg_imob, "Regional (Canais DIR/RIV)")
+            
+            df_imobs = df_target[df_target[c_canal].isin(['RJ', 'RJG'])]
+            if not df_imobs.empty: gerar_tabela_credito_local(df_imobs, c_reg_imob, "Imob (Canais RJ/RJG)")
+                
+        if c_imobiliaria and c_imobiliaria in df_target.columns: gerar_tabela_credito_local(df_target, c_imobiliaria, "Imobiliária")
+        if c_rank and c_rank in df_target.columns: gerar_tabela_credito_local(df_target, c_rank, "Ranking")
+        if c_canal and c_canal in df_target.columns: gerar_tabela_credito_local(df_target, c_canal, "Canal")
+
+    # -------------------------------------------------------------------------
     # Renderização da Estrutura em Abas
     # -------------------------------------------------------------------------
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
     
+    # Remoção de emojis
     tab_gaps, tab_credito = st.tabs([
-        "📊 Análise de Gaps", 
-        "💰 Análise de Crédito"
+        "Análise de Gaps", 
+        "Análise de Crédito"
     ])
 
     with tab_gaps:
@@ -683,25 +729,46 @@ def main() -> None:
     with tab_credito:
         st.subheader("Indicadores de Crédito")
         if not df_f.empty:
-            tot_fin_real = df_f["Financiamento_Real"].sum()
-            tot_fin_max = df_f["Financiamento_Max"].sum()
-            tot_dif_fin = df_f["Dif_Financiamento"].sum()
+            vendas_qtd_cred = len(df_f)
             
-            tot_sub_real = df_f["Subsidio_Real"].sum()
-            tot_sub_disp = df_f["Subsidio_Disp"].sum()
-            tot_dif_sub = df_f["Dif_Subsidio"].sum()
+            tot_fin_real = df_f["Financiamento_Real"].sum() if "Financiamento_Real" in df_f.columns else 0.0
+            tot_fin_max = df_f["Financiamento_Max"].sum() if "Financiamento_Max" in df_f.columns else 0.0
+            tot_dif_fin = df_f["Dif_Financiamento"].sum() if "Dif_Financiamento" in df_f.columns else 0.0
+            avg_dif_fin = df_f["Dif_Financiamento"].mean() if "Dif_Financiamento" in df_f.columns else 0.0
+            med_dif_fin = df_f["Dif_Financiamento"].median() if "Dif_Financiamento" in df_f.columns else 0.0
+            p10_dif_fin = df_f["Dif_Financiamento"].quantile(0.1) if "Dif_Financiamento" in df_f.columns else 0.0
+            pct_dif_fin = (tot_dif_fin / tot_fin_real * 100.0) if tot_fin_real > 0 else 0.0
+            
+            tot_sub_real = df_f["Subsidio_Real"].sum() if "Subsidio_Real" in df_f.columns else 0.0
+            tot_sub_disp = df_f["Subsidio_Disp"].sum() if "Subsidio_Disp" in df_f.columns else 0.0
+            tot_dif_sub = df_f["Dif_Subsidio"].sum() if "Dif_Subsidio" in df_f.columns else 0.0
+            avg_dif_sub = df_f["Dif_Subsidio"].mean() if "Dif_Subsidio" in df_f.columns else 0.0
+            med_dif_sub = df_f["Dif_Subsidio"].median() if "Dif_Subsidio" in df_f.columns else 0.0
+            p10_dif_sub = df_f["Dif_Subsidio"].quantile(0.1) if "Dif_Subsidio" in df_f.columns else 0.0
+            pct_dif_sub = (tot_dif_sub / tot_sub_real * 100.0) if tot_sub_real > 0 else 0.0
 
             st.markdown(
                 f"""
                 <div class="vel-kpi-row">
+                    <div class="vel-kpi"><div class="lbl">Vendas (QTD)</div><div class="val">{vendas_qtd_cred}</div></div>
                     <div class="vel-kpi"><div class="lbl">Financiamento Real (Tot)</div><div class="val">{fmt_br_milhoes(tot_fin_real)}</div></div>
                     <div class="vel-kpi"><div class="lbl">Financiamento Máximo (Tot)</div><div class="val">{fmt_br_milhoes(tot_fin_max)}</div></div>
-                    <div class="vel-kpi"><div class="lbl">Dif. Financiamento (Dinheiro na Mesa)</div><div class="val val--red">{fmt_br_milhoes(tot_dif_fin)}</div></div>
-                </div>
-                <div class="vel-kpi-row" style="margin-bottom: 2rem;">
                     <div class="vel-kpi"><div class="lbl">Subsídio Real (Tot)</div><div class="val">{fmt_br_milhoes(tot_sub_real)}</div></div>
                     <div class="vel-kpi"><div class="lbl">Subsídio Disponível (Tot)</div><div class="val">{fmt_br_milhoes(tot_sub_disp)}</div></div>
-                    <div class="vel-kpi"><div class="lbl">Dif. Subsídio (Dinheiro na Mesa)</div><div class="val val--red">{fmt_br_milhoes(tot_dif_sub)}</div></div>
+                </div>
+                <div class="vel-kpi-row">
+                    <div class="vel-kpi"><div class="lbl">Dif. Financiamento (Tot)</div><div class="val val--red">{fmt_br_milhoes(tot_dif_fin)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">Média Dif. Fin</div><div class="val">{fmt_br_milhoes(avg_dif_fin)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">Mediana Dif. Fin</div><div class="val">{fmt_br_milhoes(med_dif_fin)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">P10 Dif. Fin</div><div class="val">{fmt_br_milhoes(p10_dif_fin)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">Aumento Possível (Fin)</div><div class="val">{fmt_br_porcentagem(pct_dif_fin)}</div></div>
+                </div>
+                <div class="vel-kpi-row" style="margin-bottom: 2rem;">
+                    <div class="vel-kpi"><div class="lbl">Dif. Subsídio (Tot)</div><div class="val val--red">{fmt_br_milhoes(tot_dif_sub)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">Média Dif. Sub</div><div class="val">{fmt_br_milhoes(avg_dif_sub)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">Mediana Dif. Sub</div><div class="val">{fmt_br_milhoes(med_dif_sub)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">P10 Dif. Sub</div><div class="val">{fmt_br_milhoes(p10_dif_sub)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">Aumento Possível (Sub)</div><div class="val">{fmt_br_porcentagem(pct_dif_sub)}</div></div>
                 </div>
                 """,
                 unsafe_allow_html=True,
@@ -732,33 +799,9 @@ def main() -> None:
                 fig_sub.update_layout(title="Subsídio Real x Disponível", barmode="group", margin=dict(l=20, r=20, t=40, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter", color=COR_TEXTO_LABEL), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
                 st.plotly_chart(fig_sub, use_container_width=True, config={"displayModeBar": False})
 
-            # Tabela de Crédito por Empreendimento
-            if c_emp and c_emp in df_f.columns:
-                st.subheader("Desempenho de Crédito por Empreendimento")
-                tab_cred = df_f.groupby(c_emp, as_index=False).agg(
-                    QTD=(c_emp, "count"),
-                    Fin_Real=("Financiamento_Real", "sum"),
-                    Fin_Max=("Financiamento_Max", "sum"),
-                    Dif_Fin=("Dif_Financiamento", "sum"),
-                    Sub_Real=("Subsidio_Real", "sum"),
-                    Sub_Disp=("Subsidio_Disp", "sum"),
-                    Dif_Sub=("Dif_Subsidio", "sum")
-                ).sort_values("Dif_Fin", ascending=False)
-                
-                show_cred = tab_cred.rename(columns={
-                    c_emp: "Empreendimento",
-                    "Fin_Real": "Fin. Real",
-                    "Fin_Max": "Fin. Máximo",
-                    "Dif_Fin": "Dif. Financiamento",
-                    "Sub_Real": "Sub. Real",
-                    "Sub_Disp": "Sub. Disponível",
-                    "Dif_Sub": "Dif. Subsídio"
-                })
-
-                for c in ["Fin. Real", "Fin. Máximo", "Dif. Financiamento", "Sub. Real", "Sub. Disponível", "Dif. Subsídio"]:
-                    show_cred[c] = show_cred[c].map(lambda x: fmt_br_milhoes(float(x)))
-                
-                st.dataframe(show_cred, use_container_width=True, hide_index=True)
+            # Tabelas Separadas para o Crédito
+            gerar_tabelas_credito(df_f)
+            
         else:
             st.info("Não há dados para exibir a Análise de Crédito.")
 
