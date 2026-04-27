@@ -39,6 +39,7 @@ COR_BORDA = "#eef2f6"
 COR_TEXTO_MUTED = "#64748b"
 COR_TEXTO_LABEL = "#1e293b"
 COR_INPUT_BG = "#f0f2f6"
+COR_VERDE_ESMERALDA = "#10b981" # Cor para o novo Gap Fin+Sub
 
 
 def _hex_rgb_triplet(hex_color: str) -> str:
@@ -185,7 +186,7 @@ def aplicar_estilo() -> None:
         .ficha-hero-bar {{ height: 4px; border-radius: 999px; background: linear-gradient(90deg, {COR_AZUL_ESC}, {COR_VERMELHO}, {COR_AZUL_ESC}); background-size: 200% 100%; animation: fichaShimmer 4s infinite alternate; }}
         .vel-kpi-row {{ display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 1.25rem; }}
         .vel-kpi {{
-            flex: 1 1 20%; background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,251,252,0.9) 100%);
+            flex: 1 1 18%; background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,251,252,0.9) 100%);
             border: 1px solid rgba(226, 232, 240, 0.9); border-radius: 14px; padding: 14px 16px; text-align: center;
             box-shadow: 0 2px 8px rgba({RGB_AZUL_CSS}, 0.06); transition: transform 0.3s ease, box-shadow 0.3s ease;
         }}
@@ -463,13 +464,13 @@ def main() -> None:
     if c_val_fin_sub_real and c_val_fin_sub_real in df.columns: df["Valor_FinSub_Real"] = df[c_val_fin_sub_real].apply(parse_valor_br)
     else: df["Valor_FinSub_Real"] = 0.0
 
-    # Cálculo dos Gaps Nominais Originais
+    # Cálculo dos Gaps
     if "VGV_Dir" in df.columns and "VGV_Real" in df.columns: df["Gap_Dir"] = df["VGV_Dir"] - df["VGV_Real"]
     if "VGV_Emc" in df.columns and "VGV_Real" in df.columns: df["Gap_Emc"] = df["VGV_Emc"] - df["VGV_Real"]
-
-    # Cálculo dos Novos Gaps (c/ Fin e Sub Reais)
-    if "VGV_Dir" in df.columns and "Valor_FinSub_Real" in df.columns: df["Gap_FinSub_Dir"] = df["VGV_Dir"] - df["Valor_FinSub_Real"]
-    if "VGV_Emc" in df.columns and "Valor_FinSub_Real" in df.columns: df["Gap_FinSub_Emc"] = df["VGV_Emc"] - df["Valor_FinSub_Real"]
+    
+    # Novo Gap (Valor c/ Fin e Sub Reais vs. Valor Real)
+    if "Valor_FinSub_Real" in df.columns and "VGV_Real" in df.columns: 
+        df["Gap_FinSub"] = df["Valor_FinSub_Real"] - df["VGV_Real"]
 
     # Diferenças de Crédito
     df["Dif_Financiamento"] = df["Financiamento_Max"] - df["Financiamento_Real"]
@@ -518,18 +519,18 @@ def main() -> None:
     if c_rank and sel_rank and c_rank in df_f.columns: df_f = df_f[df_f[c_rank].isin(sel_rank)]
 
     # -------------------------------------------------------------------------
-    # Aplicando Regras de Gaps (Aplica aos Gaps Originais)
+    # Aplicando Regras de Gaps
     # -------------------------------------------------------------------------
-    if not exibir_negativos and "Gap_Dir" in df_f.columns and "Gap_Emc" in df_f.columns:
-        df_f = df_f[(df_f["Gap_Dir"] >= 0) & (df_f["Gap_Emc"] >= 0)]
+    if not exibir_negativos and "Gap_Dir" in df_f.columns and "Gap_Emc" in df_f.columns and "Gap_FinSub" in df_f.columns:
+        df_f = df_f[(df_f["Gap_Dir"] >= 0) & (df_f["Gap_Emc"] >= 0) & (df_f["Gap_FinSub"] >= 0)]
     
-    if not exibir_acima_100k and "Gap_Dir" in df_f.columns and "Gap_Emc" in df_f.columns:
-        df_f = df_f[(df_f["Gap_Dir"] <= 100000) & (df_f["Gap_Emc"] <= 100000)]
+    if not exibir_acima_100k and "Gap_Dir" in df_f.columns and "Gap_Emc" in df_f.columns and "Gap_FinSub" in df_f.columns:
+        df_f = df_f[(df_f["Gap_Dir"] <= 100000) & (df_f["Gap_Emc"] <= 100000) & (df_f["Gap_FinSub"] <= 100000)]
 
     # -------------------------------------------------------------------------
     # Componentes de Renderização
     # -------------------------------------------------------------------------
-    def render_kpi_block(df_target: pd.DataFrame, title: str, col_vgv="VGV_Real", col_dir="Gap_Dir", col_emc="Gap_Emc", label_vgv="VGV Real Total"):
+    def render_kpi_block(df_target: pd.DataFrame, title: str, col_vgv="VGV_Real", col_dir="Gap_Dir", col_emc="Gap_Emc", col_finsub="Gap_FinSub", label_vgv="VGV Real Total"):
         st.subheader(title)
         if df_target.empty:
             st.info("Não há dados para os filtros selecionados.")
@@ -549,6 +550,12 @@ def main() -> None:
         gap_emc_med = df_target[col_emc].median() if col_emc in df_target.columns else 0.0
         gap_emc_p10 = df_target[col_emc].quantile(0.1) if col_emc in df_target.columns else 0.0
         pct_gap_emc = (gap_emc_tot / vgv_tot * 100.0) if vgv_tot > 0 else 0.0
+        
+        gap_finsub_tot = df_target[col_finsub].sum() if col_finsub in df_target.columns else 0.0
+        gap_finsub_avg = df_target[col_finsub].mean() if col_finsub in df_target.columns else 0.0
+        gap_finsub_med = df_target[col_finsub].median() if col_finsub in df_target.columns else 0.0
+        gap_finsub_p10 = df_target[col_finsub].quantile(0.1) if col_finsub in df_target.columns else 0.0
+        pct_gap_finsub = (gap_finsub_tot / vgv_tot * 100.0) if vgv_tot > 0 else 0.0
 
         st.markdown(
             f"""
@@ -557,6 +564,7 @@ def main() -> None:
                 <div class="vel-kpi"><div class="lbl">{label_vgv}</div><div class="val">{fmt_br_milhoes(vgv_tot)}</div></div>
                 <div class="vel-kpi"><div class="lbl">Gap Direcional (Tot)</div><div class="val val--red">{fmt_br_milhoes(gap_dir_tot)}</div></div>
                 <div class="vel-kpi"><div class="lbl">Gap Emcash (Tot)</div><div class="val val--red">{fmt_br_milhoes(gap_emc_tot)}</div></div>
+                <div class="vel-kpi"><div class="lbl">Gap Fin+Sub (Tot)</div><div class="val val--red">{fmt_br_milhoes(gap_finsub_tot)}</div></div>
             </div>
             <div class="vel-kpi-row">
                 <div class="vel-kpi"><div class="lbl">Média Gap (Dir)</div><div class="val">{fmt_br_milhoes(gap_dir_avg)}</div></div>
@@ -564,22 +572,29 @@ def main() -> None:
                 <div class="vel-kpi"><div class="lbl">P10 Gap (Dir)</div><div class="val">{fmt_br_milhoes(gap_dir_p10)}</div></div>
                 <div class="vel-kpi"><div class="lbl">Aumento Possível (Dir)</div><div class="val">{fmt_br_porcentagem(pct_gap_dir)}</div></div>
             </div>
-            <div class="vel-kpi-row" style="margin-bottom: 2rem;">
+            <div class="vel-kpi-row">
                 <div class="vel-kpi"><div class="lbl">Média Gap (Emc)</div><div class="val">{fmt_br_milhoes(gap_emc_avg)}</div></div>
                 <div class="vel-kpi"><div class="lbl">Mediana Gap (Emc)</div><div class="val">{fmt_br_milhoes(gap_emc_med)}</div></div>
                 <div class="vel-kpi"><div class="lbl">P10 Gap (Emc)</div><div class="val">{fmt_br_milhoes(gap_emc_p10)}</div></div>
                 <div class="vel-kpi"><div class="lbl">Aumento Possível (Emc)</div><div class="val">{fmt_br_porcentagem(pct_gap_emc)}</div></div>
             </div>
+            <div class="vel-kpi-row" style="margin-bottom: 2rem;">
+                <div class="vel-kpi"><div class="lbl">Média Gap (Fin+Sub)</div><div class="val">{fmt_br_milhoes(gap_finsub_avg)}</div></div>
+                <div class="vel-kpi"><div class="lbl">Mediana Gap (Fin+Sub)</div><div class="val">{fmt_br_milhoes(gap_finsub_med)}</div></div>
+                <div class="vel-kpi"><div class="lbl">P10 Gap (Fin+Sub)</div><div class="val">{fmt_br_milhoes(gap_finsub_p10)}</div></div>
+                <div class="vel-kpi"><div class="lbl">Aumento Possível (Fin+Sub)</div><div class="val">{fmt_br_porcentagem(pct_gap_finsub)}</div></div>
+            </div>
             """,
             unsafe_allow_html=True,
         )
 
-    def render_graficos_gaps(df_target, col_dir="Gap_Dir", col_emc="Gap_Emc"):
+    def render_graficos_gaps(df_target, col_dir="Gap_Dir", col_emc="Gap_Emc", col_finsub="Gap_FinSub"):
         st.subheader("Evolução Mensal")
-        if not df_target.empty and col_dir in df_target.columns and col_emc in df_target.columns:
+        if not df_target.empty and col_dir in df_target.columns and col_emc in df_target.columns and col_finsub in df_target.columns:
             df_chart = df_target.groupby(["_ano", "_mes"], as_index=False).agg(
                 G_Dir=(col_dir, "sum"),
-                G_Emc=(col_emc, "sum")
+                G_Emc=(col_emc, "sum"),
+                G_FinSub=(col_finsub, "sum")
             ).sort_values(["_ano", "_mes"])
             
             df_chart["Periodo"] = df_chart["_mes"].astype(str).str.zfill(2) + "/" + df_chart["_ano"].astype(str)
@@ -587,6 +602,7 @@ def main() -> None:
             fig = go.Figure()
             fig.add_trace(go.Bar(x=df_chart["Periodo"], y=df_chart["G_Dir"], name="Gap Direcional (R$)", marker_color=COR_AZUL_ESC))
             fig.add_trace(go.Bar(x=df_chart["Periodo"], y=df_chart["G_Emc"], name="Gap Emcash (R$)", marker_color=COR_VERMELHO))
+            fig.add_trace(go.Bar(x=df_chart["Periodo"], y=df_chart["G_FinSub"], name="Gap Fin+Sub (R$)", marker_color=COR_VERDE_ESMERALDA))
             
             fig.update_layout(barmode="group", bargap=0.4, margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter", color=COR_TEXTO_LABEL), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -595,12 +611,13 @@ def main() -> None:
             fig_hist = go.Figure()
             fig_hist.add_trace(go.Histogram(x=df_target[col_dir], name="Distribuição Direcional", marker_color=COR_AZUL_ESC, opacity=0.75, xbins=dict(size=5000)))
             fig_hist.add_trace(go.Histogram(x=df_target[col_emc], name="Distribuição Emcash", marker_color=COR_VERMELHO, opacity=0.75, xbins=dict(size=5000)))
+            fig_hist.add_trace(go.Histogram(x=df_target[col_finsub], name="Distribuição Fin+Sub", marker_color=COR_VERDE_ESMERALDA, opacity=0.75, xbins=dict(size=5000)))
             fig_hist.update_layout(barmode="overlay", xaxis_title="Valor do Gap (R$)", yaxis_title="Frequência (Vendas)", margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter", color=COR_TEXTO_LABEL), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
             st.plotly_chart(fig_hist, use_container_width=True, config={"displayModeBar": False})
         else:
             st.info("Não há dados para exibir gráficos.")
 
-    def gerar_tabelas_gaps(df_target, col_vgv="VGV_Real", col_dir="Gap_Dir", col_emc="Gap_Emc", vgv_label="VGV Real"):
+    def gerar_tabelas_gaps(df_target, col_vgv="VGV_Real", col_dir="Gap_Dir", col_emc="Gap_Emc", col_finsub="Gap_FinSub", vgv_label="VGV Real"):
         def gerar_tabela_gap_local(df_input, coluna_agrupamento, label_tabela):
             if not coluna_agrupamento or coluna_agrupamento not in df_input.columns or df_input.empty: return
             st.subheader(f"Gaps por {label_tabela}")
@@ -609,25 +626,30 @@ def main() -> None:
                 QTD=(coluna_agrupamento, "count"),
                 ValBase=(col_vgv, "sum"),
                 Gap_Dir=(col_dir, "sum"),
-                Gap_Emc=(col_emc, "sum")
+                Gap_Emc=(col_emc, "sum"),
+                Gap_FinSub=(col_finsub, "sum")
             )
             
             tab["% Gap Dir"] = tab.apply(lambda r: (r["Gap_Dir"] / r["ValBase"] * 100) if r["ValBase"] > 0 else 0, axis=1)
             tab["% Gap Emc"] = tab.apply(lambda r: (r["Gap_Emc"] / r["ValBase"] * 100) if r["ValBase"] > 0 else 0, axis=1)
+            tab["% Gap FinSub"] = tab.apply(lambda r: (r["Gap_FinSub"] / r["ValBase"] * 100) if r["ValBase"] > 0 else 0, axis=1)
             tab = tab.sort_values("Gap_Dir", ascending=False)
             
             show = tab.rename(columns={
                 coluna_agrupamento: label_tabela,
                 "ValBase": vgv_label,
                 "Gap_Dir": "Gap Direcional (R$)",
-                "Gap_Emc": "Gap Emcash (R$)"
+                "Gap_Emc": "Gap Emcash (R$)",
+                "Gap_FinSub": "Gap Fin+Sub (R$)"
             })
             
             show[vgv_label] = show[vgv_label].map(lambda x: fmt_br_milhoes(float(x)))
             show["Gap Direcional (R$)"] = show["Gap Direcional (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
             show["Gap Emcash (R$)"] = show["Gap Emcash (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
+            show["Gap Fin+Sub (R$)"] = show["Gap Fin+Sub (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
             show["% Gap Dir"] = show["% Gap Dir"].map(lambda x: f"{x:.1f}%")
             show["% Gap Emc"] = show["% Gap Emc"].map(lambda x: f"{x:.1f}%")
+            show["% Gap FinSub"] = show["% Gap FinSub"].map(lambda x: f"{x:.1f}%")
             
             st.dataframe(show, use_container_width=True, hide_index=True)
 
@@ -648,21 +670,15 @@ def main() -> None:
     # -------------------------------------------------------------------------
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
     
-    tab_orig, tab_fin, tab_credito = st.tabs([
-        "📊 Gaps (Base: VGV Real)", 
-        "📊 Gaps (Base: Valor c/ Fin e Sub Reais)", 
-        "💰 Análise de Crédito (Fin e Sub)"
+    tab_gaps, tab_credito = st.tabs([
+        "📊 Análise de Gaps", 
+        "💰 Análise de Crédito"
     ])
 
-    with tab_orig:
-        render_kpi_block(df_f, "Estatísticas Consolidadas - VGV Real", col_vgv="VGV_Real", col_dir="Gap_Dir", col_emc="Gap_Emc", label_vgv="VGV Real Total")
-        render_graficos_gaps(df_f, col_dir="Gap_Dir", col_emc="Gap_Emc")
-        gerar_tabelas_gaps(df_f, col_vgv="VGV_Real", col_dir="Gap_Dir", col_emc="Gap_Emc", vgv_label="VGV Real")
-
-    with tab_fin:
-        render_kpi_block(df_f, "Estatísticas Consolidadas - Valor c/ Fin e Sub Reais", col_vgv="Valor_FinSub_Real", col_dir="Gap_FinSub_Dir", col_emc="Gap_FinSub_Emc", label_vgv="Valor c/ Fin e Sub Reais (Tot)")
-        render_graficos_gaps(df_f, col_dir="Gap_FinSub_Dir", col_emc="Gap_FinSub_Emc")
-        gerar_tabelas_gaps(df_f, col_vgv="Valor_FinSub_Real", col_dir="Gap_FinSub_Dir", col_emc="Gap_FinSub_Emc", vgv_label="Valor c/ Fin e Sub")
+    with tab_gaps:
+        render_kpi_block(df_f, "Estatísticas Consolidadas de Gaps", col_vgv="VGV_Real", col_dir="Gap_Dir", col_emc="Gap_Emc", col_finsub="Gap_FinSub", label_vgv="VGV Real Total")
+        render_graficos_gaps(df_f, col_dir="Gap_Dir", col_emc="Gap_Emc", col_finsub="Gap_FinSub")
+        gerar_tabelas_gaps(df_f, col_vgv="VGV_Real", col_dir="Gap_Dir", col_emc="Gap_Emc", col_finsub="Gap_FinSub", vgv_label="VGV Real")
 
     with tab_credito:
         st.subheader("Indicadores de Crédito")
