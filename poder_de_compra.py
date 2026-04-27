@@ -565,6 +565,10 @@ def main() -> None:
                 "Gap_FinSub": "Gap C/ Fin e Sub (R$)"
             })
             
+            # Máscara para o Nome da Oportunidade
+            if label_tabela == "Nome da Oportunidade":
+                show[label_tabela] = [f"Cliente {i+1}" for i in range(len(show))]
+            
             show[vgv_label] = show[vgv_label].map(lambda x: fmt_br_milhoes(float(x)))
             show["Gap C/ Fin e Sub (R$)"] = show["Gap C/ Fin e Sub (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
             show["% Gap C/ Fin e Sub"] = show["% Gap C/ Fin e Sub"].map(lambda x: f"{x:.1f}%")
