@@ -39,7 +39,7 @@ COR_BORDA = "#eef2f6"
 COR_TEXTO_MUTED = "#64748b"
 COR_TEXTO_LABEL = "#1e293b"
 COR_INPUT_BG = "#f0f2f6"
-COR_VERDE_ESMERALDA = "#10b981" # Cor para o novo Gap Fin+Sub Reais
+COR_VERDE_ESMERALDA = "#10b981" # Cor para o novo Gap C/ Fin e Sub
 
 
 def _hex_rgb_triplet(hex_color: str) -> str:
@@ -358,6 +358,7 @@ def main() -> None:
 
     # Mapeamento de Colunas
     c_data = achar_coluna(df, ["CONTRATO GERADO EM", "Data do Contrato", "Contrato gerado"])
+    c_nome_op = achar_coluna(df, ["NOME DA OPORTUNIDADE", "Nome da Oportunidade", "Oportunidade"])
     c_emp = achar_coluna(df, ["Empreendimento"])
     c_reg_imob = achar_coluna(df, ["Regional ou Imob", "Regional"])
     c_imobiliaria = achar_coluna(df, ["Imobiliária", "Imobiliaria"])
@@ -477,7 +478,7 @@ def main() -> None:
     df["Dif_Subsidio"] = df["Subsidio_Disp"] - df["Subsidio_Real"]
 
     # Limpeza de campos categóricos nulos
-    for col in [c_emp, c_reg_imob, c_imobiliaria, c_canal, c_rank]:
+    for col in [c_nome_op, c_emp, c_reg_imob, c_imobiliaria, c_canal, c_rank]:
         if col and col in df.columns:
             df[col] = df[col].fillna("Não Informado").astype(str).str.strip()
 
@@ -564,7 +565,7 @@ def main() -> None:
                 <div class="vel-kpi"><div class="lbl">{label_vgv}</div><div class="val">{fmt_br_milhoes(vgv_tot)}</div></div>
                 <div class="vel-kpi"><div class="lbl">Gap Direcional (Tot)</div><div class="val val--red">{fmt_br_milhoes(gap_dir_tot)}</div></div>
                 <div class="vel-kpi"><div class="lbl">Gap Emcash (Tot)</div><div class="val val--red">{fmt_br_milhoes(gap_emc_tot)}</div></div>
-                <div class="vel-kpi"><div class="lbl">Gap Fin+Sub Reais (Tot)</div><div class="val val--red">{fmt_br_milhoes(gap_finsub_tot)}</div></div>
+                <div class="vel-kpi"><div class="lbl">Gap C/ Fin e Sub (Tot)</div><div class="val val--red">{fmt_br_milhoes(gap_finsub_tot)}</div></div>
             </div>
             <div class="vel-kpi-row">
                 <div class="vel-kpi"><div class="lbl">Média Gap (Dir)</div><div class="val">{fmt_br_milhoes(gap_dir_avg)}</div></div>
@@ -579,10 +580,10 @@ def main() -> None:
                 <div class="vel-kpi"><div class="lbl">Aumento Possível (Emc)</div><div class="val">{fmt_br_porcentagem(pct_gap_emc)}</div></div>
             </div>
             <div class="vel-kpi-row" style="margin-bottom: 2rem;">
-                <div class="vel-kpi"><div class="lbl">Média Gap (Fin+Sub Reais)</div><div class="val">{fmt_br_milhoes(gap_finsub_avg)}</div></div>
-                <div class="vel-kpi"><div class="lbl">Mediana Gap (Fin+Sub Reais)</div><div class="val">{fmt_br_milhoes(gap_finsub_med)}</div></div>
-                <div class="vel-kpi"><div class="lbl">P10 Gap (Fin+Sub Reais)</div><div class="val">{fmt_br_milhoes(gap_finsub_p10)}</div></div>
-                <div class="vel-kpi"><div class="lbl">Aumento Possível (Fin+Sub Reais)</div><div class="val">{fmt_br_porcentagem(pct_gap_finsub)}</div></div>
+                <div class="vel-kpi"><div class="lbl">Média Gap (C/ Fin e Sub)</div><div class="val">{fmt_br_milhoes(gap_finsub_avg)}</div></div>
+                <div class="vel-kpi"><div class="lbl">Mediana Gap (C/ Fin e Sub)</div><div class="val">{fmt_br_milhoes(gap_finsub_med)}</div></div>
+                <div class="vel-kpi"><div class="lbl">P10 Gap (C/ Fin e Sub)</div><div class="val">{fmt_br_milhoes(gap_finsub_p10)}</div></div>
+                <div class="vel-kpi"><div class="lbl">Aumento Possível (C/ Fin e Sub)</div><div class="val">{fmt_br_porcentagem(pct_gap_finsub)}</div></div>
             </div>
             """,
             unsafe_allow_html=True,
@@ -602,7 +603,7 @@ def main() -> None:
             fig = go.Figure()
             fig.add_trace(go.Bar(x=df_chart["Periodo"], y=df_chart["G_Dir"], name="Gap Direcional (R$)", marker_color=COR_AZUL_ESC))
             fig.add_trace(go.Bar(x=df_chart["Periodo"], y=df_chart["G_Emc"], name="Gap Emcash (R$)", marker_color=COR_VERMELHO))
-            fig.add_trace(go.Bar(x=df_chart["Periodo"], y=df_chart["G_FinSub"], name="Gap Fin+Sub Reais (R$)", marker_color=COR_VERDE_ESMERALDA))
+            fig.add_trace(go.Bar(x=df_chart["Periodo"], y=df_chart["G_FinSub"], name="Gap C/ Fin e Sub (R$)", marker_color=COR_VERDE_ESMERALDA))
             
             fig.update_layout(barmode="group", bargap=0.4, margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter", color=COR_TEXTO_LABEL), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
@@ -611,7 +612,7 @@ def main() -> None:
             fig_hist = go.Figure()
             fig_hist.add_trace(go.Histogram(x=df_target[col_dir], name="Distribuição Direcional", marker_color=COR_AZUL_ESC, opacity=0.75, xbins=dict(size=5000)))
             fig_hist.add_trace(go.Histogram(x=df_target[col_emc], name="Distribuição Emcash", marker_color=COR_VERMELHO, opacity=0.75, xbins=dict(size=5000)))
-            fig_hist.add_trace(go.Histogram(x=df_target[col_finsub], name="Distribuição Fin+Sub Reais", marker_color=COR_VERDE_ESMERALDA, opacity=0.75, xbins=dict(size=5000)))
+            fig_hist.add_trace(go.Histogram(x=df_target[col_finsub], name="Distribuição C/ Fin e Sub", marker_color=COR_VERDE_ESMERALDA, opacity=0.75, xbins=dict(size=5000)))
             fig_hist.update_layout(barmode="overlay", xaxis_title="Valor do Gap (R$)", yaxis_title="Frequência (Vendas)", margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(family="Inter", color=COR_TEXTO_LABEL), legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
             st.plotly_chart(fig_hist, use_container_width=True, config={"displayModeBar": False})
         else:
@@ -632,7 +633,7 @@ def main() -> None:
             
             tab["% Gap Dir"] = tab.apply(lambda r: (r["Gap_Dir"] / r["ValBase"] * 100) if r["ValBase"] > 0 else 0, axis=1)
             tab["% Gap Emc"] = tab.apply(lambda r: (r["Gap_Emc"] / r["ValBase"] * 100) if r["ValBase"] > 0 else 0, axis=1)
-            tab["% Gap FinSub"] = tab.apply(lambda r: (r["Gap_FinSub"] / r["ValBase"] * 100) if r["ValBase"] > 0 else 0, axis=1)
+            tab["% Gap C/ Fin e Sub"] = tab.apply(lambda r: (r["Gap_FinSub"] / r["ValBase"] * 100) if r["ValBase"] > 0 else 0, axis=1)
             tab = tab.sort_values("Gap_Dir", ascending=False)
             
             show = tab.rename(columns={
@@ -640,16 +641,16 @@ def main() -> None:
                 "ValBase": vgv_label,
                 "Gap_Dir": "Gap Direcional (R$)",
                 "Gap_Emc": "Gap Emcash (R$)",
-                "Gap_FinSub": "Gap Fin+Sub Reais (R$)"
+                "Gap_FinSub": "Gap C/ Fin e Sub (R$)"
             })
             
             show[vgv_label] = show[vgv_label].map(lambda x: fmt_br_milhoes(float(x)))
             show["Gap Direcional (R$)"] = show["Gap Direcional (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
             show["Gap Emcash (R$)"] = show["Gap Emcash (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
-            show["Gap Fin+Sub Reais (R$)"] = show["Gap Fin+Sub Reais (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
+            show["Gap C/ Fin e Sub (R$)"] = show["Gap C/ Fin e Sub (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
             show["% Gap Dir"] = show["% Gap Dir"].map(lambda x: f"{x:.1f}%")
             show["% Gap Emc"] = show["% Gap Emc"].map(lambda x: f"{x:.1f}%")
-            show["% Gap FinSub"] = show["% Gap FinSub"].map(lambda x: f"{x:.1f}%")
+            show["% Gap C/ Fin e Sub"] = show["% Gap C/ Fin e Sub"].map(lambda x: f"{x:.1f}%")
             
             st.dataframe(show, use_container_width=True, hide_index=True)
 
@@ -664,6 +665,7 @@ def main() -> None:
         if c_imobiliaria and c_imobiliaria in df_target.columns: gerar_tabela_gap_local(df_target, c_imobiliaria, "Imobiliária")
         if c_rank and c_rank in df_target.columns: gerar_tabela_gap_local(df_target, c_rank, "Ranking")
         if c_canal and c_canal in df_target.columns: gerar_tabela_gap_local(df_target, c_canal, "Canal")
+        if c_nome_op and c_nome_op in df_target.columns: gerar_tabela_gap_local(df_target, c_nome_op, "Nome da Oportunidade")
 
     # -------------------------------------------------------------------------
     # Componentes de Renderização - CRÉDITO
@@ -709,6 +711,7 @@ def main() -> None:
         if c_imobiliaria and c_imobiliaria in df_target.columns: gerar_tabela_credito_local(df_target, c_imobiliaria, "Imobiliária")
         if c_rank and c_rank in df_target.columns: gerar_tabela_credito_local(df_target, c_rank, "Ranking")
         if c_canal and c_canal in df_target.columns: gerar_tabela_credito_local(df_target, c_canal, "Canal")
+        if c_nome_op and c_nome_op in df_target.columns: gerar_tabela_credito_local(df_target, c_nome_op, "Nome da Oportunidade")
 
     # -------------------------------------------------------------------------
     # Renderização da Estrutura em Abas
@@ -732,43 +735,51 @@ def main() -> None:
             vendas_qtd_cred = len(df_f)
             
             tot_fin_real = df_f["Financiamento_Real"].sum() if "Financiamento_Real" in df_f.columns else 0.0
+            avg_fin_real = df_f["Financiamento_Real"].mean() if "Financiamento_Real" in df_f.columns else 0.0
+            med_fin_real = df_f["Financiamento_Real"].median() if "Financiamento_Real" in df_f.columns else 0.0
+            p10_fin_real = df_f["Financiamento_Real"].quantile(0.1) if "Financiamento_Real" in df_f.columns else 0.0
+            
             tot_fin_max = df_f["Financiamento_Max"].sum() if "Financiamento_Max" in df_f.columns else 0.0
-            tot_dif_fin = df_f["Dif_Financiamento"].sum() if "Dif_Financiamento" in df_f.columns else 0.0
-            avg_dif_fin = df_f["Dif_Financiamento"].mean() if "Dif_Financiamento" in df_f.columns else 0.0
-            med_dif_fin = df_f["Dif_Financiamento"].median() if "Dif_Financiamento" in df_f.columns else 0.0
-            p10_dif_fin = df_f["Dif_Financiamento"].quantile(0.1) if "Dif_Financiamento" in df_f.columns else 0.0
-            pct_dif_fin = (tot_dif_fin / tot_fin_real * 100.0) if tot_fin_real > 0 else 0.0
+            avg_fin_max = df_f["Financiamento_Max"].mean() if "Financiamento_Max" in df_f.columns else 0.0
+            med_fin_max = df_f["Financiamento_Max"].median() if "Financiamento_Max" in df_f.columns else 0.0
+            p10_fin_max = df_f["Financiamento_Max"].quantile(0.1) if "Financiamento_Max" in df_f.columns else 0.0
             
             tot_sub_real = df_f["Subsidio_Real"].sum() if "Subsidio_Real" in df_f.columns else 0.0
+            avg_sub_real = df_f["Subsidio_Real"].mean() if "Subsidio_Real" in df_f.columns else 0.0
+            med_sub_real = df_f["Subsidio_Real"].median() if "Subsidio_Real" in df_f.columns else 0.0
+            p10_sub_real = df_f["Subsidio_Real"].quantile(0.1) if "Subsidio_Real" in df_f.columns else 0.0
+            
             tot_sub_disp = df_f["Subsidio_Disp"].sum() if "Subsidio_Disp" in df_f.columns else 0.0
-            tot_dif_sub = df_f["Dif_Subsidio"].sum() if "Dif_Subsidio" in df_f.columns else 0.0
-            avg_dif_sub = df_f["Dif_Subsidio"].mean() if "Dif_Subsidio" in df_f.columns else 0.0
-            med_dif_sub = df_f["Dif_Subsidio"].median() if "Dif_Subsidio" in df_f.columns else 0.0
-            p10_dif_sub = df_f["Dif_Subsidio"].quantile(0.1) if "Dif_Subsidio" in df_f.columns else 0.0
-            pct_dif_sub = (tot_dif_sub / tot_sub_real * 100.0) if tot_sub_real > 0 else 0.0
+            avg_sub_disp = df_f["Subsidio_Disp"].mean() if "Subsidio_Disp" in df_f.columns else 0.0
+            med_sub_disp = df_f["Subsidio_Disp"].median() if "Subsidio_Disp" in df_f.columns else 0.0
+            p10_sub_disp = df_f["Subsidio_Disp"].quantile(0.1) if "Subsidio_Disp" in df_f.columns else 0.0
 
             st.markdown(
                 f"""
                 <div class="vel-kpi-row">
                     <div class="vel-kpi"><div class="lbl">Vendas (QTD)</div><div class="val">{vendas_qtd_cred}</div></div>
-                    <div class="vel-kpi"><div class="lbl">Financiamento Real (Tot)</div><div class="val">{fmt_br_milhoes(tot_fin_real)}</div></div>
-                    <div class="vel-kpi"><div class="lbl">Financiamento Máximo (Tot)</div><div class="val">{fmt_br_milhoes(tot_fin_max)}</div></div>
-                    <div class="vel-kpi"><div class="lbl">Subsídio Real (Tot)</div><div class="val">{fmt_br_milhoes(tot_sub_real)}</div></div>
-                    <div class="vel-kpi"><div class="lbl">Subsídio Disponível (Tot)</div><div class="val">{fmt_br_milhoes(tot_sub_disp)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">Fin. Real (Tot)</div><div class="val">{fmt_br_milhoes(tot_fin_real)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">Fin. Máximo (Tot)</div><div class="val">{fmt_br_milhoes(tot_fin_max)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">Sub. Real (Tot)</div><div class="val">{fmt_br_milhoes(tot_sub_real)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">Sub. Disponível (Tot)</div><div class="val">{fmt_br_milhoes(tot_sub_disp)}</div></div>
                 </div>
                 <div class="vel-kpi-row">
-                    <div class="vel-kpi"><div class="lbl">Dif. Financiamento (Tot)</div><div class="val val--red">{fmt_br_milhoes(tot_dif_fin)}</div></div>
-                    <div class="vel-kpi"><div class="lbl">Média Dif. Fin</div><div class="val">{fmt_br_milhoes(avg_dif_fin)}</div></div>
-                    <div class="vel-kpi"><div class="lbl">Mediana Dif. Fin</div><div class="val">{fmt_br_milhoes(med_dif_fin)}</div></div>
-                    <div class="vel-kpi"><div class="lbl">P10 Dif. Fin</div><div class="val">{fmt_br_milhoes(p10_dif_fin)}</div></div>
-                    <div class="vel-kpi"><div class="lbl">Aumento Possível (Fin)</div><div class="val">{fmt_br_porcentagem(pct_dif_fin)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">Média Fin. Real</div><div class="val">{fmt_br_milhoes(avg_fin_real)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">Média Fin. Máx</div><div class="val">{fmt_br_milhoes(avg_fin_max)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">Média Sub. Real</div><div class="val">{fmt_br_milhoes(avg_sub_real)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">Média Sub. Disp</div><div class="val">{fmt_br_milhoes(avg_sub_disp)}</div></div>
+                </div>
+                <div class="vel-kpi-row">
+                    <div class="vel-kpi"><div class="lbl">Mediana Fin. Real</div><div class="val">{fmt_br_milhoes(med_fin_real)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">Mediana Fin. Máx</div><div class="val">{fmt_br_milhoes(med_fin_max)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">Mediana Sub. Real</div><div class="val">{fmt_br_milhoes(med_sub_real)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">Mediana Sub. Disp</div><div class="val">{fmt_br_milhoes(med_sub_disp)}</div></div>
                 </div>
                 <div class="vel-kpi-row" style="margin-bottom: 2rem;">
-                    <div class="vel-kpi"><div class="lbl">Dif. Subsídio (Tot)</div><div class="val val--red">{fmt_br_milhoes(tot_dif_sub)}</div></div>
-                    <div class="vel-kpi"><div class="lbl">Média Dif. Sub</div><div class="val">{fmt_br_milhoes(avg_dif_sub)}</div></div>
-                    <div class="vel-kpi"><div class="lbl">Mediana Dif. Sub</div><div class="val">{fmt_br_milhoes(med_dif_sub)}</div></div>
-                    <div class="vel-kpi"><div class="lbl">P10 Dif. Sub</div><div class="val">{fmt_br_milhoes(p10_dif_sub)}</div></div>
-                    <div class="vel-kpi"><div class="lbl">Aumento Possível (Sub)</div><div class="val">{fmt_br_porcentagem(pct_dif_sub)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">P10 Fin. Real</div><div class="val">{fmt_br_milhoes(p10_fin_real)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">P10 Fin. Máx</div><div class="val">{fmt_br_milhoes(p10_fin_max)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">P10 Sub. Real</div><div class="val">{fmt_br_milhoes(p10_sub_real)}</div></div>
+                    <div class="vel-kpi"><div class="lbl">P10 Sub. Disp</div><div class="val">{fmt_br_milhoes(p10_sub_disp)}</div></div>
                 </div>
                 """,
                 unsafe_allow_html=True,
