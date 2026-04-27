@@ -556,13 +556,16 @@ def main() -> None:
                 Gap_FinSub=(col_finsub, "sum")
             )
             
+            # Nova coluna: Valor Venda Possível (VGV Real + Gap)
+            tab["Venda_Possivel"] = tab["ValBase"] + tab["Gap_FinSub"]
             tab["% Gap C/ Fin e Sub"] = tab.apply(lambda r: (r["Gap_FinSub"] / r["ValBase"] * 100) if r["ValBase"] > 0 else 0, axis=1)
             tab = tab.sort_values("Gap_FinSub", ascending=False)
             
             show = tab.rename(columns={
                 coluna_agrupamento: label_tabela,
                 "ValBase": vgv_label,
-                "Gap_FinSub": "Gap C/ Fin e Sub (R$)"
+                "Gap_FinSub": "Gap C/ Fin e Sub (R$)",
+                "Venda_Possivel": "Valor Venda Possível (R$)"
             })
             
             # Máscara para o Nome da Oportunidade
@@ -571,7 +574,12 @@ def main() -> None:
             
             show[vgv_label] = show[vgv_label].map(lambda x: fmt_br_milhoes(float(x)))
             show["Gap C/ Fin e Sub (R$)"] = show["Gap C/ Fin e Sub (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
+            show["Valor Venda Possível (R$)"] = show["Valor Venda Possível (R$)"].map(lambda x: fmt_br_milhoes(float(x)))
             show["% Gap C/ Fin e Sub"] = show["% Gap C/ Fin e Sub"].map(lambda x: f"{x:.1f}%")
+            
+            # Reorganizando a ordem das colunas para melhor visualização
+            col_order = [label_tabela, "QTD", vgv_label, "Gap C/ Fin e Sub (R$)", "Valor Venda Possível (R$)", "% Gap C/ Fin e Sub"]
+            show = show[col_order]
             
             st.dataframe(show, use_container_width=True, hide_index=True)
 
