@@ -512,7 +512,7 @@ def main() -> None:
         else:
             pct_acima_10k = 0.0
             
-        texto_10k = f"Ao menos {pct_acima_10k:.1f}% dos clientes poderiam gerar R$ 10.000,00 ou mais nas vendas.".replace(".", ",")
+        texto_10k = f"Ao menos {pct_acima_10k:.1f}% dos clientes poderiam gerar R$ 10.000,00 ou mais nas vendas."
 
         st.markdown(
             f"""
