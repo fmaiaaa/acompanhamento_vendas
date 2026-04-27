@@ -505,6 +505,15 @@ def main() -> None:
         gap_finsub_p10 = df_target[col_finsub].quantile(0.1) if col_finsub in df_target.columns else 0.0
         pct_gap_finsub = (gap_finsub_tot / vgv_tot * 100.0) if vgv_tot > 0 else 0.0
 
+        # Cálculo do percentil correspondente ao corte de R$ 10.000,00
+        if col_finsub in df_target.columns and not df_target.empty:
+            percentil_10k = (df_target[col_finsub] < 10000).mean()
+            pct_acima_10k = (1.0 - percentil_10k) * 100.0
+        else:
+            pct_acima_10k = 0.0
+            
+        texto_10k = f"Ao menos {pct_acima_10k:.1f}% dos clientes poderiam gerar R$ 10.000,00 ou mais nas vendas.".replace(".", ",")
+
         st.markdown(
             f"""
             <div class="vel-kpi-row">
@@ -512,11 +521,14 @@ def main() -> None:
                 <div class="vel-kpi"><div class="lbl">{label_vgv}</div><div class="val">{fmt_br_milhoes(vgv_tot)}</div></div>
                 <div class="vel-kpi"><div class="lbl">Gap C/ Fin e Sub (Tot)</div><div class="val val--red">{fmt_br_milhoes(gap_finsub_tot)}</div></div>
             </div>
-            <div class="vel-kpi-row" style="margin-bottom: 2rem;">
+            <div class="vel-kpi-row" style="margin-bottom: 1rem;">
                 <div class="vel-kpi"><div class="lbl">Média Gap (C/ Fin e Sub)</div><div class="val">{fmt_br_milhoes(gap_finsub_avg)}</div></div>
                 <div class="vel-kpi"><div class="lbl">Mediana Gap (C/ Fin e Sub)</div><div class="val">{fmt_br_milhoes(gap_finsub_med)}</div></div>
                 <div class="vel-kpi"><div class="lbl">P10 Gap (C/ Fin e Sub)</div><div class="val">{fmt_br_milhoes(gap_finsub_p10)}</div></div>
                 <div class="vel-kpi"><div class="lbl">Aumento Possível (C/ Fin e Sub)</div><div class="val">{fmt_br_porcentagem(pct_gap_finsub)}</div></div>
+            </div>
+            <div style="text-align: center; margin-bottom: 2rem; color: {COR_AZUL_ESC}; font-weight: 600; font-size: 1.05rem; padding: 10px; background: rgba(255,255,255,0.6); border-radius: 8px; border: 1px solid rgba(226, 232, 240, 0.9);">
+                {texto_10k}
             </div>
             """,
             unsafe_allow_html=True,
