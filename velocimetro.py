@@ -4,6 +4,7 @@ Acompanhamento de vendas — metas vs realizado (Direcional).
 Planilha: BD Vendas Completa + Metas.
 Design: Gaps Style (Transparência, Blur, Inter/Montserrat).
 Funcionalidade: Engenharia Reversa, Comparativo MTD e Pesos de Coordenadores.
+Atualização: Inclusão de Medidor VGV, Abas Centralizadas e Reorganização de Layout.
 """
 from __future__ import annotations
 
@@ -352,6 +353,25 @@ def aplicar_estilo() -> None:
             background-size: 200% 100%;
             animation: fichaShimmer 4s ease-in-out infinite alternate;
         }}
+
+        /* Centralização de Abas */
+        div[data-testid="stTabs"] [data-baseweb="tab-list"] {{
+            display: flex;
+            justify-content: center;
+            width: 100%;
+            gap: 24px;
+        }}
+        div[data-testid="stTabs"] [data-baseweb="tab"] {{
+            font-family: 'Montserrat', sans-serif !important;
+            font-weight: 700 !important;
+            font-size: 1.05rem !important;
+            color: {COR_TEXTO_MUTED} !important;
+        }}
+        div[data-testid="stTabs"] [aria-selected="true"] {{
+            color: {COR_AZUL_ESC} !important;
+            border-bottom-color: {COR_AZUL_ESC} !important;
+        }}
+
         .vel-kpi-row {{
             display: flex;
             flex-wrap: wrap;
@@ -684,9 +704,10 @@ def fmt_qtd(v: float) -> str:
     return f"{v:.1f}" if abs(v % 1) > 0.01 else str(int(v))
 
 
-def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_vgv: float, vendas_qtd: float) -> None:
+def criar_medidor(titulo: str, valor: float, meta: float, sub_lbl1: str, sub_val1: str, sub_lbl2: str, sub_val2: str) -> None:
+    """Renderiza um velocímetro de performance."""
     meta_f = float(meta) if meta and meta > 0 else 0.0
-    true_perc = (realizado / meta_f * 100.0) if meta_f > 0 else 0.0
+    true_perc = (valor / meta_f * 100.0) if meta_f > 0 else 0.0
     axis_max = 100
     fill_limit = min(true_perc, axis_max)
 
@@ -733,7 +754,7 @@ def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_v
     )
 
     fig.update_layout(
-        height=300,
+        height=280,
         margin=dict(l=24, r=24, t=56, b=24),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
@@ -743,19 +764,18 @@ def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_v
     st.markdown(
         f"""
         <div style="text-align:center;font-size:0.85rem;color:{COR_TEXTO_LABEL};margin-top:-8px;line-height:1.4;">
-            <strong>Qtd:</strong> {fmt_qtd(vendas_qtd)} / {fmt_qtd(meta_f)} <br/>
-            <strong>VGV:</strong> {fmt_br_milhoes(float(vgv))} / {fmt_br_milhoes(float(meta_vgv))}
+            <strong>{sub_lbl1}:</strong> {sub_val1} <br/>
+            <strong>{sub_lbl2}:</strong> {sub_val2}
         </div>
         """,
         unsafe_allow_html=True,
     )
-    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
 
 
 def main() -> None:
     fav = _resolver_png_raiz(FAVICON_ARQUIVO)
     st.set_page_config(
-        page_title="Acompanhamento de Vendas | Direcional",
+        page_title="Performance de Vendas | Direcional",
         page_icon=str(fav) if fav else None,
         layout="wide",
     )
@@ -765,7 +785,7 @@ def main() -> None:
     raw_gs = _secrets_connections_gsheets()
     info = montar_service_account_info(raw_gs)
     if not info:
-        st.error("Credenciais Google em **[connections.gsheets]** incompletas. Preencha pelo menos **private_key** e **client_email**.")
+        st.error("Credenciais Google em **[connections.gsheets]** incompletas.")
         return
 
     sid = spreadsheet_id_de_secrets(raw_gs)
@@ -781,17 +801,11 @@ def main() -> None:
     df_vendas = normalizar_colunas(df_vendas_raw)
     df_metas_melted = melt_metas(df_metas_raw)
 
-    # -------------------------------------------------------------------------
-    # Limpeza de Lixo (Mantida Conforme Pedido)
-    # -------------------------------------------------------------------------
     if "Região" in df_metas_melted.columns:
         df_metas_melted = df_metas_melted[~df_metas_melted["Região"].astype(str).str.strip().str.lower().isin(["total", "geral", "não informado", "nao informado", "nan", "none", "null", ""])]
     if "Empreendimento" in df_metas_melted.columns:
         df_metas_melted = df_metas_melted[~df_metas_melted["Empreendimento"].astype(str).str.strip().str.lower().isin(["total", "geral", "não informado", "nao informado", "nan", "none", "null", ""])]
 
-    # -------------------------------------------------------------------------
-    # Tratamento da Coluna Coordenador
-    # -------------------------------------------------------------------------
     if "Coordenador" not in df_metas_melted.columns:
         df_metas_melted["Coordenador"] = "Não Informado"
         
@@ -823,13 +837,7 @@ def main() -> None:
     col_emp = achar_coluna(df_vendas, ["Empreendimento", "Obra", "Nome do Empreendimento"])
     col_venda_comercial = achar_coluna(df_vendas, ["Venda Comercial?", "Venda Comercial"])
     col_venda_facilitada = achar_coluna(df_vendas, ["Venda facilitada", "Venda Facilitada", "Venda Facilitada?"])
-    col_proprietario = achar_coluna(df_vendas, ["Proprietário da oportunidade", "Proprietario da oportunidade", "Nome da conta", "Proprietario", "Corretor"])
-    col_ranking = achar_coluna(df_vendas, ["Ranking"])
     col_data_venda = achar_coluna(df_vendas, ["Data da venda", "Data Venda", "Data de venda", "Data"])
-
-    if not col_ano and not col_mes:
-        st.error("Não foi possível encontrar as colunas de Ano e Mês na aba de vendas.")
-        return
 
     if col_emp and col_emp != "Empreendimento":
         df_vendas.rename(columns={col_emp: "Empreendimento"}, inplace=True)
@@ -838,7 +846,6 @@ def main() -> None:
         df_vendas.rename(columns={col_regiao: "Região"}, inplace=True)
         col_regiao = "Região"
 
-    # Limpeza de Lixo na Base de Vendas (Mantida Conforme Pedido)
     if col_emp:
         df_vendas = df_vendas[~df_vendas[col_emp].astype(str).str.strip().str.lower().isin(["total", "geral", "nan", "none", "null", ""])]
 
@@ -849,61 +856,32 @@ def main() -> None:
             (df_vendas[col_venda_comercial].astype(str).str.strip().str.upper() == 'TRUE')
         )
         df_vendas = df_vendas[mask_venda]
-    else:
-        st.warning("Coluna 'Venda Comercial?' não encontrada na base.")
 
     if col_venda_facilitada:
         def check_facilitada(val: Any) -> str:
-            if pd.isna(val):
-                return "Normal"
+            if pd.isna(val): return "Normal"
             v_str = str(val).strip().upper()
-            if v_str in ("1", "1.0", "SIM", "TRUE"):
-                return "Facilitada"
+            if v_str in ("1", "1.0", "SIM", "TRUE"): return "Facilitada"
             return "Normal"
         df_vendas["Tipo_Venda"] = df_vendas[col_venda_facilitada].apply(check_facilitada)
     else:
         df_vendas["Tipo_Venda"] = "Normal"
 
-    df_vendas["_mes_raw"] = df_vendas[col_mes].apply(extrair_mes) if col_mes else None
-    def aplicar_fallback_mes(row: pd.Series) -> Optional[int]:
-        m = row["_mes_raw"]
-        if pd.notna(m) and 1 <= m <= 12: return int(m)
-        if col_data_venda and pd.notna(row[col_data_venda]):
-            m2 = extrair_mes(row[col_data_venda])
-            if m2 and 1 <= m2 <= 12: return int(m2)
-        return None
-    df_vendas["_mes"] = df_vendas.apply(aplicar_fallback_mes, axis=1)
-
-    df_vendas["_ano_raw"] = df_vendas[col_ano].apply(extrair_ano) if col_ano else None
-    def aplicar_fallback_ano(row: pd.Series) -> Optional[int]:
-        ano = row["_ano_raw"]
-        if pd.notna(ano) and ano > 2000:
-            return int(ano)
-        if col_mes and pd.notna(row[col_mes]):
-            a = extrair_ano(row[col_mes])
-            if a and a > 2000: return int(a)
-        if col_data_venda and pd.notna(row[col_data_venda]):
-            a = extrair_ano(row[col_data_venda])
-            if a and a > 2000: return int(a)
-        return None
-    df_vendas["_ano"] = df_vendas.apply(aplicar_fallback_ano, axis=1)
-
+    df_vendas["_mes"] = df_vendas[col_mes].apply(extrair_mes) if col_mes else None
+    df_vendas["_ano"] = df_vendas[col_ano].apply(extrair_ano) if col_ano else None
     df_vendas["_vgv"] = df_vendas[col_valor].map(parse_valor_br) if col_valor else 0.0
 
     if col_canal:
         def agrupar_canal(c: Any) -> str:
             c_str = str(c).strip().upper()
             prefixo = c_str.split('-')[0].strip()
-            if prefixo in ['RJ', 'RJG'] or c_str in ['RJ', 'RJG']:
-                return 'IMOB'
+            if prefixo in ['RJ', 'RJG'] or c_str in ['RJ', 'RJG']: return 'IMOB'
             return 'DV RJ'
         df_vendas['Canal_Agrupado'] = df_vendas[col_canal].apply(agrupar_canal)
     else:
         df_vendas['Canal_Agrupado'] = 'DV RJ'
 
-    # -------------------------------------------------------------------------
-    # Multiplicação e Distribuição das Vendas de Acordo com Coordenador (Peso)
-    # -------------------------------------------------------------------------
+    # Distribuição Pesos
     map_emp_regiao = df_metas[["Empreendimento", "Regiao_Coord", "_peso_coord"]].drop_duplicates()
     df_vendas = df_vendas.merge(map_emp_regiao, on="Empreendimento", how="left")
     df_vendas["_peso_coord"] = df_vendas["_peso_coord"].fillna(1.0)
@@ -911,36 +889,22 @@ def main() -> None:
     df_vendas["_qtd_venda"] = 1.0 * df_vendas["_peso_coord"]
     df_vendas["_vgv_venda"] = df_vendas["_vgv"] * df_vendas["_peso_coord"]
 
-    # -------------------------------------------------------------------------
-    # LINHA ÚNICA DE FILTROS
-    # -------------------------------------------------------------------------
+    # Filtros
     anos_disponiveis = sorted(int(x) for x in df_vendas["_ano"].dropna().unique().tolist() if pd.notna(x) and x > 2000)
     meses_no_ano = list(range(1, 13))
-    mes_atual = datetime.now().month
-    mes_padrao = mes_atual if mes_atual in meses_no_ano else 1
+    mes_padrao = datetime.now().month
     regioes_disponiveis = sorted(set(str(x).strip() for x in df_metas["Regiao_Coord"].dropna().unique() if str(x).strip()))
-    
-    # Lista de todos os empreendimentos da base de vendas (mesmo sem meta)
     todos_emps_vendas = sorted(list(set(str(x).strip() for x in df_vendas["Empreendimento"].dropna().unique() if str(x).strip())))
 
-    st.markdown("<div style='margin-bottom:1rem; text-align: center;'><strong>Filtros</strong></div>", unsafe_allow_html=True)
-    
+    st.markdown("<div style='margin-bottom:1rem; text-align: center;'><strong>Filtros Globais</strong></div>", unsafe_allow_html=True)
     col_filtros = st.columns(5)
-    with col_filtros[0]:
-        canais_sel = st.multiselect("Canal da Meta", ["RIO", "DIR", "PARC", "RJ"], default=["RIO"])
-    with col_filtros[1]:
-        anos_sel = st.multiselect("Ano", anos_disponiveis, default=[anos_disponiveis[-1]] if anos_disponiveis else [])
-    with col_filtros[2]:
-        meses_sel = st.multiselect("Mês", meses_no_ano, default=[mes_padrao])
-    with col_filtros[3]:
-        regioes_sel = st.multiselect("Região", regioes_disponiveis, default=[])
-    with col_filtros[4]:
-        # Filtro de Empreendimentos baseado em TODOS os registros da base de vendas
-        emps_sel = st.multiselect("Empreendimento", todos_emps_vendas, default=[])
+    with col_filtros[0]: canais_sel = st.multiselect("Canal da Meta", ["RIO", "DIR", "PARC", "RJ"], default=["RIO"])
+    with col_filtros[1]: anos_sel = st.multiselect("Ano", anos_disponiveis, default=[anos_disponiveis[-1]] if anos_disponiveis else [])
+    with col_filtros[2]: meses_sel = st.multiselect("Mês", meses_no_ano, default=[mes_padrao])
+    with col_filtros[3]: regioes_sel = st.multiselect("Região", regioes_disponiveis, default=[])
+    with col_filtros[4]: emps_sel = st.multiselect("Empreendimento", todos_emps_vendas, default=[])
 
-    # -------------------------------------------------------------------------
-    # Aplicação de Filtros (Lógica de Exibição de Todos se Nada Marcado)
-    # -------------------------------------------------------------------------
+    # Aplicação
     vendas_f = df_vendas.copy()
     metas_f = df_metas.copy()
 
@@ -951,15 +915,12 @@ def main() -> None:
     if regioes_sel:
         metas_f = metas_f[metas_f["Regiao_Coord"].isin(regioes_sel)]
         vendas_f = vendas_f[vendas_f["Regiao_Coord"].isin(regioes_sel)]
-    
-    # Se houver seleção, filtra. Se não, exibe tudo (conforme pedido)
     if emps_sel:
         metas_f = metas_f[metas_f["Empreendimento"].isin(emps_sel)]
         vendas_f = vendas_f[vendas_f["Empreendimento"].isin(emps_sel)]
 
     fator_meta = 0.0
     mask_vendas = pd.Series(False, index=vendas_f.index)
-
     if not canais_sel or "RIO" in canais_sel:
         fator_meta = 1.0
         mask_vendas = pd.Series(True, index=vendas_f.index)
@@ -969,18 +930,14 @@ def main() -> None:
             mask_vendas |= (vendas_f["Canal_Agrupado"] == "DV RJ")
         if "PARC" in canais_sel and col_canal:
             fator_meta += 0.25
-            mask_vendas |= vendas_f[col_canal].astype(str).str.upper().str.strip().apply(lambda x: x.split('-')[0].strip() == 'RJG' or x == 'RJG')
+            mask_vendas |= vendas_f[col_canal].astype(str).upper().str.strip().apply(lambda x: x.split('-')[0].strip() == 'RJG' or x == 'RJG')
         if "RJ" in canais_sel and col_canal:
             fator_meta += 0.25
-            mask_vendas |= vendas_f[col_canal].astype(str).str.upper().str.strip().apply(lambda x: x.split('-')[0].strip() == 'RJ' or x == 'RJ')
+            mask_vendas |= vendas_f[col_canal].astype(str).upper().str.strip().apply(lambda x: x.split('-')[0].strip() == 'RJ' or x == 'RJ')
 
     fator_meta = min(1.0, fator_meta)
     vendas_f = vendas_f[mask_vendas]
-
-    # Meta absoluta utilizada no cálculo do funil
-    total_meta_qtd_base = float(metas_f["Meta_Qtd"].sum()) if not metas_f.empty else 0.0
-    total_meta_vgv_base = float(metas_f["Meta_VGV"].sum()) if not metas_f.empty else 0.0
-
+    
     metas_f["Meta_Qtd"] = (metas_f["Meta_Qtd"] * fator_meta).apply(math.floor)
     metas_f["Meta_VGV"] = metas_f["Meta_VGV"] * fator_meta
 
@@ -989,203 +946,116 @@ def main() -> None:
     total_vgv_realizado = float(vendas_f["_vgv_venda"].sum())
     total_meta_vgv = float(metas_f["Meta_VGV"].sum()) if not metas_f.empty else 0.0
 
-    pct_qtd = (total_realizado_qtd / total_meta_qtd * 100.0) if total_meta_qtd > 0 else 0.0
-    pct_vgv = (total_vgv_realizado / total_meta_vgv * 100.0) if total_meta_vgv > 0 else 0.0
-
-    st.markdown(
-        f"""
-        <div class="vel-kpi-row" style="margin-top: 1rem;">
-            <div class="vel-kpi"><div class="lbl">Qtd Meta</div><div class="val">{int(total_meta_qtd)}</div></div>
-            <div class="vel-kpi"><div class="lbl">Qtd Realizado</div><div class="val">{fmt_qtd(total_realizado_qtd)}</div></div>
-            <div class="vel-kpi"><div class="lbl">% Qtd</div><div class="val">{pct_qtd:.1f}%</div></div>
-        </div>
-        <div class="vel-kpi-row">
-            <div class="vel-kpi"><div class="lbl">VGV Meta</div><div class="val">{fmt_br_milhoes(total_meta_vgv)}</div></div>
-            <div class="vel-kpi"><div class="lbl">VGV Realizado</div><div class="val val--red">{fmt_br_milhoes(total_vgv_realizado)}</div></div>
-            <div class="vel-kpi"><div class="lbl">% VGV</div><div class="val">{pct_vgv:.1f}%</div></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.subheader("Perfil das Vendas")
-    qtd_facilitada = float(vendas_f[vendas_f["Tipo_Venda"] == "Facilitada"]["_qtd_venda"].sum())
-    qtd_normal = float(vendas_f[vendas_f["Tipo_Venda"] == "Normal"]["_qtd_venda"].sum())
-    st.markdown(
-        f"""
-        <div class="vel-kpi-row">
-            <div class="vel-kpi"><div class="lbl">Vendas Facilitadas</div><div class="val">{fmt_qtd(qtd_facilitada)}</div></div>
-            <div class="vel-kpi"><div class="lbl">Vendas Normais</div><div class="val">{fmt_qtd(qtd_normal)}</div></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.subheader("Visão geral")
-    c1, c2, c3 = st.columns([1, 2, 1])
-    with c2:
-        criar_medidor("Geral — quantidade vs meta", float(total_realizado_qtd), total_meta_qtd, total_vgv_realizado, total_meta_vgv, total_realizado_qtd)
-
-    st.subheader("Por região")
-    if "Regiao_Coord" in metas_f.columns:
-        regioes_m = sorted(str(x).strip() for x in metas_f["Regiao_Coord"].dropna().unique() if str(x).strip())
-        if regioes_m:
-            cols = st.columns(min(3, len(regioes_m)) or 1)
-            for i, regiao in enumerate(regioes_m):
-                with cols[i % len(cols)]:
-                    m_reg = metas_f[metas_f["Regiao_Coord"] == regiao]
-                    v_reg = vendas_f[vendas_f["Regiao_Coord"] == regiao]
-                    criar_medidor(regiao, float(v_reg["_qtd_venda"].sum()), m_reg["Meta_Qtd"].sum(), v_reg["_vgv_venda"].sum(), m_reg["Meta_VGV"].sum(), float(v_reg["_qtd_venda"].sum()))
-
     # -------------------------------------------------------------------------
-    # TABELAS
+    # ABAS CENTRALIZADAS
     # -------------------------------------------------------------------------
-    st.subheader("Tabela Resumo: Por Região")
-    if "Regiao_Coord" in metas_f.columns:
-        vg_reg = vendas_f.groupby("Regiao_Coord", as_index=False).agg(real_qtd=("_qtd_venda", "sum"), real_vgv=("_vgv_venda", "sum")).rename(columns={"Regiao_Coord": "Região"})
-        mg_reg = metas_f.groupby("Regiao_Coord", as_index=False).agg(meta_qtd=("Meta_Qtd", "sum"), meta_vgv=("Meta_VGV", "sum")).rename(columns={"Regiao_Coord": "Região"})
-        tab_reg = vg_reg.merge(mg_reg, on="Região", how="outer").fillna(0)
-        tab_reg["% Qtd"] = tab_reg.apply(lambda r: (r["real_qtd"] / r["meta_qtd"] * 100.0) if r["meta_qtd"] > 0 else 0.0, axis=1)
-        tab_reg["% VGV"] = tab_reg.apply(lambda r: (r["real_vgv"] / r["meta_vgv"] * 100.0) if r["meta_vgv"] > 0 else 0.0, axis=1)
-        st.dataframe(tab_reg.sort_values("meta_qtd", ascending=False), use_container_width=True, hide_index=True)
+    tab1, tab2 = st.tabs(["Performance Geral", "Análise Detalhada"])
 
-    # -------------------------------------------------------------------------
-    # FUNIL IDEAL E ENGENHARIA REVERSA
-    # -------------------------------------------------------------------------
-    st.markdown("<br><hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
-    st.subheader("Engenharia Reversa: Funil Ideal")
+    with tab1:
+        st.markdown(
+            f"""
+            <div class="vel-kpi-row" style="margin-top: 1rem;">
+                <div class="vel-kpi"><div class="lbl">Qtd Meta</div><div class="val">{int(total_meta_qtd)}</div></div>
+                <div class="vel-kpi"><div class="lbl">Qtd Realizado</div><div class="val">{fmt_qtd(total_realizado_qtd)}</div></div>
+                <div class="vel-kpi"><div class="lbl">% Qtd</div><div class="val">{(total_realizado_qtd/total_meta_qtd*100 if total_meta_qtd>0 else 0):.1f}%</div></div>
+            </div>
+            <div class="vel-kpi-row">
+                <div class="vel-kpi"><div class="lbl">VGV Meta</div><div class="val">{fmt_br_milhoes(total_meta_vgv)}</div></div>
+                <div class="vel-kpi"><div class="lbl">VGV Realizado</div><div class="val val--red">{fmt_br_milhoes(total_vgv_realizado)}</div></div>
+                <div class="vel-kpi"><div class="lbl">% VGV</div><div class="val">{(total_vgv_realizado/total_meta_vgv*100 if total_meta_vgv>0 else 0):.1f}%</div></div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
 
-    v_meta = math.floor(total_meta_qtd)
-    pa_ideal = math.ceil(v_meta / 0.64) if v_meta > 0 else 0
-    p_ideal = math.ceil(pa_ideal / 0.64) if pa_ideal > 0 else 0
-    vi_ideal = math.ceil(p_ideal / 0.25) if p_ideal > 0 else 0
-    a_ideal = math.ceil(vi_ideal / 0.50) if vi_ideal > 0 else 0
-    
-    meta_global_referencia = (total_meta_qtd / fator_meta) if fator_meta > 0 else 0
-    meta_dvrj_ref = meta_global_referencia * 0.5
-    vd_ideal = math.ceil(meta_dvrj_ref * 0.40)
-    
-    od_ideal = math.ceil(vd_ideal / 0.044) if vd_ideal > 0 else 0
-    ld_ideal = math.ceil(od_ideal / 0.50) if od_ideal > 0 else 0
-    
-    corretores_pessimista = math.ceil(v_meta / 0.15) if v_meta > 0 else 0
-    corretores_moderado = math.ceil(v_meta / 0.20) if v_meta > 0 else 0
-    corretores_otimista = math.ceil(v_meta / 0.25) if v_meta > 0 else 0
+        st.subheader("Visão Executiva")
+        c1, c2 = st.columns(2)
+        with c1:
+            criar_medidor(
+                "Atingimento QTD", 
+                total_realizado_qtd, 
+                total_meta_qtd, 
+                "Realizado", fmt_qtd(total_realizado_qtd), 
+                "Meta", fmt_qtd(total_meta_qtd)
+            )
+        with c2:
+            criar_medidor(
+                "Atingimento VGV", 
+                total_vgv_realizado, 
+                total_meta_vgv, 
+                "Realizado", fmt_br_milhoes(total_vgv_realizado), 
+                "Meta", fmt_br_milhoes(total_meta_vgv)
+            )
 
-    col_f_meta_espaco, col_f_meta, col_f_meta_espaco2 = st.columns([1, 2, 1])
-    with col_f_meta:
-        fig_ideal = go.Figure(go.Funnel(
-            y=['Agendamentos', 'Visitas', 'Pastas', 'Past. Aprov.', 'Vendas (Meta)'],
-            x=[a_ideal, vi_ideal, p_ideal, pa_ideal, v_meta],
-            textinfo="value",
-            marker={"color": ["#022654", "#04428f", "#1e60b3", "#cb0935", "#9e0828"]},
-            connector={"fillcolor": "rgba(4, 66, 143, 0.15)"}
-        ))
-        fig_ideal.update_layout(margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=350, font=dict(family="Inter", color=COR_TEXTO_LABEL))
-        st.plotly_chart(fig_ideal, use_container_width=True, config={"displayModeBar": False})
+        # Tendência
+        st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1.5rem 0;'/>", unsafe_allow_html=True)
+        dia_atual = datetime.now().day
+        st.subheader(f"Tendência de Vendas (Acumulado até dia {dia_atual:02d})")
+        if col_data_venda:
+            vendas_f["Data_Formatada"] = pd.to_datetime(vendas_f[col_data_venda], dayfirst=True, errors="coerce")
+            df_parcial = vendas_f[vendas_f["Data_Formatada"].dt.day <= dia_atual].copy()
+            if not df_parcial.empty:
+                df_comp = df_parcial.groupby(["_ano", "_mes"], as_index=False).agg(QTD=("_qtd_venda", "sum"), VGV=("_vgv_venda", "sum")).sort_values(["_ano", "_mes"])
+                df_comp["Periodo"] = df_comp["_mes"].astype(str).str.zfill(2) + "/" + df_comp["_ano"].astype(str)
+                fig_linha = make_subplots(specs=[[{"secondary_y": True}]])
+                fig_linha.add_trace(go.Scatter(x=df_comp["Periodo"], y=df_comp["QTD"], mode="lines+markers+text", name="QTD", line=dict(color=COR_AZUL_ESC, width=3), text=df_comp["QTD"].apply(fmt_qtd), textposition="top center"), secondary_y=False)
+                fig_linha.add_trace(go.Scatter(x=df_comp["Periodo"], y=df_comp["VGV"], mode="lines+markers+text", name="VGV", line=dict(color=COR_VERMELHO, width=3), text=df_comp["VGV"].apply(fmt_br_milhoes), textposition="bottom center"), secondary_y=True)
+                fig_linha.update_layout(height=350, margin=dict(l=20, r=20, t=40, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", legend=dict(orientation="h", y=1.1, x=0.5, xanchor="center"))
+                st.plotly_chart(fig_linha, use_container_width=True, config={"displayModeBar": False})
 
-    st.markdown("<br><hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
-    st.subheader("Funil de Marketing Digital")
-    
-    col_mkt_espaco, col_mkt_grafico, col_mkt_espaco2 = st.columns([1, 2, 1])
-    with col_mkt_grafico:
-        fig_mkt = go.Figure(go.Funnel(
-            y=['Leads Digitais', 'Oport. Digitais', 'Vendas Dig. (40% DV RJ)'],
-            x=[ld_ideal, od_ideal, vd_ideal],
-            textinfo="value",
-            marker={"color": ["#022654", "#1e60b3", "#cb0935"]},
-            connector={"fillcolor": "rgba(4, 66, 143, 0.15)"}
-        ))
-        fig_mkt.update_layout(margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=300, font=dict(family="Inter", color=COR_TEXTO_LABEL))
-        st.plotly_chart(fig_mkt, use_container_width=True, config={"displayModeBar": False})
+    with tab2:
+        st.subheader("Performance por Região")
+        if "Regiao_Coord" in metas_f.columns:
+            regioes_m = sorted(str(x).strip() for x in metas_f["Regiao_Coord"].dropna().unique() if str(x).strip())
+            if regioes_m:
+                cols = st.columns(3)
+                for i, regiao in enumerate(regioes_m):
+                    with cols[i % 3]:
+                        m_reg = metas_f[metas_f["Regiao_Coord"] == regiao]
+                        v_reg = vendas_f[vendas_f["Regiao_Coord"] == regiao]
+                        # Mostra Qtd no Gauge e VGV no texto
+                        criar_medidor(
+                            regiao, 
+                            float(v_reg["_qtd_venda"].sum()), 
+                            m_reg["Meta_Qtd"].sum(), 
+                            "Realizado Qtd", fmt_qtd(v_reg["_qtd_venda"].sum()), 
+                            "VGV Real", fmt_br_milhoes(v_reg["_vgv_venda"].sum())
+                        )
 
-    st.markdown("<br><hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
-    st.subheader("Cenários: Corretores Ativos (Necessários para bater a meta global)")
-    st.markdown(
-        f"""
-        <div class="vel-kpi-row" style="justify-content: center; margin-top: 1rem;">
-            <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Pessimista (15% convert.)</div><div class="val">{corretores_pessimista}</div></div>
-            <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Moderado (20% convert.)</div><div class="val">{corretores_moderado}</div></div>
-            <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Otimista (25% convert.)</div><div class="val">{corretores_otimista}</div></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # -------------------------------------------------------------------------
-    # Comparativo de Vendas (Dia 1 ao Dia Atual do Mês)
-    # -------------------------------------------------------------------------
-    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
-    dia_atual = datetime.now().day
-    st.subheader(f"Comparativo de Vendas (Dia 01 ao Dia {dia_atual:02d} do Mês)")
-    
-    if col_data_venda:
-        vendas_f["Data_Formatada"] = pd.to_datetime(vendas_f[col_data_venda], dayfirst=True, errors="coerce")
-        df_parcial = vendas_f[vendas_f["Data_Formatada"].dt.day <= dia_atual].copy()
+        st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1.5rem 0;'/>", unsafe_allow_html=True)
+        st.subheader("Engenharia Reversa (Meta Global)")
         
-        if not df_parcial.empty:
-            df_comp = df_parcial.groupby(["_ano", "_mes"], as_index=False).agg(
-                QTD=("_qtd_venda", "sum"),
-                VGV=("_vgv_venda", "sum")
-            ).sort_values(["_ano", "_mes"])
-            
-            df_comp["Periodo"] = df_comp["_mes"].astype(str).str.zfill(2) + "/" + df_comp["_ano"].astype(str)
-            df_comp["VGV_Formatado"] = df_comp["VGV"].apply(lambda x: fmt_br_milhoes(x))
-            df_comp["QTD_Formatado"] = df_comp["QTD"].apply(lambda x: fmt_qtd(x))
-            
-            fig_linha = make_subplots(specs=[[{"secondary_y": True}]])
-            
-            fig_linha.add_trace(
-                go.Scatter(
-                    x=df_comp["Periodo"], 
-                    y=df_comp["QTD"], 
-                    mode="lines+markers+text",
-                    name="QTD Vendas",
-                    line=dict(color=COR_AZUL_ESC, width=3),
-                    marker=dict(size=8, color=COR_AZUL_ESC),
-                    text=df_comp["QTD_Formatado"],
-                    textposition="top center",
-                    textfont=dict(color=COR_AZUL_ESC, size=11, family="Inter")
-                ),
-                secondary_y=False,
-            )
-            
-            fig_linha.add_trace(
-                go.Scatter(
-                    x=df_comp["Periodo"], 
-                    y=df_comp["VGV"], 
-                    mode="lines+markers+text",
-                    name="VGV Real",
-                    line=dict(color=COR_VERMELHO, width=3),
-                    marker=dict(size=8, color=COR_VERMELHO),
-                    text=df_comp["VGV_Formatado"],
-                    textposition="bottom center",
-                    textfont=dict(color=COR_VERMELHO, size=11, family="Inter")
-                ),
-                secondary_y=True,
-            )
-            
-            fig_linha.update_layout(
-                margin=dict(l=20, r=20, t=40, b=20),
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(family="Inter", color=COR_TEXTO_LABEL),
-                legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="center", x=0.5),
-                hovermode="x unified"
-            )
-            
-            fig_linha.update_yaxes(title_text="Quantidade (Vendas)", secondary_y=False, showgrid=False)
-            fig_linha.update_yaxes(title_text="VGV Real (R$)", secondary_y=True, showgrid=True, gridcolor="rgba(226, 232, 240, 0.5)")
-            
-            st.plotly_chart(fig_linha, use_container_width=True, config={"displayModeBar": False})
-        else:
-            st.info(f"Não há dados de vendas no período do dia 01 ao dia {dia_atual:02d} para os filtros selecionados.")
-    else:
-        st.warning("A coluna de Data da Venda não foi encontrada. Impossível filtrar os dias.")
+        # Funil
+        v_meta = math.floor(total_meta_qtd)
+        pa_ideal = math.ceil(v_meta / 0.64) if v_meta > 0 else 0
+        p_ideal = math.ceil(pa_ideal / 0.64) if pa_ideal > 0 else 0
+        vi_ideal = math.ceil(p_ideal / 0.25) if p_ideal > 0 else 0
+        a_ideal = math.ceil(vi_ideal / 0.50) if vi_ideal > 0 else 0
+        
+        meta_global_ref = (total_meta_qtd / fator_meta) if fator_meta > 0 else 0
+        vd_ideal = math.ceil(meta_global_ref * 0.5 * 0.40)
+        od_ideal = math.ceil(vd_ideal / 0.044) if vd_ideal > 0 else 0
+        ld_ideal = math.ceil(od_ideal / 0.50) if od_ideal > 0 else 0
+
+        c_fun1, c_fun2 = st.columns(2)
+        with c_fun1:
+            fig_f = go.Figure(go.Funnel(y=['Agend.', 'Visitas', 'Pastas', 'P. Aprov.', 'Meta'], x=[a_ideal, vi_ideal, p_ideal, pa_ideal, v_meta], textinfo="value", marker={"color": ["#022654", "#04428f", "#1e60b3", "#cb0935", "#9e0828"]}))
+            fig_f.update_layout(height=350, margin=dict(l=20, r=20, t=10, b=10), paper_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig_f, use_container_width=True)
+        with c_fun2:
+            fig_m = go.Figure(go.Funnel(y=['Leads Dig.', 'Oport. Dig.', 'Vendas Dig.'], x=[ld_ideal, od_ideal, vd_ideal], textinfo="value", marker={"color": ["#022654", "#1e60b3", "#cb0935"]}))
+            fig_m.update_layout(height=350, margin=dict(l=20, r=20, t=10, b=10), paper_bgcolor="rgba(0,0,0,0)")
+            st.plotly_chart(fig_m, use_container_width=True)
+
+        st.subheader("Cenários de Corretores")
+        c_cor1, c_cor2, c_cor3 = st.columns(3)
+        c_cor1.metric("Pessimista (15%)", math.ceil(v_meta/0.15) if v_meta>0 else 0)
+        c_cor2.metric("Moderado (20%)", math.ceil(v_meta/0.20) if v_meta>0 else 0)
+        c_cor3.metric("Otimista (25%)", math.ceil(v_meta/0.25) if v_meta>0 else 0)
 
     st.markdown(
         f'<div class="footer" style="text-align:center;padding:1rem 0;color:{COR_TEXTO_MUTED};font-size:0.82rem;">'
-        f"Direcional Engenharia · Vendas — Acompanhamento de metas</div>",
+        f"Direcional Engenharia · Vendas RJ</div>",
         unsafe_allow_html=True,
     )
 
