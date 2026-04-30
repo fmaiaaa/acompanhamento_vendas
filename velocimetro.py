@@ -2,12 +2,8 @@
 """
 Acompanhamento de vendas — metas vs realizado (Direcional).
 Planilha: BD Vendas Completa + Metas.
-Dependências: streamlit, pandas, plotly, gspread, google-auth
-
-Secrets: `.streamlit/secrets.toml` com seções `[connections.gsheets]` (JSON da service account:
-type, project_id, private_key_id, private_key em bloco multilinha TOML, client_email, URIs, etc.)
-e opcional `spreadsheet_id`. Seção `[email]` para SMTP (smtp_server, smtp_port, sender_email,
-sender_password) — lida pelo app mas não usada na leitura da planilha.
+Design: Gaps Style (Transparência, Blur, Inter/Montserrat).
+Funcionalidade: Engenharia Reversa, Comparativo MTD e Pesos de Coordenadores.
 """
 from __future__ import annotations
 
@@ -776,17 +772,17 @@ def main() -> None:
     cred_fp = _fingerprint_credenciais(info)
 
     try:
-        df_vendas = ler_planilha_aba_df(sid, WS_VENDAS, cred_fp)
+        df_vendas_raw = ler_planilha_aba_df(sid, WS_VENDAS, cred_fp)
         df_metas_raw = ler_planilha_aba_df(sid, WS_METAS, cred_fp)
     except Exception as e:
         st.error(f"Erro ao ler a planilha principal: {str(e)}")
         return
 
-    df_vendas = normalizar_colunas(df_vendas)
+    df_vendas = normalizar_colunas(df_vendas_raw)
     df_metas_melted = melt_metas(df_metas_raw)
 
     # -------------------------------------------------------------------------
-    # Filtros Básicos de Metas
+    # Limpeza de Lixo (Mantida Conforme Pedido)
     # -------------------------------------------------------------------------
     if "Região" in df_metas_melted.columns:
         df_metas_melted = df_metas_melted[~df_metas_melted["Região"].astype(str).str.strip().str.lower().isin(["total", "geral", "não informado", "nao informado", "nan", "none", "null", ""])]
@@ -842,8 +838,9 @@ def main() -> None:
         df_vendas.rename(columns={col_regiao: "Região"}, inplace=True)
         col_regiao = "Região"
 
+    # Limpeza de Lixo na Base de Vendas (Mantida Conforme Pedido)
     if col_emp:
-        df_vendas = df_vendas[~df_vendas[col_emp].astype(str).str.strip().str.lower().isin(["total", "geral", ""])]
+        df_vendas = df_vendas[~df_vendas[col_emp].astype(str).str.strip().str.lower().isin(["total", "geral", "nan", "none", "null", ""])]
 
     if col_venda_comercial:
         mask_venda = (
@@ -897,7 +894,6 @@ def main() -> None:
         def agrupar_canal(c: Any) -> str:
             c_str = str(c).strip().upper()
             prefixo = c_str.split('-')[0].strip()
-            # Canais que compõem a DV RJ / RIV (Internos)
             if prefixo in ['RJ', 'RJG'] or c_str in ['RJ', 'RJG']:
                 return 'IMOB'
             return 'DV RJ'
@@ -924,11 +920,8 @@ def main() -> None:
     mes_padrao = mes_atual if mes_atual in meses_no_ano else 1
     regioes_disponiveis = sorted(set(str(x).strip() for x in df_metas["Regiao_Coord"].dropna().unique() if str(x).strip()))
     
-    emps_comuns = []
-    if coluna_existe(df_vendas, "Empreendimento") and coluna_existe(df_metas, "Empreendimento"):
-        emps_vendas = set(str(x).strip() for x in df_vendas["Empreendimento"].dropna().unique() if str(x).strip())
-        emps_metas = set(str(x).strip() for x in df_metas["Empreendimento"].dropna().unique() if str(x).strip())
-        emps_comuns = sorted(list(emps_vendas & emps_metas))
+    # Lista de todos os empreendimentos da base de vendas (mesmo sem meta)
+    todos_emps_vendas = sorted(list(set(str(x).strip() for x in df_vendas["Empreendimento"].dropna().unique() if str(x).strip())))
 
     st.markdown("<div style='margin-bottom:1rem; text-align: center;'><strong>Filtros</strong></div>", unsafe_allow_html=True)
     
@@ -942,10 +935,11 @@ def main() -> None:
     with col_filtros[3]:
         regioes_sel = st.multiselect("Região", regioes_disponiveis, default=[])
     with col_filtros[4]:
-        emps_sel = st.multiselect("Empreendimento", emps_comuns, default=[])
+        # Filtro de Empreendimentos baseado em TODOS os registros da base de vendas
+        emps_sel = st.multiselect("Empreendimento", todos_emps_vendas, default=[])
 
     # -------------------------------------------------------------------------
-    # Aplicação de Filtros
+    # Aplicação de Filtros (Lógica de Exibição de Todos se Nada Marcado)
     # -------------------------------------------------------------------------
     vendas_f = df_vendas.copy()
     metas_f = df_metas.copy()
@@ -957,6 +951,8 @@ def main() -> None:
     if regioes_sel:
         metas_f = metas_f[metas_f["Regiao_Coord"].isin(regioes_sel)]
         vendas_f = vendas_f[vendas_f["Regiao_Coord"].isin(regioes_sel)]
+    
+    # Se houver seleção, filtra. Se não, exibe tudo (conforme pedido)
     if emps_sel:
         metas_f = metas_f[metas_f["Empreendimento"].isin(emps_sel)]
         vendas_f = vendas_f[vendas_f["Empreendimento"].isin(emps_sel)]
@@ -964,7 +960,6 @@ def main() -> None:
     fator_meta = 0.0
     mask_vendas = pd.Series(False, index=vendas_f.index)
 
-    # Lógica de canais para cálculo de fatores e meta proporcional
     if not canais_sel or "RIO" in canais_sel:
         fator_meta = 1.0
         mask_vendas = pd.Series(True, index=vendas_f.index)
@@ -1055,19 +1050,17 @@ def main() -> None:
         st.dataframe(tab_reg.sort_values("meta_qtd", ascending=False), use_container_width=True, hide_index=True)
 
     # -------------------------------------------------------------------------
-    # FUNIL IDEAL E ENGENHARIA REVERSA (LOGICA ATUALIZADA)
+    # FUNIL IDEAL E ENGENHARIA REVERSA
     # -------------------------------------------------------------------------
     st.markdown("<br><hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
     st.subheader("Engenharia Reversa: Funil Ideal")
 
-    # Cálculos Funil Ideal
     v_meta = math.floor(total_meta_qtd)
     pa_ideal = math.ceil(v_meta / 0.64) if v_meta > 0 else 0
     p_ideal = math.ceil(pa_ideal / 0.64) if pa_ideal > 0 else 0
     vi_ideal = math.ceil(p_ideal / 0.25) if p_ideal > 0 else 0
     a_ideal = math.ceil(vi_ideal / 0.50) if vi_ideal > 0 else 0
     
-    # CORREÇÃO: Vendas Digitais são 40% da meta da DV RJ (que representa 50% da meta global RIO)
     meta_global_referencia = (total_meta_qtd / fator_meta) if fator_meta > 0 else 0
     meta_dvrj_ref = meta_global_referencia * 0.5
     vd_ideal = math.ceil(meta_dvrj_ref * 0.40)
@@ -1140,10 +1133,8 @@ def main() -> None:
             df_comp["VGV_Formatado"] = df_comp["VGV"].apply(lambda x: fmt_br_milhoes(x))
             df_comp["QTD_Formatado"] = df_comp["QTD"].apply(lambda x: fmt_qtd(x))
             
-            # Utilizando subplots para ter um eixo Y duplo (QTD x VGV) para melhor escala
             fig_linha = make_subplots(specs=[[{"secondary_y": True}]])
             
-            # Linha Azul para Vendas (QTD)
             fig_linha.add_trace(
                 go.Scatter(
                     x=df_comp["Periodo"], 
@@ -1159,7 +1150,6 @@ def main() -> None:
                 secondary_y=False,
             )
             
-            # Linha Vermelha para VGV (Eixo Secundário)
             fig_linha.add_trace(
                 go.Scatter(
                     x=df_comp["Periodo"], 
