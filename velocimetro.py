@@ -88,7 +88,7 @@ def _resolver_imagem_fundo_local(nome: str) -> Path | None:
     return None
 
 def _css_url_fundo_cadastro() -> str:
-    """String para `url(...)` no CSS: data-URL ou URL https (fallback)."""
+    """String para `url(...)` no CSS: data-URL or URL https (fallback)."""
     p = _resolver_imagem_fundo_local(FUNDO_CADASTRO_ARQUIVO)
     if p and p.is_file():
         try:
@@ -901,6 +901,13 @@ def main() -> None:
     else:
         df_vendas['Canal_Agrupado'] = 'DV RJ'
 
+    # --- FILTRO DE DATAS FUTURAS ---
+    if col_data_venda:
+        df_vendas["_data_dt"] = pd.to_datetime(df_vendas[col_data_venda], dayfirst=True, errors="coerce")
+        hoje = datetime.now()
+        df_vendas = df_vendas[df_vendas["_data_dt"] <= hoje]
+    # -------------------------------
+
     # -------------------------------------------------------------------------
     # Multiplicação e Distribuição das Vendas de Acordo com Coordenador (Peso)
     # -------------------------------------------------------------------------
@@ -925,34 +932,38 @@ def main() -> None:
 
     st.markdown("<div style='margin-bottom:1rem; text-align: center;'><strong>Filtros</strong></div>", unsafe_allow_html=True)
     
-    col_filtros = st.columns(5)
+    col_filtros = st.columns(6) # Aumentado para 6 colunas para caber o novo filtro
     with col_filtros[0]:
         canais_sel = st.multiselect("Canal da Meta", ["RIO", "DIR", "PARC", "RJ"], default=["RIO"])
     with col_filtros[1]:
         anos_sel = st.multiselect("Ano", anos_disponiveis, default=[anos_disponiveis[-1]] if anos_disponiveis else [])
     with col_filtros[2]:
-        meses_sel = st.multiselect("Mês", meses_no_ano, default=[mes_padrao])
+        meses_venda_sel = st.multiselect("Mês da Venda", meses_no_ano, default=[mes_padrao])
     with col_filtros[3]:
-        regioes_sel = st.multiselect("Região", regioes_disponiveis, default=[])
+        meses_meta_sel = st.multiselect("Mês da Meta", meses_no_ano, default=[mes_padrao])
     with col_filtros[4]:
-        # Filtro de Empreendimentos baseado em TODOS os registros da base de vendas
+        regioes_sel = st.multiselect("Região", regioes_disponiveis, default=[])
+    with col_filtros[5]:
         emps_sel = st.multiselect("Empreendimento", todos_emps_vendas, default=[])
 
     # -------------------------------------------------------------------------
-    # Aplicação de Filtros (Lógica de Exibição de Todos se Nada Marcado)
+    # Aplicação de Filtros
     # -------------------------------------------------------------------------
     vendas_f = df_vendas.copy()
     metas_f = df_metas.copy()
 
     if anos_sel: vendas_f = vendas_f[vendas_f["_ano"].isin(anos_sel)]
-    if meses_sel:
-        vendas_f = vendas_f[vendas_f["_mes"].isin(meses_sel)]
-        metas_f = metas_f[metas_f["Mes_Num"].isin(meses_sel)]
+    
+    # Filtros de meses independentes
+    if meses_venda_sel:
+        vendas_f = vendas_f[vendas_f["_mes"].isin(meses_venda_sel)]
+    if meses_meta_sel:
+        metas_f = metas_f[metas_f["Mes_Num"].isin(meses_meta_sel)]
+        
     if regioes_sel:
         metas_f = metas_f[metas_f["Regiao_Coord"].isin(regioes_sel)]
         vendas_f = vendas_f[vendas_f["Regiao_Coord"].isin(regioes_sel)]
     
-    # Se houver seleção, filtra. Se não, exibe tudo (conforme pedido)
     if emps_sel:
         metas_f = metas_f[metas_f["Empreendimento"].isin(emps_sel)]
         vendas_f = vendas_f[vendas_f["Empreendimento"].isin(emps_sel)]
@@ -1120,6 +1131,7 @@ def main() -> None:
     st.subheader(f"Comparativo de Vendas (Dia 01 ao Dia {dia_atual:02d} do Mês)")
     
     if col_data_venda:
+        # Nota: vendas_f já está filtrada por datas futuras lá em cima
         vendas_f["Data_Formatada"] = pd.to_datetime(vendas_f[col_data_venda], dayfirst=True, errors="coerce")
         df_parcial = vendas_f[vendas_f["Data_Formatada"].dt.day <= dia_atual].copy()
         
