@@ -363,6 +363,8 @@ def main() -> None:
     c_v_real = achar_coluna(df, ["VALOR REAL DE VENDA"])
     c_v_comercial = achar_coluna(df, ["VENDA COMERCIAL", "Venda Comercial"])
     
+    c_ps_direcional = achar_coluna(df, ["PS DIRECIONAL"])
+    c_ps_emcash = achar_coluna(df, ["PS EMCASH"])
     c_renda = achar_coluna(df, ["RENDA APURADA", "Renda Apurada"])
     c_fin_real = achar_coluna(df, ["FINANCIAMENTO REAL", "Financiamento Real"])
     c_sub_real = achar_coluna(df, ["SUBSÍDIO REAL", "Subsídio Real", "Subsidio Real"])
@@ -400,7 +402,7 @@ def main() -> None:
         df["Unidade de Negócio"] = "Não Informado"
 
     # -------------------------------------------------------------------------
-    # Limpeza de Dados: Regras Solicitadas
+    # Limpeza de Dados: Regras Solicitadas (Atualizado)
     # -------------------------------------------------------------------------
     def _is_invalid_value(val, is_numeric=False, allow_zero=False):
         if pd.isna(val): return True
@@ -413,15 +415,23 @@ def main() -> None:
                 if s in ("0", "0.0", "0,0"): return True
         return False
 
-    # 1. RENDA APURADA: exclui 0 e ""
+    # 1. PS DIRECIONAL: exclui 0 e ""
+    if c_ps_direcional:
+        df = df[~df[c_ps_direcional].apply(lambda x: _is_invalid_value(x, is_numeric=True, allow_zero=False))]
+        
+    # 2. PS EMCASH: exclui 0 e ""
+    if c_ps_emcash:
+        df = df[~df[c_ps_emcash].apply(lambda x: _is_invalid_value(x, is_numeric=True, allow_zero=False))]
+
+    # 3. RENDA APURADA: exclui 0 e ""
     if c_renda:
         df = df[~df[c_renda].apply(lambda x: _is_invalid_value(x, is_numeric=True, allow_zero=False))]
     
-    # 2. FINANCIAMENTO REAL: exclui 0 e ""
+    # 4. FINANCIAMENTO REAL: exclui 0 e ""
     if c_fin_real:
         df = df[~df[c_fin_real].apply(lambda x: _is_invalid_value(x, is_numeric=True, allow_zero=False))]
         
-    # 3. SUBSÍDIO REAL: exclui "", mas MANTÉM 0
+    # 5. SUBSÍDIO REAL: exclui "", mas MANTÉM 0
     if c_sub_real:
         df = df[~df[c_sub_real].apply(lambda x: _is_invalid_value(x, is_numeric=True, allow_zero=True))]
 
