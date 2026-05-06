@@ -266,12 +266,12 @@ def ler_aba_gsheets(service_account_info: Dict[str, Any], spreadsheet_id: str, w
     try:
         ws = sh.worksheet(nome)
     except gspread.WorksheetNotFound:
-        for w in sh.worksheet():
+        for w in sh.worksheets():
             if w.title.strip() == nome:
                 ws = w
                 break
         else:
-            for w in sh.worksheet():
+            for w in sh.worksheets():
                 if w.title.strip().lower() == nome.lower():
                     ws = w
                     break
@@ -379,10 +379,40 @@ def main() -> None:
         return
 
     # -------------------------------------------------------------------------
-    # Filtro Obrigatório: Venda Comercial == 1
+    # Filtro Obrigatório Inicial: Venda Comercial == 1
     # -------------------------------------------------------------------------
     if c_v_comercial and c_v_comercial in df.columns:
         df = df[pd.to_numeric(df[c_v_comercial], errors='coerce') == 1]
+
+    # -------------------------------------------------------------------------
+    # Limpeza de Dados: Filtros de Regra de Negócio (Obrigatórios)
+    # -------------------------------------------------------------------------
+    def _is_invalid_value(val, is_numeric=False, allow_zero=False):
+        if pd.isna(val): return True
+        s = str(val).strip().upper()
+        if s in ("", "#N/A", "NAN", "NA", "NONE", "NULL"): return True
+        if not allow_zero:
+            if is_numeric:
+                if parse_valor_br(val) == 0.0: return True
+            else:
+                if s in ("0", "0.0", "0,0"): return True
+        return False
+
+    # 1. PS DIRECIONAL: exclui 0 e ""
+    if c_ps_direcional:
+        df = df[~df[c_ps_direcional].apply(lambda x: _is_invalid_value(x, is_numeric=True, allow_zero=False))]
+        
+    # 2. RENDA APURADA: exclui 0 e ""
+    if c_renda:
+        df = df[~df[c_renda].apply(lambda x: _is_invalid_value(x, is_numeric=True, allow_zero=False))]
+    
+    # 3. FINANCIAMENTO REAL: exclui 0 e ""
+    if c_fin_real:
+        df = df[~df[c_fin_real].apply(lambda x: _is_invalid_value(x, is_numeric=True, allow_zero=False))]
+        
+    # 4. SUBSÍDIO REAL: exclui "", mas MANTÉM 0
+    if c_sub_real:
+        df = df[~df[c_sub_real].apply(lambda x: _is_invalid_value(x, is_numeric=True, allow_zero=True))]
 
     # -------------------------------------------------------------------------
     # Regra Unidade de Negócio
@@ -402,7 +432,7 @@ def main() -> None:
         df["Unidade de Negócio"] = "Não Informado"
 
     # -------------------------------------------------------------------------
-    # Limpeza de Dados e Conversão de Valores
+    # Tratamento de Datas e Financeiro
     # -------------------------------------------------------------------------
     df["Data_Formatada"] = pd.to_datetime(df[c_data], dayfirst=True, errors="coerce")
     df = df.dropna(subset=["Data_Formatada"]) 
@@ -413,7 +443,6 @@ def main() -> None:
     df["Valor_FinSub_Real"] = df[c_val_fin_sub_real].apply(parse_valor_br) if c_val_fin_sub_real else 0.0
     df["Gap_FinSub"] = df["Valor_FinSub_Real"] - df["VGV_Real"]
     
-    # Colunas adicionais solicitadas convertidas para numerico
     df["Fin_Real_Num"] = df[c_fin_real].apply(parse_valor_br) if c_fin_real else 0.0
     df["Sub_Real_Num"] = df[c_sub_real].apply(parse_valor_br) if c_sub_real else 0.0
     df["PS_Dir_Num"] = df[c_ps_direcional].apply(parse_valor_br) if c_ps_direcional else 0.0
@@ -507,7 +536,6 @@ def main() -> None:
             if not coluna_agrupamento or coluna_agrupamento not in df_input.columns or df_input.empty: return
             st.subheader(f"Gaps por {label_tabela}")
             
-            # Se for Nome da Oportunidade, incluímos mais colunas detalhadas
             if coluna_agrupamento == c_nome_op:
                 tab = df_input.groupby(coluna_agrupamento, as_index=False).agg(
                     VGV_Real=("VGV_Real", "sum"),
