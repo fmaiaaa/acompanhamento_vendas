@@ -550,11 +550,11 @@ def parse_valor_br(val: Any) -> float:
 
 
 def extrair_mes_looker(val: Any) -> Optional[int]:
-    if pd.isna(val): return None
+    if val is None or pd.isna(val): return None
     s = str(val).strip().lower()
-    if not s or s == "nan" or s == "": return None
+    if not s or s in ("nan", "null", ""): return None
     
-    # Se contiver barra (Ex: Dezembro/2025 ou 12/2025)
+    # Se contiver barra (Ex: Dezembro/2026 ou 12/2026)
     if "/" in s:
         parte_mes = s.split("/")[0].strip()
         if parte_mes.isdigit():
@@ -563,9 +563,10 @@ def extrair_mes_looker(val: Any) -> Optional[int]:
         for k, v in MESES_TEXTO_MAP.items():
             if k in parte_mes: return v
 
-    # Fallback se vier apenas o nome do mês isolado ou número direto
-    if s.isdigit():
-        m = int(s)
+    # Fallback numérico ou nominal direto
+    cleaned = re.sub(r"[^\d]", "", s)
+    if cleaned.isdigit() and len(cleaned) <= 2:
+        m = int(cleaned)
         if 1 <= m <= 12: return m
     for k, v in MESES_TEXTO_MAP.items():
         if k in s: return v
@@ -573,17 +574,14 @@ def extrair_mes_looker(val: Any) -> Optional[int]:
 
 
 def extrair_ano_looker(val: Any) -> Optional[int]:
-    if pd.isna(val): return None
+    if val is None or pd.isna(val): return None
     s = str(val).strip().lower()
-    if not s or s == "nan" or s == "": return None
+    if not s or s in ("nan", "null", ""): return None
     
     if "/" in s:
-        parte_ano = s.split("/")[-1].strip()
-        if parte_ano.isdigit():
-            ano = int(parte_ano)
-            if ano > 2000: return ano
-            
-    # Fallback se vier apenas o número do ano isolado
+        s = s.split("/")[-1].strip()
+        
+    # Limpa formatação de milhar como '2.026' ou '2 026' deixando apenas números puros
     cleaned = re.sub(r"[^\d]", "", s)
     if len(cleaned) == 4 and cleaned.isdigit():
         ano = int(cleaned)
@@ -848,7 +846,7 @@ def main() -> None:
         df_vendas["Tipo_Venda"] = "Normal"
 
     # -------------------------------------------------------------------------
-    # Tratamento de Datas Preciso (Baseado no Mês da Venda - Looker Mês/Ano)
+    # Tratamento de Datas Limpo e Resiliente (Suporta 2.026 e 2026)
     # -------------------------------------------------------------------------
     if col_mes_looker:
         df_vendas["_mes"] = df_vendas[col_mes_looker].apply(extrair_mes_looker)
@@ -857,7 +855,7 @@ def main() -> None:
         df_vendas["_mes"] = df_vendas[col_mes_venda].apply(extrair_mes_looker) if col_mes_venda else None
         df_vendas["_ano"] = df_vendas[col_ano].apply(extrair_ano_looker) if col_ano else None
 
-    # Fallback definitivo caso falhe a extração do Looker (Pela data bruta da venda)
+    # Fallback caso falhe a extração estruturada do Looker
     def aplicar_fallback_mes_final(row: pd.Series) -> Optional[int]:
         if pd.notna(row["_mes"]): return int(row["_mes"])
         if col_data_venda and pd.notna(row[col_data_venda]):
@@ -870,7 +868,7 @@ def main() -> None:
         if col_data_venda and pd.notna(row[col_data_venda]):
             parts = str(row[col_data_venda]).split("/")
             if len(parts) >= 3:
-                ano_str = parts[2].split()[0]
+                ano_str = re.sub(r"[^\d]", "", parts[2].split()[0])
                 if ano_str.isdigit(): return int(ano_str)
         return None
 
@@ -890,15 +888,15 @@ def main() -> None:
     else:
         df_vendas['Canal_Agrupado'] = 'DV RJ'
 
-    # --- FILTRO DE DATAS FUTURAS ---
+    # --- FILTRO DEFENSIVO DE DATAS FUTURAS (Garante entrada de vendas de hoje) ---
     if col_data_venda:
         df_vendas["_data_dt"] = pd.to_datetime(df_vendas[col_data_venda], dayfirst=True, errors="coerce")
-        hoje = datetime.now()
-        df_vendas = df_vendas[df_vendas["_data_dt"] <= hoje]
-    # -------------------------------
+        hoje_limite = datetime.now().replace(hour=23, minute=59, second=59)
+        df_vendas = df_vendas[df_vendas["_data_dt"] <= hoje_limite]
+    # -----------------------------------------------------------------------------
 
     # -------------------------------------------------------------------------
-    # Multiplicação e Distribuição Segura das Vendas com Coordenador (Sem Deletar Linhas)
+    # Multiplicação e Distribuição Segura das Vendas com Coordenador
     # -------------------------------------------------------------------------
     map_emp_regiao = df_metas[["Empreendimento", "Regiao_Coord", "_peso_coord"]].drop_duplicates()
     
