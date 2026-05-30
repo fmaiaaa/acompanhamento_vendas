@@ -549,39 +549,41 @@ def parse_valor_br(val: Any) -> float:
     except ValueError: return 0.0
 
 
-def extrair_mes_looker(val: Any) -> Optional[int]:
+def extrair_mes_da_data_venda(val: Any) -> Optional[int]:
     if val is None or pd.isna(val): return None
-    s = str(val).strip().lower()
+    s = str(val).strip()
     if not s or s in ("nan", "null", ""): return None
     
+    # Extrai o mês do formato DD/MM/AAAA ou DD/MM/AAAA HH:MM
     if "/" in s:
-        parte_mes = s.split("/")[0].strip()
-        if parte_mes.isdigit():
-            m = int(parte_mes)
+        parts = s.split("/")
+        if len(parts) >= 2 and parts[1].isdigit():
+            m = int(parts[1])
             if 1 <= m <= 12: return m
-        for k, v in MESES_TEXTO_MAP.items():
-            if k in parte_mes: return v
-
-    cleaned = re.sub(r"[^\d]", "", s)
-    if cleaned.isdigit() and len(cleaned) <= 2:
-        m = int(cleaned)
-        if 1 <= m <= 12: return m
+            
+    # Fallback se cair o texto nominal puro
     for k, v in MESES_TEXTO_MAP.items():
-        if k in s: return v
+        if k in s.lower(): return v
     return None
 
 
-def extrair_ano_looker(val: Any) -> Optional[int]:
+def extrair_ano_da_data_venda(val: Any) -> Optional[int]:
     if val is None or pd.isna(val): return None
-    s = str(val).strip().lower()
+    s = str(val).strip()
     if not s or s in ("nan", "null", ""): return None
     
+    # Extrai o ano do formato DD/MM/AAAA ou DD/MM/AAAA HH:MM
     if "/" in s:
-        s = s.split("/")[-1].strip()
-        
+        parts = s.split("/")
+        if len(parts) >= 3:
+            ano_str = re.sub(r"[^\d]", "", parts[2].split()[0])
+            if len(ano_str) == 4 and ano_str.isdigit():
+                return int(ano_str)
+                
+    # Fallback secundário limpando pontos flutuantes de exportação (Ex: 52.026)
     cleaned = re.sub(r"[^\d]", "", s)
-    if len(cleaned) == 4 and cleaned.isdigit():
-        ano = int(cleaned)
+    if len(cleaned) >= 4:
+        ano = int(cleaned[-4:])
         if ano > 2000: return ano
     return None
 
@@ -843,34 +845,19 @@ def main() -> None:
         df_vendas["Tipo_Venda"] = "Normal"
 
     # -------------------------------------------------------------------------
-    # Tratamento de Datas Limpo e Resiliente (Suporta 2.026 e 2026)
+    # Extração de Data Segura e Corrigida com Foco Base na 'Data da venda' real
     # -------------------------------------------------------------------------
-    if col_mes_looker:
-        df_vendas["_mes"] = df_vendas[col_mes_looker].apply(extrair_mes_looker)
-        df_vendas["_ano"] = df_vendas[col_mes_looker].apply(extrair_ano_looker)
+    if col_data_venda:
+        df_vendas["_mes"] = df_vendas[col_data_venda].apply(extrair_mes_da_data_venda)
+        df_vendas["_ano"] = df_vendas[col_data_venda].apply(extrair_ano_da_data_venda)
     else:
-        df_vendas["_mes"] = df_vendas[col_mes_venda].apply(extrair_mes_looker) if col_mes_venda else None
-        df_vendas["_ano"] = df_vendas[col_ano].apply(extrair_ano_looker) if col_ano else None
-
-    # Fallback caso falhe a extração estruturada do Looker
-    def aplicar_fallback_mes_final(row: pd.Series) -> Optional[int]:
-        if pd.notna(row["_mes"]): return int(row["_mes"])
-        if col_data_venda and pd.notna(row[col_data_venda]):
-            parts = str(row[col_data_venda]).split("/")
-            if len(parts) >= 2 and parts[1].isdigit(): return int(parts[1])
-        return None
-
-    def aplicar_fallback_ano_final(row: pd.Series) -> Optional[int]:
-        if pd.notna(row["_ano"]): return int(row["_ano"])
-        if col_data_venda and pd.notna(row[col_data_venda]):
-            parts = str(row[col_data_venda]).split("/")
-            if len(parts) >= 3:
-                ano_str = re.sub(r"[^\d]", "", parts[2].split()[0])
-                if ano_str.isdigit(): return int(ano_str)
-        return None
-
-    df_vendas["_mes"] = df_vendas.apply(aplicar_fallback_mes_final, axis=1)
-    df_vendas["_ano"] = df_vendas.apply(aplicar_fallback_ano_final, axis=1)
+        # Fallbacks caso a coluna mestre de data falhe por algum motivo
+        if col_mes_looker:
+            df_vendas["_mes"] = df_vendas[col_mes_looker].apply(extrair_mes_looker)
+            df_vendas["_ano"] = df_vendas[col_mes_looker].apply(extrair_ano_looker)
+        else:
+            df_vendas["_mes"] = df_vendas[col_mes_venda].apply(extrair_mes_looker) if col_mes_venda else None
+            df_vendas["_ano"] = df_vendas[col_ano].apply(extrair_ano_looker) if col_ano else None
 
     df_vendas["_vgv"] = df_vendas[col_valor].map(parse_valor_br) if col_valor else 0.0
 
@@ -885,7 +872,7 @@ def main() -> None:
     else:
         df_vendas['Canal_Agrupado'] = 'DV RJ'
 
-    # --- FILTRO DEFENSIVO DE DATAS FUTURAS (Garante entrada de vendas de hoje) ---
+    # --- FILTRO DEFENSIVO DE DATAS FUTURAS ---
     if col_data_venda:
         df_vendas["_data_dt"] = pd.to_datetime(df_vendas[col_data_venda], dayfirst=True, errors="coerce")
         hoje_limite = datetime.now().replace(hour=23, minute=59, second=59)
