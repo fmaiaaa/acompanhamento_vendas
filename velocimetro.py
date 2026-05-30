@@ -47,7 +47,9 @@ COR_INPUT_BG = "#f0f2f6"
 
 MESES_TEXTO_MAP = {
     "jan": 1, "fev": 2, "mar": 3, "abr": 4, "mai": 5, "jun": 6,
-    "jul": 7, "ago": 8, "set": 9, "out": 10, "nov": 11, "dez": 12
+    "jul": 7, "ago": 8, "set": 9, "out": 10, "nov": 11, "dez": 12,
+    "janeiro": 1, "fevereiro": 2, "março": 3, "abril": 4, "maio": 5, "junho": 6,
+    "julho": 7, "agosto": 8, "setembro": 9, "outubro": 10, "novembro": 11, "dezembro": 12
 }
 
 
@@ -547,61 +549,45 @@ def parse_valor_br(val: Any) -> float:
     except ValueError: return 0.0
 
 
-def extrair_mes(val: Any) -> Optional[int]:
+def extrair_mes_looker(val: Any) -> Optional[int]:
     if pd.isna(val): return None
-    v = str(val).strip().lower()
-    if not v: return None
-    v_date = v.split()[0]
-    if '-' in v_date:
-        p = v_date.split('-')
-        if len(p) == 3 and len(p[0]) == 4:
-            try:
-                m = int(p[1])
-                if 1 <= m <= 12: return m
-            except: pass
-    for m_str, m_num in MESES_TEXTO_MAP.items():
-        if m_str in v_date: return m_num
-    try:
-        m = int(float(v_date))
+    s = str(val).strip().lower()
+    if not s or s == "nan" or s == "": return None
+    
+    # Se contiver barra (Ex: Dezembro/2025 ou 12/2025)
+    if "/" in s:
+        parte_mes = s.split("/")[0].strip()
+        if parte_mes.isdigit():
+            m = int(parte_mes)
+            if 1 <= m <= 12: return m
+        for k, v in MESES_TEXTO_MAP.items():
+            if k in parte_mes: return v
+
+    # Fallback se vier apenas o nome do mês isolado ou número direto
+    if s.isdigit():
+        m = int(s)
         if 1 <= m <= 12: return m
-    except ValueError: pass
-    if '/' in v_date:
-        p = v_date.split('/')
-        if len(p) == 3: 
-            try:
-                m = int(p[1])
-                if 1 <= m <= 12: return m
-            except: pass
-        elif len(p) == 2: 
-            try:
-                m = int(p[0])
-                if 1 <= m <= 12: return m
-            except: pass
+    for k, v in MESES_TEXTO_MAP.items():
+        if k in s: return v
     return None
 
 
-def extrair_ano(val: Any) -> Optional[int]:
+def extrair_ano_looker(val: Any) -> Optional[int]:
     if pd.isna(val): return None
-    v = str(val).strip()
-    if not v: return None
-    v_date = v.split()[0]
-    if '-' in v_date:
-        p = v_date.split('-')
-        if len(p) == 3 and len(p[0]) == 4:
-            try:
-                ano = int(p[0])
-                if ano > 2000: return ano
-            except: pass
-    try:
-        ano = int(float(v_date))
-        if ano > 2000: return ano
-    except ValueError: pass
-    if '/' in v_date:
-        p = v_date.split('/')
-        try:
-            ano = int(p[-1])
+    s = str(val).strip().lower()
+    if not s or s == "nan" or s == "": return None
+    
+    if "/" in s:
+        parte_ano = s.split("/")[-1].strip()
+        if parte_ano.isdigit():
+            ano = int(parte_ano)
             if ano > 2000: return ano
-        except: pass
+            
+    # Fallback se vier apenas o número do ano isolado
+    cleaned = re.sub(r"[^\d]", "", s)
+    if len(cleaned) == 4 and cleaned.isdigit():
+        ano = int(cleaned)
+        if ano > 2000: return ano
     return None
 
 
@@ -813,10 +799,11 @@ def main() -> None:
     df_metas = pd.DataFrame(rows_metas)
 
     # -------------------------------------------------------------------------
-    # Colunas Vendas
+    # Colunas Vendas (Alinhado com o mapeamento exato enviado)
     # -------------------------------------------------------------------------
     col_ano = achar_coluna(df_vendas, ["Ano da Venda", "Ano Venda", "Ano"])
-    col_mes = achar_coluna(df_vendas, ["Mês da Venda - Looker", "Mês da Venda", "Mês Venda", "Mes Venda", "Mês", "Mes"])
+    col_mes_looker = achar_coluna(df_vendas, ["Mês da Venda - Looker"])
+    col_mes_venda = achar_coluna(df_vendas, ["Mês Venda"])
     col_regiao = achar_coluna(df_vendas, ["Região", "Regiao"])
     col_canal = achar_coluna(df_vendas, ["Canal"])
     col_valor = achar_coluna(df_vendas, ["Valor Real de Venda", "Valor Real", "Valor"])
@@ -826,10 +813,6 @@ def main() -> None:
     col_proprietario = achar_coluna(df_vendas, ["Proprietário da oportunidade", "Proprietario da oportunidade", "Nome da conta", "Proprietario", "Corretor"])
     col_ranking = achar_coluna(df_vendas, ["Ranking"])
     col_data_venda = achar_coluna(df_vendas, ["Data da venda", "Data Venda", "Data de venda", "Data"])
-
-    if not col_ano and not col_mes:
-        st.error("Não foi possível encontrar as colunas de Ano e Mês na aba de vendas.")
-        return
 
     if col_emp and col_emp != "Empreendimento":
         df_vendas.rename(columns={col_emp: "Empreendimento"}, inplace=True)
@@ -864,29 +847,35 @@ def main() -> None:
     else:
         df_vendas["Tipo_Venda"] = "Normal"
 
-    df_vendas["_mes_raw"] = df_vendas[col_mes].apply(extrair_mes) if col_mes else None
-    def aplicar_fallback_mes(row: pd.Series) -> Optional[int]:
-        m = row["_mes_raw"]
-        if pd.notna(m) and 1 <= m <= 12: return int(m)
-        if col_data_venda and pd.notna(row[col_data_venda]):
-            m2 = extrair_mes(row[col_data_venda])
-            if m2 and 1 <= m2 <= 12: return int(m2)
-        return None
-    df_vendas["_mes"] = df_vendas.apply(aplicar_fallback_mes, axis=1)
+    # -------------------------------------------------------------------------
+    # Tratamento de Datas Preciso (Baseado no Mês da Venda - Looker Mês/Ano)
+    # -------------------------------------------------------------------------
+    if col_mes_looker:
+        df_vendas["_mes"] = df_vendas[col_mes_looker].apply(extrair_mes_looker)
+        df_vendas["_ano"] = df_vendas[col_mes_looker].apply(extrair_ano_looker)
+    else:
+        df_vendas["_mes"] = df_vendas[col_mes_venda].apply(extrair_mes_looker) if col_mes_venda else None
+        df_vendas["_ano"] = df_vendas[col_ano].apply(extrair_ano_looker) if col_ano else None
 
-    df_vendas["_ano_raw"] = df_vendas[col_ano].apply(extrair_ano) if col_ano else None
-    def aplicar_fallback_ano(row: pd.Series) -> Optional[int]:
-        ano = row["_ano_raw"]
-        if pd.notna(ano) and ano > 2000:
-            return int(ano)
-        if col_mes and pd.notna(row[col_mes]):
-            a = extrair_ano(row[col_mes])
-            if a and a > 2000: return int(a)
+    # Fallback definitivo caso falhe a extração do Looker (Pela data bruta da venda)
+    def aplicar_fallback_mes_final(row: pd.Series) -> Optional[int]:
+        if pd.notna(row["_mes"]): return int(row["_mes"])
         if col_data_venda and pd.notna(row[col_data_venda]):
-            a = extrair_ano(row[col_data_venda])
-            if a and a > 2000: return int(a)
+            parts = str(row[col_data_venda]).split("/")
+            if len(parts) >= 2 and parts[1].isdigit(): return int(parts[1])
         return None
-    df_vendas["_ano"] = df_vendas.apply(aplicar_fallback_ano, axis=1)
+
+    def aplicar_fallback_ano_final(row: pd.Series) -> Optional[int]:
+        if pd.notna(row["_ano"]): return int(row["_ano"])
+        if col_data_venda and pd.notna(row[col_data_venda]):
+            parts = str(row[col_data_venda]).split("/")
+            if len(parts) >= 3:
+                ano_str = parts[2].split()[0]
+                if ano_str.isdigit(): return int(ano_str)
+        return None
+
+    df_vendas["_mes"] = df_vendas.apply(aplicar_fallback_mes_final, axis=1)
+    df_vendas["_ano"] = df_vendas.apply(aplicar_fallback_ano_final, axis=1)
 
     df_vendas["_vgv"] = df_vendas[col_valor].map(parse_valor_br) if col_valor else 0.0
 
@@ -913,20 +902,17 @@ def main() -> None:
     # -------------------------------------------------------------------------
     map_emp_regiao = df_metas[["Empreendimento", "Regiao_Coord", "_peso_coord"]].drop_duplicates()
     
-    # Verificação se o empreendimento existe no mapeamento de metas para evitar duplicações/descartes nulos
     lista_com_peso = []
     for _, venda_row in df_vendas.iterrows():
         emp_venda = str(venda_row["Empreendimento"]).strip()
         sub_map = map_emp_regiao[map_emp_regiao["Empreendimento"] == emp_venda]
         
         if sub_map.empty:
-            # Fallback seguro: se não achar nas metas, mantém a linha íntegra com peso 1.0
             nova_linha = venda_row.copy()
             nova_linha["_peso_coord"] = 1.0
             nova_linha["Regiao_Coord"] = venda_row.get("Região", "Não Informado")
             lista_com_peso.append(nova_linha)
         else:
-            # Se existirem coordenadores associados, distribui o peso proporcionalmente
             for _, map_row in sub_map.iterrows():
                 nova_linha = venda_row.copy()
                 nova_linha["_peso_coord"] = float(map_row["_peso_coord"])
@@ -946,7 +932,6 @@ def main() -> None:
     mes_padrao = mes_atual if mes_atual in meses_no_ano else 1
     regioes_disponiveis = sorted(set(str(x).strip() for x in df_metas["Regiao_Coord"].dropna().unique() if str(x).strip()))
     
-    # Lista de todos os empreendimentos da base de vendas (mesmo sem meta)
     todos_emps_vendas = sorted(list(set(str(x).strip() for x in df_vendas["Empreendimento"].dropna().unique() if str(x).strip())))
 
     st.markdown("<div style='margin-bottom:1rem; text-align: center;'><strong>Filtros</strong></div>", unsafe_allow_html=True)
@@ -973,7 +958,6 @@ def main() -> None:
 
     if anos_sel: vendas_f = vendas_f[vendas_f["_ano"].isin(anos_sel)]
     
-    # Filtros de meses independentes
     if meses_venda_sel:
         vendas_f = vendas_f[vendas_f["_mes"].isin(meses_venda_sel)]
     if meses_meta_sel:
@@ -1007,7 +991,6 @@ def main() -> None:
     fator_meta = min(1.0, fator_meta)
     vendas_f = vendas_f[mask_vendas]
 
-    # Meta absoluta utilizada no cálculo do funil
     total_meta_qtd_base = float(metas_f["Meta_Qtd"].sum()) if not metas_f.empty else 0.0
     total_meta_vgv_base = float(metas_f["Meta_VGV"].sum()) if not metas_f.empty else 0.0
 
