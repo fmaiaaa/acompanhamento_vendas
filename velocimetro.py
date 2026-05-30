@@ -129,7 +129,7 @@ def _logo_url_secrets() -> str | None:
     return None
 
 def _logo_url_drive_por_id_arquivo() -> str | None:
-    fid = (os.environ.get("DIRECIONAL_LOGO_FILE_ID") or "").strip()
+    fid = (os.environ.get("DIrecIONAL_LOGO_FILE_ID") or "").strip()
     if len(fid) < 10:
         return None
     return f"https://drive.google.com/uc?export=view&id={fid}"
@@ -554,7 +554,6 @@ def extrair_mes_looker(val: Any) -> Optional[int]:
     s = str(val).strip().lower()
     if not s or s in ("nan", "null", ""): return None
     
-    # Se contiver barra (Ex: Dezembro/2026 ou 12/2026)
     if "/" in s:
         parte_mes = s.split("/")[0].strip()
         if parte_mes.isdigit():
@@ -563,7 +562,6 @@ def extrair_mes_looker(val: Any) -> Optional[int]:
         for k, v in MESES_TEXTO_MAP.items():
             if k in parte_mes: return v
 
-    # Fallback numérico ou nominal direto
     cleaned = re.sub(r"[^\d]", "", s)
     if cleaned.isdigit() and len(cleaned) <= 2:
         m = int(cleaned)
@@ -581,7 +579,6 @@ def extrair_ano_looker(val: Any) -> Optional[int]:
     if "/" in s:
         s = s.split("/")[-1].strip()
         
-    # Limpa formatação de milhar como '2.026' ou '2 026' deixando apenas números puros
     cleaned = re.sub(r"[^\d]", "", s)
     if len(cleaned) == 4 and cleaned.isdigit():
         ano = int(cleaned)
