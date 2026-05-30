@@ -554,14 +554,12 @@ def extrair_mes_da_data_venda(val: Any) -> Optional[int]:
     s = str(val).strip()
     if not s or s in ("nan", "null", ""): return None
     
-    # Extrai o mês do formato DD/MM/AAAA ou DD/MM/AAAA HH:MM
     if "/" in s:
         parts = s.split("/")
         if len(parts) >= 2 and parts[1].isdigit():
             m = int(parts[1])
             if 1 <= m <= 12: return m
             
-    # Fallback se cair o texto nominal puro
     for k, v in MESES_TEXTO_MAP.items():
         if k in s.lower(): return v
     return None
@@ -572,7 +570,6 @@ def extrair_ano_da_data_venda(val: Any) -> Optional[int]:
     s = str(val).strip()
     if not s or s in ("nan", "null", ""): return None
     
-    # Extrai o ano do formato DD/MM/AAAA ou DD/MM/AAAA HH:MM
     if "/" in s:
         parts = s.split("/")
         if len(parts) >= 3:
@@ -580,7 +577,6 @@ def extrair_ano_da_data_venda(val: Any) -> Optional[int]:
             if len(ano_str) == 4 and ano_str.isdigit():
                 return int(ano_str)
                 
-    # Fallback secundário limpando pontos flutuantes de exportação (Ex: 52.026)
     cleaned = re.sub(r"[^\d]", "", s)
     if len(cleaned) >= 4:
         ano = int(cleaned[-4:])
@@ -810,6 +806,7 @@ def main() -> None:
     col_proprietario = achar_coluna(df_vendas, ["Proprietário da oportunidade", "Proprietario da oportunidade", "Nome da conta", "Proprietario", "Corretor"])
     col_ranking = achar_coluna(df_vendas, ["Ranking"])
     col_data_venda = achar_coluna(df_vendas, ["Data da venda", "Data Venda", "Data de venda", "Data"])
+    col_contrato_gerado = achar_coluna(df_vendas, ["Contrato gerado em", "Contrato gerado"])
 
     if col_emp and col_emp != "Empreendimento":
         df_vendas.rename(columns={col_emp: "Empreendimento"}, inplace=True)
@@ -851,7 +848,6 @@ def main() -> None:
         df_vendas["_mes"] = df_vendas[col_data_venda].apply(extrair_mes_da_data_venda)
         df_vendas["_ano"] = df_vendas[col_data_venda].apply(extrair_ano_da_data_venda)
     else:
-        # Fallbacks caso a coluna mestre de data falhe por algum motivo
         if col_mes_looker:
             df_vendas["_mes"] = df_vendas[col_mes_looker].apply(extrair_mes_looker)
             df_vendas["_ano"] = df_vendas[col_mes_looker].apply(extrair_ano_looker)
@@ -1108,23 +1104,26 @@ def main() -> None:
     )
 
     # -------------------------------------------------------------------------
-    # Comparativo de Vendas (Dia 1 ao Dia Atual do Mês)
+    # Comparativo de Vendas (Dia 1 ao Dia Atual do Mês usando Contrato Gerado em)
     # -------------------------------------------------------------------------
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
     dia_atual = datetime.now().day
     st.subheader(f"Comparativo de Vendas (Dia 01 ao Dia {dia_atual:02d} do Mês)")
     
-    if col_data_venda:
-        vendas_f["Data_Formatada"] = pd.to_datetime(vendas_f[col_data_venda], dayfirst=True, errors="coerce")
-        df_parcial = vendas_f[vendas_f["Data_Formatada"].dt.day <= dia_atual].copy()
+    if col_contrato_gerado:
+        vendas_f["Data_Contrato_DT"] = pd.to_datetime(vendas_f[col_contrato_gerado], dayfirst=True, errors="coerce")
+        df_parcial = vendas_f[vendas_f["Data_Contrato_DT"].dt.day <= dia_atual].copy()
         
         if not df_parcial.empty:
-            df_comp = df_parcial.groupby(["_ano", "_mes"], as_index=False).agg(
+            df_parcial["_ano_c"] = df_parcial["Data_Contrato_DT"].dt.year
+            df_parcial["_mes_c"] = df_parcial["Data_Contrato_DT"].dt.month
+            
+            df_comp = df_parcial.groupby(["_ano_c", "_mes_c"], as_index=False).agg(
                 QTD=("_qtd_venda", "sum"),
                 VGV=("_vgv_venda", "sum")
-            ).sort_values(["_ano", "_mes"])
+            ).sort_values(["_ano_c", "_mes_c"])
             
-            df_comp["Periodo"] = df_comp["_mes"].astype(str).str.zfill(2) + "/" + df_comp["_ano"].astype(str)
+            df_comp["Periodo"] = df_comp["_mes_c"].astype(str).str.zfill(2) + "/" + df_comp["_ano_c"].astype(str)
             df_comp["VGV_Formatado"] = df_comp["VGV"].apply(lambda x: fmt_br_milhoes(x))
             df_comp["QTD_Formatado"] = df_comp["QTD"].apply(lambda x: fmt_qtd(x))
             
@@ -1176,7 +1175,7 @@ def main() -> None:
         else:
             st.info(f"Não há dados de vendas no período do dia 01 ao dia {dia_atual:02d} para os filtros selecionados.")
     else:
-        st.warning("A coluna de Data da Venda não foi encontrada. Impossível filtrar os dias.")
+        st.warning("A coluna de Contrato Gerado em não foi encontrada. Impossível renderizar a linha do tempo.")
 
     st.markdown(
         f'<div class="footer" style="text-align:center;padding:1rem 0;color:{COR_TEXTO_MUTED};font-size:0.82rem;">'
