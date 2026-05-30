@@ -535,7 +535,7 @@ def parse_valor_br(val: Any) -> float:
     if val is None or (isinstance(val, float) and pd.isna(val)): return 0.0
     if isinstance(val, (int, float)): return float(val)
     s = str(val).strip().replace("R$", "").replace(" ", "").replace("\xa0", "")
-    if not s or s.lower() == "nan": return 0.0
+    if not s or s.lower() == "nan" or s.lower() == "null": return 0.0
     s = re.sub(r"[^\d.,\-]", "", s)
     if not s: return 0.0
     if "," in s and "." in s:
@@ -892,9 +892,9 @@ def main() -> None:
 
     if col_canal:
         def agrupar_canal(c: Any) -> str:
-            c_str = str(c).strip().upper()
-            prefixo = c_str.split('-')[0].strip()
-            if prefixo in ['RJ', 'RJG'] or c_str in ['RJ', 'RJG']:
+            bytes_str = str(c).strip().upper()
+            prefixo = bytes_str.split('-')[0].strip()
+            if prefixo in ['RJ', 'RJG'] or bytes_str in ['RJ', 'RJG']:
                 return 'IMOB'
             return 'DV RJ'
         df_vendas['Canal_Agrupado'] = df_vendas[col_canal].apply(agrupar_canal)
@@ -909,12 +909,31 @@ def main() -> None:
     # -------------------------------
 
     # -------------------------------------------------------------------------
-    # Multiplicação e Distribuição das Vendas de Acordo com Coordenador (Peso)
+    # Multiplicação e Distribuição Segura das Vendas com Coordenador (Sem Deletar Linhas)
     # -------------------------------------------------------------------------
     map_emp_regiao = df_metas[["Empreendimento", "Regiao_Coord", "_peso_coord"]].drop_duplicates()
-    df_vendas = df_vendas.merge(map_emp_regiao, on="Empreendimento", how="left")
-    df_vendas["_peso_coord"] = df_vendas["_peso_coord"].fillna(1.0)
-    df_vendas["Regiao_Coord"] = df_vendas["Regiao_Coord"].fillna(df_vendas.get("Região", "Não Informado"))
+    
+    # Verificação se o empreendimento existe no mapeamento de metas para evitar duplicações/descartes nulos
+    lista_com_peso = []
+    for _, venda_row in df_vendas.iterrows():
+        emp_venda = str(venda_row["Empreendimento"]).strip()
+        sub_map = map_emp_regiao[map_emp_regiao["Empreendimento"] == emp_venda]
+        
+        if sub_map.empty:
+            # Fallback seguro: se não achar nas metas, mantém a linha íntegra com peso 1.0
+            nova_linha = venda_row.copy()
+            nova_linha["_peso_coord"] = 1.0
+            nova_linha["Regiao_Coord"] = venda_row.get("Região", "Não Informado")
+            lista_com_peso.append(nova_linha)
+        else:
+            # Se existirem coordenadores associados, distribui o peso proporcionalmente
+            for _, map_row in sub_map.iterrows():
+                nova_linha = venda_row.copy()
+                nova_linha["_peso_coord"] = float(map_row["_peso_coord"])
+                nova_linha["Regiao_Coord"] = map_row["Regiao_Coord"]
+                lista_com_peso.append(nova_linha)
+
+    df_vendas = pd.DataFrame(lista_com_peso)
     df_vendas["_qtd_venda"] = 1.0 * df_vendas["_peso_coord"]
     df_vendas["_vgv_venda"] = df_vendas["_vgv"] * df_vendas["_peso_coord"]
 
@@ -932,7 +951,7 @@ def main() -> None:
 
     st.markdown("<div style='margin-bottom:1rem; text-align: center;'><strong>Filtros</strong></div>", unsafe_allow_html=True)
     
-    col_filtros = st.columns(6) # Aumentado para 6 colunas para caber o novo filtro
+    col_filtros = st.columns(6) 
     with col_filtros[0]:
         canais_sel = st.multiselect("Canal da Meta", ["RIO", "DIR", "PARC", "RJ"], default=["RIO"])
     with col_filtros[1]:
@@ -1131,7 +1150,6 @@ def main() -> None:
     st.subheader(f"Comparativo de Vendas (Dia 01 ao Dia {dia_atual:02d} do Mês)")
     
     if col_data_venda:
-        # Nota: vendas_f já está filtrada por datas futuras lá em cima
         vendas_f["Data_Formatada"] = pd.to_datetime(vendas_f[col_data_venda], dayfirst=True, errors="coerce")
         df_parcial = vendas_f[vendas_f["Data_Formatada"].dt.day <= dia_atual].copy()
         
