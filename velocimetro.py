@@ -842,7 +842,7 @@ def main() -> None:
         df_vendas["Tipo_Venda"] = "Normal"
 
     # -------------------------------------------------------------------------
-    # Extração de Data Segura e Corrigida com Foco Base na 'Data da venda' real
+    # Extração de Data Segura e Corrigida (Suporta 2.026 e 2026 nativos)
     # -------------------------------------------------------------------------
     if col_data_venda:
         df_vendas["_mes"] = df_vendas[col_data_venda].apply(extrair_mes_da_data_venda)
@@ -1104,25 +1104,25 @@ def main() -> None:
     )
 
     # -------------------------------------------------------------------------
-    # Comparativo de Vendas Eficiência (Janela Fixa: Dia 1 ao Dia Atual de Cada Mês)
+    # Comparativo de Vendas Eficiência Isolado (Janela Histórica: Dia 1 ao Dia 30 Fixos)
     # -------------------------------------------------------------------------
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
-    dia_atual = datetime.now().day
-    st.subheader(f"Comparativo de Vendas (Dia 01 ao Dia {dia_atual:02d} do Mês)")
+    st.subheader("Comparativo de Vendas (Dia 01 ao Dia 30 do Mês)")
     
     if col_contrato_gerado:
-        # Força o Pandas a converter a string com hora em formato Datetime limpo do Pandas
-        vendas_f["Data_Contrato_DT"] = pd.to_datetime(vendas_f[col_contrato_gerado], dayfirst=True, errors="coerce")
-        df_limpo_datas = vendas_f.dropna(subset=["Data_Contrato_DT"]).copy()
+        # Base de espelho limpa para o gráfico de eficiência temporal sem interferência de filtros de UI de competência
+        df_grafico_eficiencia = df_vendas.copy()
+        df_grafico_eficiencia["Data_Contrato_DT"] = pd.to_datetime(df_grafico_eficiencia[col_contrato_gerado], dayfirst=True, errors="coerce")
+        df_grafico_eficiencia = df_grafico_eficiencia.dropna(subset=["Data_Contrato_DT"])
         
-        if not df_limpo_datas.empty:
-            # Aplica o filtro de eficiência: Garante apenas contratos criados entre os dias 1 e o dia atual do mês correspondente
-            df_parcial = df_limpo_datas[df_limpo_datas["Data_Contrato_DT"].dt.day <= dia_atual].copy()
+        if not df_grafico_eficiencia.empty:
+            # Trava a janela da série histórica estritamente do dia 01 ao dia 30 de cada mês para medição justa de ritmo
+            df_parcial_janela = df_grafico_eficiencia[df_grafico_eficiencia["Data_Contrato_DT"].dt.day <= 30].copy()
             
-            df_parcial["_ano_c"] = df_parcial["Data_Contrato_DT"].dt.year
-            df_parcial["_mes_c"] = df_parcial["Data_Contrato_DT"].dt.month
+            df_parcial_janela["_ano_c"] = df_parcial_janela["Data_Contrato_DT"].dt.year
+            df_parcial_janela["_mes_c"] = df_parcial_janela["Data_Contrato_DT"].dt.month
             
-            df_comp = df_parcial.groupby(["_ano_c", "_mes_c"], as_index=False).agg(
+            df_comp = df_parcial_janela.groupby(["_ano_c", "_mes_c"], as_index=False).agg(
                 QTD=("_qtd_venda", "sum"),
                 VGV=("_vgv_venda", "sum")
             ).sort_values(["_ano_c", "_mes_c"])
@@ -1177,7 +1177,7 @@ def main() -> None:
             
             st.plotly_chart(fig_linha, use_container_width=True, config={"displayModeBar": False})
         else:
-            st.info(f"Não há dados de vendas no período do dia 01 ao dia {dia_atual:02d} para os filtros selecionados.")
+            st.info("Não há dados de vendas no período acumulado de eficiência para exibir.")
     else:
         st.warning("A coluna de Contrato Gerado em não foi encontrada. Impossível renderizar a linha do tempo.")
 
