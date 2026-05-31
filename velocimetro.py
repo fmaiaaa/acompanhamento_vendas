@@ -784,8 +784,8 @@ def main() -> None:
             new_row = row.copy()
             new_row["Coordenador"] = c
             new_row["Regiao_Coord"] = f"{row['Região']} - {c}" if c not in ("Não Informado", "nan", "") else str(row['Região'])
-            new_row["Meta_Qtd"] = float(row["Meta_Qtd"]) / n
-            new_row["Meta_VGV"] = float(row["Meta_VGV"]) / n
+            new_row["Meta_Qtd"] = float(new_row["Meta_Qtd"]) / n
+            new_row["Meta_VGV"] = float(new_row["Meta_VGV"]) / n
             new_row["_peso_coord"] = 1.0 / n
             rows_metas.append(new_row)
             
@@ -966,7 +966,7 @@ def main() -> None:
             fator_meta += 0.25
             mask_vendas |= vendas_f[col_canal].astype(str).str.upper().str.strip().apply(lambda x: x.split('-')[0].strip() == 'RJ' or x == 'RJ')
 
-    fator_meta = min(1.0, fator_meta)
+    fator_meta = min(1.0, factor_meta := fator_meta)
     vendas_f = vendas_f[mask_vendas]
 
     total_meta_qtd_base = float(metas_f["Meta_Qtd"].sum()) if not metas_f.empty else 0.0
@@ -1104,17 +1104,21 @@ def main() -> None:
     )
 
     # -------------------------------------------------------------------------
-    # Comparativo de Vendas (Dia 1 ao Dia Atual do Mês usando Contrato Gerado em)
+    # Comparativo de Vendas Eficiência (Janela Fixa: Dia 1 ao Dia Atual de Cada Mês)
     # -------------------------------------------------------------------------
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
     dia_atual = datetime.now().day
     st.subheader(f"Comparativo de Vendas (Dia 01 ao Dia {dia_atual:02d} do Mês)")
     
     if col_contrato_gerado:
+        # Força o Pandas a converter a string com hora em formato Datetime limpo do Pandas
         vendas_f["Data_Contrato_DT"] = pd.to_datetime(vendas_f[col_contrato_gerado], dayfirst=True, errors="coerce")
-        df_parcial = vendas_f[vendas_f["Data_Contrato_DT"].dt.day <= dia_atual].copy()
+        df_limpo_datas = vendas_f.dropna(subset=["Data_Contrato_DT"]).copy()
         
-        if not df_parcial.empty:
+        if not df_limpo_datas.empty:
+            # Aplica o filtro de eficiência: Garante apenas contratos criados entre os dias 1 e o dia atual do mês correspondente
+            df_parcial = df_limpo_datas[df_limpo_datas["Data_Contrato_DT"].dt.day <= dia_atual].copy()
+            
             df_parcial["_ano_c"] = df_parcial["Data_Contrato_DT"].dt.year
             df_parcial["_mes_c"] = df_parcial["Data_Contrato_DT"].dt.month
             
