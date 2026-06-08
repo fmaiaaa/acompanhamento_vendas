@@ -391,7 +391,7 @@ def aplicar_estilo() -> None:
         }}
         .vel-kpi .val--red {{ color: {COR_VERMELHO} !important; }}
         div[data-testid="stMetric"] {{
-            background: rgba(255,255,255,0.6);
+            background: rgba(255,255,256,0.6);
             padding: 12px;
             border-radius: 12px;
             border: 1px solid {COR_BORDA};
@@ -529,7 +529,7 @@ def _fingerprint_credenciais(info: Dict[str, Any]) -> str:
 def ler_planilha_aba_df(spreadsheet_id: str, worksheet: str, _cred_fp: str) -> pd.DataFrame:
     raw = _secrets_connections_gsheets()
     info = montar_service_account_info(raw)
-    if not info: raise ValueError("Credenciais [connections.gsheets] ausentes ou incompletas.")
+    if not info: raise ValueError("Credenciais [connections.gsheets] ausentes ou incompleta.")
     return ler_aba_gsheets(info, spreadsheet_id, worksheet)
 
 
@@ -554,14 +554,12 @@ def extrair_mes_da_data_venda(val: Any) -> Optional[int]:
     s = str(val).strip()
     if not s or s in ("nan", "null", ""): return None
     
-    # Extrai o mês do formato DD/MM/AAAA ou DD/MM/AAAA HH:MM
     if "/" in s:
         parts = s.split("/")
         if len(parts) >= 2 and parts[1].isdigit():
             m = int(parts[1])
             if 1 <= m <= 12: return m
             
-    # Fallback se cair o texto nominal puro
     for k, v in MESES_TEXTO_MAP.items():
         if k in s.lower(): return v
     return None
@@ -572,7 +570,6 @@ def extrair_ano_da_data_venda(val: Any) -> Optional[int]:
     s = str(val).strip()
     if not s or s in ("nan", "null", ""): return None
     
-    # Extrai o ano do formato DD/MM/AAAA ou DD/MM/AAAA HH:MM
     if "/" in s:
         parts = s.split("/")
         if len(parts) >= 3:
@@ -580,7 +577,6 @@ def extrair_ano_da_data_venda(val: Any) -> Optional[int]:
             if len(ano_str) == 4 and ano_str.isdigit():
                 return int(ano_str)
                 
-    # Fallback secundário limpando pontos flutuantes de exportação (Ex: 52.026)
     cleaned = re.sub(r"[^\d]", "", s)
     if len(cleaned) >= 4:
         ano = int(cleaned[-4:])
@@ -788,8 +784,8 @@ def main() -> None:
             new_row = row.copy()
             new_row["Coordenador"] = c
             new_row["Regiao_Coord"] = f"{row['Região']} - {c}" if c not in ("Não Informado", "nan", "") else str(row['Região'])
-            new_row["Meta_Qtd"] = float(row["Meta_Qtd"]) / n
-            new_row["Meta_VGV"] = float(row["Meta_VGV"]) / n
+            new_row["Meta_Qtd"] = float(new_row["Meta_Qtd"]) / n
+            new_row["Meta_VGV"] = float(new_row["Meta_VGV"]) / n
             new_row["_peso_coord"] = 1.0 / n
             rows_metas.append(new_row)
             
@@ -810,6 +806,7 @@ def main() -> None:
     col_proprietario = achar_coluna(df_vendas, ["Proprietário da oportunidade", "Proprietario da oportunidade", "Nome da conta", "Proprietario", "Corretor"])
     col_ranking = achar_coluna(df_vendas, ["Ranking"])
     col_data_venda = achar_coluna(df_vendas, ["Data da venda", "Data Venda", "Data de venda", "Data"])
+    col_contrato_gerado = achar_coluna(df_vendas, ["Contrato gerado em", "Contrato gerado"])
 
     if col_emp and col_emp != "Empreendimento":
         df_vendas.rename(columns={col_emp: "Empreendimento"}, inplace=True)
@@ -845,13 +842,12 @@ def main() -> None:
         df_vendas["Tipo_Venda"] = "Normal"
 
     # -------------------------------------------------------------------------
-    # Extração de Data Segura e Corrigida com Foco Base na 'Data da venda' real
+    # Extração de Data Segura e Corrigida (Suporta 2.026 e 2026 nativos)
     # -------------------------------------------------------------------------
     if col_data_venda:
         df_vendas["_mes"] = df_vendas[col_data_venda].apply(extrair_mes_da_data_venda)
         df_vendas["_ano"] = df_vendas[col_data_venda].apply(extrair_ano_da_data_venda)
     else:
-        # Fallbacks caso a coluna mestre de data falhe por algum motivo
         if col_mes_looker:
             df_vendas["_mes"] = df_vendas[col_mes_looker].apply(extrair_mes_looker)
             df_vendas["_ano"] = df_vendas[col_mes_looker].apply(extrair_ano_looker)
@@ -871,13 +867,6 @@ def main() -> None:
         df_vendas['Canal_Agrupado'] = df_vendas[col_canal].apply(agrupar_canal)
     else:
         df_vendas['Canal_Agrupado'] = 'DV RJ'
-
-    # --- FILTRO DEFENSIVO DE DATAS FUTURAS ---
-    if col_data_venda:
-        df_vendas["_data_dt"] = pd.to_datetime(df_vendas[col_data_venda], dayfirst=True, errors="coerce")
-        hoje_limite = datetime.now().replace(hour=23, minute=59, second=59)
-        df_vendas = df_vendas[df_vendas["_data_dt"] <= hoje_limite]
-    # -----------------------------------------------------------------------------
 
     # -------------------------------------------------------------------------
     # Multiplicação e Distribuição Segura das Vendas com Coordenador
@@ -947,7 +936,11 @@ def main() -> None:
         
     if regioes_sel:
         metas_f = metas_f[metas_f["Regiao_Coord"].isin(regioes_sel)]
-        vendas_f = vendas_f[vendas_f["Regiao_Coord"].isin(regioes_sel)]
+        if not emps_sel:
+            regioes_base = [r.split(" - ")[0].strip() for r in regioes_sel]
+            vendas_f = vendas_f[vendas_f["Regiao_Coord"].isin(regioes_sel) | vendas_f["Região"].isin(regioes_base)]
+        else:
+            vendas_f = vendas_f[vendas_f["Regiao_Coord"].isin(regioes_sel)]
     
     if emps_sel:
         metas_f = metas_f[metas_f["Empreendimento"].isin(emps_sel)]
@@ -970,7 +963,7 @@ def main() -> None:
             fator_meta += 0.25
             mask_vendas |= vendas_f[col_canal].astype(str).str.upper().str.strip().apply(lambda x: x.split('-')[0].strip() == 'RJ' or x == 'RJ')
 
-    fator_meta = min(1.0, fator_meta)
+    fator_meta = min(1.0, factor_meta := fator_meta)
     vendas_f = vendas_f[mask_vendas]
 
     total_meta_qtd_base = float(metas_f["Meta_Qtd"].sum()) if not metas_f.empty else 0.0
@@ -1108,23 +1101,31 @@ def main() -> None:
     )
 
     # -------------------------------------------------------------------------
-    # Comparativo de Vendas (Dia 1 ao Dia Atual do Mês)
+    # Comparativo de Vendas Eficiência Isolado (Janela Histórica: Dia 1 ao Dia Atual MTD)
     # -------------------------------------------------------------------------
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
-    dia_atual = datetime.now().day
-    st.subheader(f"Comparativo de Vendas (Dia 01 ao Dia {dia_atual:02d} do Mês)")
+    dia_atual_janela = datetime.now().day
+    st.subheader(f"Comparativo de Vendas (Dia 01 ao Dia {dia_atual_janela:02d} do Mês)")
     
-    if col_data_venda:
-        vendas_f["Data_Formatada"] = pd.to_datetime(vendas_f[col_data_venda], dayfirst=True, errors="coerce")
-        df_parcial = vendas_f[vendas_f["Data_Formatada"].dt.day <= dia_atual].copy()
+    if col_contrato_gerado:
+        # Base de espelho limpa para o gráfico de eficiência temporal sem interferência de filtros de UI de competência
+        df_grafico_eficiencia = df_vendas.copy()
+        df_grafico_eficiencia["Data_Contrato_DT"] = pd.to_datetime(df_grafico_eficiencia[col_contrato_gerado], dayfirst=True, errors="coerce")
+        df_grafico_eficiencia = df_grafico_eficiencia.dropna(subset=["Data_Contrato_DT"])
         
-        if not df_parcial.empty:
-            df_comp = df_parcial.groupby(["_ano", "_mes"], as_index=False).agg(
+        if not df_grafico_eficiencia.empty:
+            # Trava a janela da série histórica estritamente do dia 01 ao dia atual de cada mês para medição justa de ritmo MTD
+            df_parcial_janela = df_grafico_eficiencia[df_grafico_eficiencia["Data_Contrato_DT"].dt.day <= dia_atual_janela].copy()
+            
+            df_parcial_janela["_ano_c"] = df_parcial_janela["Data_Contrato_DT"].dt.year
+            df_parcial_janela["_mes_c"] = df_parcial_janela["Data_Contrato_DT"].dt.month
+            
+            df_comp = df_parcial_janela.groupby(["_ano_c", "_mes_c"], as_index=False).agg(
                 QTD=("_qtd_venda", "sum"),
                 VGV=("_vgv_venda", "sum")
-            ).sort_values(["_ano", "_mes"])
+            ).sort_values(["_ano_c", "_mes_c"])
             
-            df_comp["Periodo"] = df_comp["_mes"].astype(str).str.zfill(2) + "/" + df_comp["_ano"].astype(str)
+            df_comp["Periodo"] = df_comp["_mes_c"].astype(str).str.zfill(2) + "/" + df_comp["_ano_c"].astype(str)
             df_comp["VGV_Formatado"] = df_comp["VGV"].apply(lambda x: fmt_br_milhoes(x))
             df_comp["QTD_Formatado"] = df_comp["QTD"].apply(lambda x: fmt_qtd(x))
             
@@ -1174,9 +1175,9 @@ def main() -> None:
             
             st.plotly_chart(fig_linha, use_container_width=True, config={"displayModeBar": False})
         else:
-            st.info(f"Não há dados de vendas no período do dia 01 ao dia {dia_atual:02d} para os filtros selecionados.")
+            st.info("Não há dados de vendas no período acumulado de eficiência para exibir.")
     else:
-        st.warning("A coluna de Data da Venda não foi encontrada. Impossível filtrar os dias.")
+        st.warning("A coluna de Contrato Gerado em não foi encontrada. Impossível renderizar a linha do tempo.")
 
     st.markdown(
         f'<div class="footer" style="text-align:center;padding:1rem 0;color:{COR_TEXTO_MUTED};font-size:0.82rem;">'
