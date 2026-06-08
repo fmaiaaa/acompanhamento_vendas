@@ -391,7 +391,7 @@ def aplicar_estilo() -> None:
         }}
         .vel-kpi .val--red {{ color: {COR_VERMELHO} !important; }}
         div[data-testid="stMetric"] {{
-            background: rgba(255,255,255,0.6);
+            background: rgba(255,255,256,0.6);
             padding: 12px;
             border-radius: 12px;
             border: 1px solid {COR_BORDA};
@@ -867,13 +867,6 @@ def main() -> None:
         df_vendas['Canal_Agrupado'] = df_vendas[col_canal].apply(agrupar_canal)
     else:
         df_vendas['Canal_Agrupado'] = 'DV RJ'
-
-    # --- FILTRO DEFENSIVO DE DATAS FUTURAS ---
-    if col_data_venda:
-        df_vendas["_data_dt"] = pd.to_datetime(df_vendas[col_data_venda], dayfirst=True, errors="coerce")
-        hoje_limite = datetime.now().replace(hour=23, minute=59, second=59)
-        df_vendas = df_vendas[df_vendas["_data_dt"] <= hoje_limite]
-    # -----------------------------------------------------------------------------
 
     # -------------------------------------------------------------------------
     # Multiplicação e Distribuição Segura das Vendas com Coordenador
