@@ -887,7 +887,8 @@ def render_projecao_vendas(proj: Dict[str, Any]) -> None:
     st.caption(
         f"Regressão diária (dia do mês + dia da semana + mês) · treino "
         f"{proj['inicio_treino'].strftime('%d/%m/%Y')} a {proj['fim_treino'].strftime('%d/%m/%Y')} "
-        f"(52 semanas, até o dia anterior) · R² treino: {proj['r2_treino']:.2f}"
+        f"(52 semanas, até o dia anterior) · R² treino: {proj['r2_treino']:.2f} · "
+        f"MTD atingido (Contrato gerado em): {fmt_qtd(proj['qtd_mtd'])} vendas / {fmt_br_milhoes(proj['vgv_mtd'])}"
     )
 
     st.markdown(
@@ -1448,7 +1449,7 @@ def main() -> None:
     meta_vgv_proj = float(metas_mes_atual["Meta_VGV"].sum()) if not metas_mes_atual.empty else float(total_meta_vgv)
 
     if col_contrato_gerado:
-        # df_vendas já está filtrado em Venda Comercial?; aplica filtros de região/emp/canal da UI
+        # Base comercial; mesmos filtros de região/emp/canal do painel (RIO = todas as vendas).
         base_proj = df_vendas.copy()
         if regioes_sel:
             if "Região" in base_proj.columns:
@@ -1460,22 +1461,19 @@ def main() -> None:
                 base_proj = base_proj[base_proj["Regiao_Coord"].isin(regioes_sel)]
         if emps_sel:
             base_proj = base_proj[base_proj["Empreendimento"].isin(emps_sel)]
-        # mesmo recorte de canal da UI
-        if not (len(canais_sel) == 4 or set(canais_sel) == {"RIO", "DIR", "PARC", "RJ"}):
+
+        # Mesma regra do KPI: RIO (ou vazio) = 100% das vendas comerciais; senão, recorte por canal.
+        if canais_sel and "RIO" not in canais_sel:
             mask_p = pd.Series(False, index=base_proj.index)
-            if "RIO" in canais_sel:
+            if "DIR" in canais_sel:
                 mask_p |= (base_proj["Canal_Agrupado"] == "DV RJ")
-            if "DIR" in canais_sel and col_canal:
+            if "PARC" in canais_sel and col_canal:
                 mask_p |= base_proj[col_canal].astype(str).str.upper().str.strip().apply(
                     lambda x: x.split("-")[0].strip() == "RJG" or x == "RJG"
                 )
-            if "PARC" in canais_sel and col_canal:
-                mask_p |= base_proj[col_canal].astype(str).str.upper().str.strip().apply(
-                    lambda x: x.split("-")[0].strip() == "RJ" or x == "RJ"
-                )
             if "RJ" in canais_sel and col_canal:
                 mask_p |= base_proj[col_canal].astype(str).str.upper().str.strip().apply(
-                    lambda x: x.split("-")[0].strip() in ("RJ", "RJG") or x in ("RJ", "RJG")
+                    lambda x: x.split("-")[0].strip() == "RJ" or x == "RJ"
                 )
             base_proj = base_proj[mask_p]
 
