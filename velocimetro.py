@@ -916,6 +916,95 @@ def prever_qtd_medias(
     return np.asarray(out, dtype=float)
 
 
+def _matriz_explicativas_relativa(df: pd.DataFrame) -> np.ndarray:
+    """
+    One-hot com categorias de referência omitidas:
+      dia do mês → dia 1
+      dia da semana → segunda
+      mês → janeiro
+    + intercepto (= nível esperado em segunda + dia 1 + janeiro).
+    """
+    n = len(df)
+    # 30 dias (2–31) + 6 dias semana (terça–domingo) + 11 meses (fev–dez) + intercepto
+    X = np.zeros((n, 30 + 6 + 11 + 1), dtype=float)
+    X[:, -1] = 1.0
+
+    dias_semana_idx = {nome: i for i, nome in DIAS_SEMANA_PT.items()}  # 0=segunda
+    meses_idx = {nome: i for i, nome in MESES_PT.items()}  # 1=janeiro
+
+    for i, row in enumerate(df.itertuples(index=False)):
+        dia = int(row.dia_mes)
+        if 2 <= dia <= 31:
+            X[i, dia - 2] = 1.0  # colunas 0..29
+        ds = dias_semana_idx.get(str(row.dia_semana), None)
+        if ds is not None and ds >= 1:  # terça=1 .. domingo=6
+            X[i, 30 + (ds - 1)] = 1.0
+        ms = meses_idx.get(str(row.mes), None)
+        if ms is not None and ms >= 2:  # fevereiro=2 .. dezembro=12
+            X[i, 30 + 6 + (ms - 2)] = 1.0
+    return X
+
+
+def estimar_efeitos_sazonais(treino: pd.DataFrame) -> Optional[Dict[str, Any]]:
+    """
+    OLS com referência em segunda-feira, dia 1 e janeiro.
+    Retorna efeitos aditivos (qtd) e índices relativos (baseline = 1.0).
+    """
+    if treino.empty or float(treino["qtd"].sum()) <= 0 or len(treino) < 30:
+        return None
+
+    X = _matriz_explicativas_relativa(treino)
+    y = treino["qtd"].astype(float).values
+    coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+    intercepto = float(coef[-1])
+    base = intercepto if abs(intercepto) > 1e-9 else 1.0
+
+    # dia do mês
+    e_dm = [0.0]  # dia 1
+    for d in range(2, 32):
+        e_dm.append(float(coef[d - 2]))
+    df_dm = pd.DataFrame({
+        "categoria": [str(d) for d in range(1, 32)],
+        "efeito": e_dm,
+        "indice": [(base + e) / base for e in e_dm],
+    })
+
+    # dia da semana (ordem: segunda → domingo)
+    nomes_ds = [DIAS_SEMANA_PT[i] for i in range(7)]
+    e_ds = [0.0]  # segunda
+    for i in range(1, 7):
+        e_ds.append(float(coef[30 + (i - 1)]))
+    df_ds = pd.DataFrame({
+        "categoria": nomes_ds,
+        "efeito": e_ds,
+        "indice": [(base + e) / base for e in e_ds],
+    })
+
+    # mês (ordem: janeiro → dezembro)
+    nomes_mes = [MESES_PT[i] for i in range(1, 13)]
+    e_mes = [0.0]  # janeiro
+    for m in range(2, 13):
+        e_mes.append(float(coef[30 + 6 + (m - 2)]))
+    df_mes = pd.DataFrame({
+        "categoria": nomes_mes,
+        "efeito": e_mes,
+        "indice": [(base + e) / base for e in e_mes],
+    })
+
+    y_hat = X @ coef
+    ss_res = float(np.sum((y - y_hat) ** 2))
+    ss_tot = float(np.sum((y - y.mean()) ** 2))
+    r2 = (1.0 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+
+    return {
+        "intercepto": intercepto,
+        "r2": r2,
+        "dia_mes": df_dm,
+        "dia_semana": df_ds,
+        "mes": df_mes,
+    }
+
+
 def _distribuir_gap_por_pesos(
     gap: float,
     pesos: np.ndarray,
@@ -1554,6 +1643,92 @@ def render_projecao_vendas(
     _plot_meta_diaria_integrada(proj)
 
 
+def _plot_barra_efeitos(
+    titulo: str,
+    df: pd.DataFrame,
+    cor: str,
+    referencia: str,
+) -> None:
+    """Barra de efeitos relativos (índice; referência = 1.0)."""
+    st.markdown(f"##### {titulo}")
+    st.caption(f"Referência: {referencia} = 1,00")
+    if df is None or df.empty:
+        return
+
+    textos = [f"{float(v):.2f}" for v in df["indice"]]
+    cores = [COR_TEXTO_PRETO if abs(float(v) - 1.0) < 1e-9 else cor for v in df["indice"]]
+
+    fig = go.Figure(
+        go.Bar(
+            x=df["categoria"],
+            y=df["indice"],
+            text=textos,
+            textposition="outside",
+            textfont=dict(size=10, color=COR_TEXTO_PRETO, family="Inter"),
+            marker_color=cores,
+            name="Índice",
+            hovertemplate="%{x}<br>Índice: %{y:.2f}<br>Efeito (qtd): %{customdata:.2f}<extra></extra>",
+            customdata=df["efeito"],
+        )
+    )
+    fig.add_hline(
+        y=1.0, line_width=1, line_dash="dot", line_color="#64748b",
+        annotation_text="Ref. = 1", annotation_position="top left",
+        annotation_font=dict(color=COR_TEXTO_PRETO, size=10),
+    )
+    fig.update_layout(
+        margin=dict(l=20, r=20, t=40, b=20),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter", color=COR_TEXTO_PRETO),
+        showlegend=False,
+        height=360,
+        bargap=0.25,
+    )
+    fig.update_xaxes(
+        title_text="",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter", size=11),
+    )
+    fig.update_yaxes(
+        title_text="Índice (ref. = 1)",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        showgrid=True,
+        gridcolor="rgba(226,232,240,0.5)",
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def render_efeitos_sazonais(efeitos: Dict[str, Any]) -> None:
+    """Seção: efeitos de dia da semana, dia do mês e mês (relativos à referência)."""
+    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
+    st.subheader("Efeitos sazonais (regressão)")
+    st.caption(
+        f"R²: {float(efeitos.get('r2', 0)):.2f} · "
+        f"Baseline (segunda + dia 1 + janeiro): {float(efeitos.get('intercepto', 0)):.2f} vendas/dia"
+    )
+
+    _plot_barra_efeitos(
+        "Efeito de dia da semana",
+        efeitos.get("dia_semana", pd.DataFrame()),
+        COR_AZUL_ESC,
+        "segunda-feira",
+    )
+    _plot_barra_efeitos(
+        "Efeito de dia do mês",
+        efeitos.get("dia_mes", pd.DataFrame()),
+        COR_VERMELHO,
+        "dia 1",
+    )
+    _plot_barra_efeitos(
+        "Efeito de mês",
+        efeitos.get("mes", pd.DataFrame()),
+        "#0f766e",
+        "janeiro",
+    )
+
+
 def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_vgv: float, vendas_qtd: float) -> None:
     meta_f = float(meta) if meta and meta > 0 else 0.0
     true_perc = (realizado / meta_f * 100.0) if meta_f > 0 else 0.0
@@ -2074,6 +2249,16 @@ def main() -> None:
             )
             if proj_sem_mes:
                 render_projecao_vendas(proj_sem_mes)
+
+            # Efeitos sazonais relativos a segunda / dia 1 / janeiro
+            hoje_ef = date.today()
+            ini_ef, fim_ef = janela_treino_meses_exatos(hoje_ef)
+            serie_ef = serie_diaria_contratos(base_proj, col_contrato_gerado)
+            if not serie_ef.empty:
+                treino_ef = calendario_diario(ini_ef, fim_ef, serie_ef)
+                efeitos = estimar_efeitos_sazonais(treino_ef)
+                if efeitos:
+                    render_efeitos_sazonais(efeitos)
         except Exception as exc:
             st.warning(f"Não foi possível calcular a projeção de vendas: {exc}")
     else:
