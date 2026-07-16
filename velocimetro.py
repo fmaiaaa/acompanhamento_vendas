@@ -43,8 +43,9 @@ COR_VERMELHO = "#cb0935"
 COR_VERMELHO_ESCURO = "#9e0828"
 COR_FUNDO_CARD = "rgba(255, 255, 255, 0.78)"
 COR_BORDA = "#eef2f6"
-COR_TEXTO_MUTED = "#64748b"
-COR_TEXTO_LABEL = "#1e293b"
+COR_TEXTO_PRETO = "#000000"
+COR_TEXTO_MUTED = "#000000"
+COR_TEXTO_LABEL = "#000000"
 COR_INPUT_BG = "#f0f2f6"
 
 MESES_TEXTO_MAP = {
@@ -293,11 +294,41 @@ def aplicar_estilo() -> None:
                 inset 0 1px 0 rgba(255, 255, 255, 0.55) !important;
             animation: fichaFadeIn 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
         }}
-        h1, h2, h3, h4 {{
+        /* Títulos de seção do dashboard: azuis */
+        h1, h2, h3, h4,
+        [data-testid="stMarkdownContainer"] h1,
+        [data-testid="stMarkdownContainer"] h2,
+        [data-testid="stMarkdownContainer"] h3,
+        [data-testid="stMarkdownContainer"] h4 {{
             font-family: 'Montserrat', sans-serif !important;
             color: {COR_AZUL_ESC} !important;
             font-weight: 800 !important;
             text-align: center !important;
+        }}
+        /* Títulos de gráficos (#####): pretos */
+        h5, h6,
+        [data-testid="stMarkdownContainer"] h5,
+        [data-testid="stMarkdownContainer"] h6 {{
+            font-family: 'Montserrat', sans-serif !important;
+            color: {COR_TEXTO_PRETO} !important;
+            font-weight: 700 !important;
+            text-align: center !important;
+        }}
+        /* Texto geral do dashboard: preto */
+        .block-container,
+        .block-container p,
+        .block-container span,
+        .block-container label,
+        .block-container li,
+        [data-testid="stMarkdownContainer"] p,
+        [data-testid="stCaption"],
+        [data-testid="stCaptionContainer"],
+        [data-testid="stWidgetLabel"] p,
+        [data-testid="stWidgetLabel"] label,
+        div[data-baseweb="select"] span,
+        .stSelectbox label,
+        .stMultiSelect label {{
+            color: {COR_TEXTO_PRETO} !important;
         }}
         .ficha-logo-wrap {{
             text-align: center;
@@ -335,7 +366,7 @@ def aplicar_estilo() -> None:
             letter-spacing: -0.02em;
         }}
         .ficha-hero .ficha-sub {{
-            color: #475569;
+            color: {COR_TEXTO_PRETO};
             font-size: 0.95rem;
             margin: 0.45rem 0 0 0;
             line-height: 1.45;
@@ -381,14 +412,15 @@ def aplicar_estilo() -> None:
             font-weight: 700;
             text-transform: uppercase;
             letter-spacing: 0.08em;
-            color: {COR_AZUL_ESC};
+            color: {COR_TEXTO_PRETO};
             opacity: 0.85;
         }}
+        /* Valores dos boxes (rótulos de dados): mantêm azul / vermelho */
         .vel-kpi .val {{
             font-family: 'Montserrat', sans-serif;
             font-size: 1.35rem;
             font-weight: 800;
-            color: {COR_AZUL_ESC};
+            color: {COR_AZUL_ESC} !important;
             margin-top: 6px;
         }}
         .vel-kpi .val--red {{ color: {COR_VERMELHO} !important; }}
@@ -1129,22 +1161,45 @@ def _plot_projecao_mes(
         )
 
     fig.add_vline(
-        x=dia_hoje, line_width=1, line_dash="dot", line_color=COR_TEXTO_MUTED,
+        x=dia_hoje, line_width=1, line_dash="dot", line_color="#64748b",
         annotation_text="Hoje", annotation_position="top",
+        annotation_font=dict(color=COR_TEXTO_PRETO, size=11, family="Inter"),
     )
     fig.update_layout(
         barmode="group",
         margin=dict(l=20, r=20, t=40, b=20),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="Inter", color=COR_TEXTO_LABEL),
-        legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="center", x=0.5),
+        font=dict(family="Inter", color=COR_TEXTO_PRETO),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.08, xanchor="center", x=0.5,
+            font=dict(color=COR_TEXTO_PRETO, family="Inter", size=12),
+        ),
         hovermode="x unified",
         height=420,
     )
-    fig.update_xaxes(title_text="Dia do mês", dtick=1, range=[0.5, proj["ultimo_dia"] + 0.5])
-    fig.update_yaxes(title_text="Qtd. no dia", secondary_y=False, showgrid=False)
-    fig.update_yaxes(title_text="Qtd. acumulada", secondary_y=True, showgrid=True, gridcolor="rgba(226,232,240,0.5)")
+    fig.update_xaxes(
+        title_text="Dia do mês",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        dtick=1,
+        range=[0.5, proj["ultimo_dia"] + 0.5],
+    )
+    fig.update_yaxes(
+        title_text="Qtd. no dia",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        secondary_y=False,
+        showgrid=False,
+    )
+    fig.update_yaxes(
+        title_text="Qtd. acumulada",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        secondary_y=True,
+        showgrid=True,
+        gridcolor="rgba(226,232,240,0.5)",
+    )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
@@ -1224,20 +1279,36 @@ def _plot_meta_diaria_integrada(proj: Dict[str, Any]) -> None:
         )
 
     fig.add_vline(
-        x=dia_hoje, line_width=1, line_dash="dot", line_color=COR_TEXTO_MUTED,
+        x=dia_hoje, line_width=1, line_dash="dot", line_color="#64748b",
         annotation_text="Hoje", annotation_position="top",
+        annotation_font=dict(color=COR_TEXTO_PRETO, size=11, family="Inter"),
     )
     fig.update_layout(
         margin=dict(l=20, r=20, t=50, b=20),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="Inter", color=COR_TEXTO_LABEL),
-        legend=dict(orientation="h", yanchor="bottom", y=1.10, xanchor="center", x=0.5),
+        font=dict(family="Inter", color=COR_TEXTO_PRETO),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.10, xanchor="center", x=0.5,
+            font=dict(color=COR_TEXTO_PRETO, family="Inter", size=12),
+        ),
         hovermode="x unified",
         height=460,
     )
-    fig.update_xaxes(title_text="Dia do mês", dtick=1, range=[0.5, proj["ultimo_dia"] + 0.5])
-    fig.update_yaxes(title_text="Qtd. no dia", showgrid=True, gridcolor="rgba(226,232,240,0.5)")
+    fig.update_xaxes(
+        title_text="Dia do mês",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        dtick=1,
+        range=[0.5, proj["ultimo_dia"] + 0.5],
+    )
+    fig.update_yaxes(
+        title_text="Qtd. no dia",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        showgrid=True,
+        gridcolor="rgba(226,232,240,0.5)",
+    )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
@@ -1347,10 +1418,15 @@ def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_v
             },
             title={
                 "text": titulo,
-                "font": {"size": 16, "family": "Montserrat", "color": COR_AZUL_ESC},
+                "font": {"size": 16, "family": "Montserrat", "color": COR_TEXTO_PRETO},
             },
             gauge={
-                "axis": {"range": [0, axis_max], "tickwidth": 1, "tickcolor": COR_TEXTO_MUTED},
+                "axis": {
+                    "range": [0, axis_max],
+                    "tickwidth": 1,
+                    "tickcolor": "#64748b",
+                    "tickfont": {"color": COR_TEXTO_PRETO, "family": "Inter"},
+                },
                 "bar": {"color": "rgba(0,0,0,0)"},
                 "bgcolor": "white",
                 "borderwidth": 2,
@@ -1370,12 +1446,13 @@ def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_v
         margin=dict(l=24, r=24, t=56, b=24),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter", color=COR_TEXTO_PRETO),
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
     st.markdown(
         f"""
-        <div style="text-align:center;font-size:0.85rem;color:{COR_TEXTO_LABEL};margin-top:-8px;line-height:1.4;">
+        <div style="text-align:center;font-size:0.85rem;color:{COR_TEXTO_PRETO};margin-top:-8px;line-height:1.4;">
             <strong>Qtd:</strong> {fmt_qtd(vendas_qtd)} / {fmt_qtd(meta_f)} <br/>
             <strong>VGV:</strong> {fmt_br_milhoes(float(vgv))} / {fmt_br_milhoes(float(meta_vgv))}
         </div>
@@ -1723,7 +1800,13 @@ def main() -> None:
             marker={"color": ["#022654", "#04428f", "#1e60b3", "#cb0935", "#9e0828"]},
             connector={"fillcolor": "rgba(4, 66, 143, 0.15)"}
         ))
-        fig_ideal.update_layout(margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=350, font=dict(family="Inter", color=COR_TEXTO_LABEL))
+        fig_ideal.update_layout(
+            margin=dict(l=20, r=20, t=30, b=20),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            height=350,
+            font=dict(family="Inter", color=COR_TEXTO_PRETO),
+        )
         st.plotly_chart(fig_ideal, use_container_width=True, config={"displayModeBar": False})
 
     st.markdown("<br><hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
@@ -1738,7 +1821,13 @@ def main() -> None:
             marker={"color": ["#022654", "#1e60b3", "#cb0935"]},
             connector={"fillcolor": "rgba(4, 66, 143, 0.15)"}
         ))
-        fig_mkt.update_layout(margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=300, font=dict(family="Inter", color=COR_TEXTO_LABEL))
+        fig_mkt.update_layout(
+            margin=dict(l=20, r=20, t=30, b=20),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            height=300,
+            font=dict(family="Inter", color=COR_TEXTO_PRETO),
+        )
         st.plotly_chart(fig_mkt, use_container_width=True, config={"displayModeBar": False})
 
     st.markdown("<br><hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
@@ -1879,14 +1968,33 @@ def main() -> None:
                 margin=dict(l=20, r=20, t=40, b=20),
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(family="Inter", color=COR_TEXTO_LABEL),
-                legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="center", x=0.5),
-                hovermode="x unified"
+                font=dict(family="Inter", color=COR_TEXTO_PRETO),
+                legend=dict(
+                    orientation="h", yanchor="bottom", y=1.08, xanchor="center", x=0.5,
+                    font=dict(color=COR_TEXTO_PRETO, family="Inter", size=12),
+                ),
+                hovermode="x unified",
             )
-            
-            fig_linha.update_yaxes(title_text="Quantidade (Vendas)", secondary_y=False, showgrid=False)
-            fig_linha.update_yaxes(title_text="VGV Real (R$)", secondary_y=True, showgrid=True, gridcolor="rgba(226, 232, 240, 0.5)")
-            
+
+            fig_linha.update_xaxes(
+                title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+                tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+            )
+            fig_linha.update_yaxes(
+                title_text="Quantidade (Vendas)",
+                title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+                tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+                secondary_y=False,
+                showgrid=False,
+            )
+            fig_linha.update_yaxes(
+                title_text="VGV Real (R$)",
+                title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+                tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+                secondary_y=True,
+                showgrid=True,
+                gridcolor="rgba(226, 232, 240, 0.5)",
+            )
             st.plotly_chart(fig_linha, use_container_width=True, config={"displayModeBar": False})
         else:
             st.info("Não há dados de vendas no período acumulado de eficiência para exibir.")
@@ -1894,7 +2002,7 @@ def main() -> None:
         st.warning("A coluna de Contrato Gerado em não foi encontrada. Impossível renderizar a linha do tempo.")
 
     st.markdown(
-        f'<div class="footer" style="text-align:center;padding:1rem 0;color:{COR_TEXTO_MUTED};font-size:0.82rem;">'
+        f'<div class="footer" style="text-align:center;padding:1rem 0;color:{COR_TEXTO_PRETO};font-size:0.82rem;">'
         f"Direcional Engenharia · Vendas — Acompanhamento de metas</div>",
         unsafe_allow_html=True,
     )
