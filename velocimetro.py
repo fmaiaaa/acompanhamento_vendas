@@ -8,18 +8,22 @@ Funcionalidade: Engenharia Reversa, Comparativo MTD e Pesos de Coordenadores.
 from __future__ import annotations
 
 import base64
+import calendar
 import html
 import math
 import os
 import re
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
+from sklearn.linear_model import LinearRegression
+from sklearn.preprocessing import OneHotEncoder
 
 # -----------------------------------------------------------------------------
 # Identificação da planilha e Arquivos Visuais
@@ -663,6 +667,326 @@ def fmt_qtd(v: float) -> str:
     return f"{v:.1f}" if abs(v % 1) > 0.01 else str(int(v))
 
 
+DIAS_SEMANA_PT = {
+    0: "segunda",
+    1: "terça",
+    2: "quarta",
+    3: "quinta",
+    4: "sexta",
+    5: "sábado",
+    6: "domingo",
+}
+MESES_PT = {
+    1: "janeiro", 2: "fevereiro", 3: "março", 4: "abril",
+    5: "maio", 6: "junho", 7: "julho", 8: "agosto",
+    9: "setembro", 10: "outubro", 11: "novembro", 12: "dezembro",
+}
+
+
+def janela_treino_52_semanas(hoje: Optional[date] = None) -> Tuple[date, date]:
+    """
+    Corte de 1 ano: do dia atual menos 52 semanas até o dia da semana
+    anterior ao dia atual (ontem).
+    """
+    hoje = hoje or date.today()
+    fim = hoje - timedelta(days=1)
+    inicio = hoje - timedelta(weeks=52)
+    return inicio, fim
+
+
+def serie_diaria_contratos(
+    df_vendas: pd.DataFrame,
+    col_contrato: str,
+    col_qtd: str = "_qtd_venda",
+    col_vgv: str = "_vgv_venda",
+) -> pd.DataFrame:
+    """Agrega vendas comerciais por data de 'Contrato gerado em'."""
+    base = df_vendas.copy()
+    base["_dt_contrato"] = pd.to_datetime(base[col_contrato], dayfirst=True, errors="coerce")
+    base = base.dropna(subset=["_dt_contrato"])
+    if base.empty:
+        return pd.DataFrame(columns=["data", "qtd", "vgv"])
+
+    base["_data"] = base["_dt_contrato"].dt.normalize()
+    qtd_col = col_qtd if col_qtd in base.columns else None
+    vgv_col = col_vgv if col_vgv in base.columns else None
+
+    if qtd_col:
+        base["_q"] = pd.to_numeric(base[qtd_col], errors="coerce").fillna(0.0)
+    else:
+        base["_q"] = 1.0
+    if vgv_col:
+        base["_v"] = pd.to_numeric(base[vgv_col], errors="coerce").fillna(0.0)
+    else:
+        base["_v"] = 0.0
+
+    agg = (
+        base.groupby("_data", as_index=False)
+        .agg(qtd=("_q", "sum"), vgv=("_v", "sum"))
+        .rename(columns={"_data": "data"})
+    )
+    agg["data"] = pd.to_datetime(agg["data"]).dt.date
+    return agg
+
+
+def calendario_diario(inicio: date, fim: date, serie: pd.DataFrame) -> pd.DataFrame:
+    """Calendário completo com zeros nos dias sem venda (necessário para a regressão)."""
+    idx = pd.date_range(inicio, fim, freq="D")
+    cal = pd.DataFrame({"data": [d.date() for d in idx]})
+    mapa = {r["data"]: (float(r["qtd"]), float(r["vgv"])) for _, r in serie.iterrows()}
+    cal["qtd"] = cal["data"].map(lambda d: mapa.get(d, (0.0, 0.0))[0])
+    cal["vgv"] = cal["data"].map(lambda d: mapa.get(d, (0.0, 0.0))[1])
+    cal["dia_mes"] = cal["data"].map(lambda d: d.day)
+    cal["dia_semana"] = cal["data"].map(lambda d: DIAS_SEMANA_PT[d.weekday()])
+    cal["mes"] = cal["data"].map(lambda d: MESES_PT[d.month])
+    return cal
+
+
+def _matriz_explicativas(df: pd.DataFrame, encoder: Optional[OneHotEncoder] = None):
+    """One-hot de dia do mês, dia da semana e mês."""
+    X_cat = df[["dia_mes", "dia_semana", "mes"]].copy()
+    X_cat["dia_mes"] = X_cat["dia_mes"].astype(str)
+    if encoder is None:
+        encoder = OneHotEncoder(
+            categories=[
+                [str(i) for i in range(1, 32)],
+                list(DIAS_SEMANA_PT.values()),
+                list(MESES_PT.values()),
+            ],
+            handle_unknown="ignore",
+            sparse_output=False,
+        )
+        X = encoder.fit_transform(X_cat)
+        return X, encoder
+    return encoder.transform(X_cat), encoder
+
+
+def treinar_regressao_vendas_diarias(treino: pd.DataFrame) -> Tuple[LinearRegression, OneHotEncoder]:
+    X, encoder = _matriz_explicativas(treino)
+    y = treino["qtd"].astype(float).values
+    modelo = LinearRegression()
+    modelo.fit(X, y)
+    return modelo, encoder
+
+
+def prever_qtd_dias(
+    modelo: LinearRegression,
+    encoder: OneHotEncoder,
+    datas: List[date],
+) -> np.ndarray:
+    if not datas:
+        return np.array([])
+    df = pd.DataFrame({"data": datas})
+    df["dia_mes"] = df["data"].map(lambda d: d.day)
+    df["dia_semana"] = df["data"].map(lambda d: DIAS_SEMANA_PT[d.weekday()])
+    df["mes"] = df["data"].map(lambda d: MESES_PT[d.month])
+    X, _ = _matriz_explicativas(df, encoder=encoder)
+    pred = modelo.predict(X)
+    return np.maximum(pred, 0.0)
+
+
+def projetar_vendas_mes_atual(
+    df_vendas: pd.DataFrame,
+    col_contrato: str,
+    meta_vgv_mes: float,
+    hoje: Optional[date] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Regressão de qtd/dia ~ dia_mês + dia_semana + mês, janela de 52 semanas,
+    e projeção do restante do mês corrente (somente vendas comerciais na base).
+    """
+    hoje = hoje or date.today()
+    inicio, fim_treino = janela_treino_52_semanas(hoje)
+    serie = serie_diaria_contratos(df_vendas, col_contrato)
+    if serie.empty:
+        return None
+
+    treino = calendario_diario(inicio, fim_treino, serie)
+    if treino["qtd"].sum() <= 0 or len(treino) < 30:
+        return None
+
+    modelo, encoder = treinar_regressao_vendas_diarias(treino)
+
+    ano, mes = hoje.year, hoje.month
+    ultimo_dia = calendar.monthrange(ano, mes)[1]
+    dias_mes = [date(ano, mes, d) for d in range(1, ultimo_dia + 1)]
+    dias_passados = [d for d in dias_mes if d <= hoje]
+    dias_futuros = [d for d in dias_mes if d > hoje]
+
+    mapa_real = {r["data"]: float(r["qtd"]) for _, r in serie.iterrows()}
+    mapa_vgv = {r["data"]: float(r["vgv"]) for _, r in serie.iterrows()}
+
+    qtd_atingida_por_dia = [mapa_real.get(d, 0.0) for d in dias_passados]
+    vgv_mtd = sum(mapa_vgv.get(d, 0.0) for d in dias_passados)
+    qtd_mtd = float(sum(qtd_atingida_por_dia))
+
+    pred_futuro = prever_qtd_dias(modelo, encoder, dias_futuros)
+    qtd_projetada_restante = float(pred_futuro.sum()) if len(pred_futuro) else 0.0
+    qtd_projetada_mes = qtd_mtd + qtd_projetada_restante
+
+    ticket_medio = (vgv_mtd / qtd_mtd) if qtd_mtd > 0 else 0.0
+    if ticket_medio <= 0:
+        # fallback: ticket médio da janela de treino
+        q_tr = float(treino["qtd"].sum())
+        v_tr = float(treino["vgv"].sum())
+        ticket_medio = (v_tr / q_tr) if q_tr > 0 else 0.0
+
+    vgv_projetado = vgv_mtd + (qtd_projetada_restante * ticket_medio)
+    pct_vgv = (vgv_projetado / meta_vgv_mes * 100.0) if meta_vgv_mes and meta_vgv_mes > 0 else 0.0
+
+    # Série do gráfico: atingido até hoje + projetado no restante
+    qtd_diaria_plot = []
+    for d in dias_passados:
+        qtd_diaria_plot.append({"dia": d.day, "qtd": mapa_real.get(d, 0.0), "tipo": "Atingida"})
+    for i, d in enumerate(dias_futuros):
+        qtd_diaria_plot.append({"dia": d.day, "qtd": float(pred_futuro[i]), "tipo": "Projetada"})
+
+    # Acumulado: real até hoje, depois projeta a partir do acumulado MTD
+    acum = []
+    running = 0.0
+    for d in dias_passados:
+        running += mapa_real.get(d, 0.0)
+        acum.append({"dia": d.day, "acum": running, "tipo": "Atingida"})
+    for i, d in enumerate(dias_futuros):
+        running += float(pred_futuro[i])
+        acum.append({"dia": d.day, "acum": running, "tipo": "Projetada"})
+
+    X_tr, _ = _matriz_explicativas(treino, encoder=encoder)
+    r2 = float(modelo.score(X_tr, treino["qtd"].astype(float).values))
+
+    return {
+        "hoje": hoje,
+        "inicio_treino": inicio,
+        "fim_treino": fim_treino,
+        "qtd_mtd": qtd_mtd,
+        "vgv_mtd": vgv_mtd,
+        "qtd_projetada_mes": qtd_projetada_mes,
+        "vgv_projetado": vgv_projetado,
+        "pct_vgv_meta": pct_vgv,
+        "meta_vgv_mes": meta_vgv_mes,
+        "ticket_medio": ticket_medio,
+        "ultimo_dia": ultimo_dia,
+        "diaria": pd.DataFrame(qtd_diaria_plot),
+        "acumulado": pd.DataFrame(acum),
+        "r2_treino": r2,
+    }
+
+
+def render_projecao_vendas(proj: Dict[str, Any]) -> None:
+    """Seção Streamlit: cartões + gráfico atingido vs projetado."""
+    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
+    st.subheader("Projeção de Vendas")
+    st.caption(
+        f"Regressão diária (dia do mês + dia da semana + mês) · treino "
+        f"{proj['inicio_treino'].strftime('%d/%m/%Y')} a {proj['fim_treino'].strftime('%d/%m/%Y')} "
+        f"(52 semanas, até o dia anterior) · R² treino: {proj['r2_treino']:.2f}"
+    )
+
+    st.markdown(
+        f"""
+        <div class="vel-kpi-row">
+            <div class="vel-kpi">
+                <div class="lbl">Qtd. vendas (projetada)</div>
+                <div class="val">{fmt_qtd(proj['qtd_projetada_mes'])}</div>
+            </div>
+            <div class="vel-kpi">
+                <div class="lbl">VGV vendas (projetado)</div>
+                <div class="val val--red">{fmt_br_milhoes(proj['vgv_projetado'])}</div>
+            </div>
+            <div class="vel-kpi">
+                <div class="lbl">% VGV atingido (proj. vs meta)</div>
+                <div class="val">{proj['pct_vgv_meta']:.1f}%</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    df_d = proj["diaria"]
+    df_a = proj["acumulado"]
+    dia_hoje = proj["hoje"].day
+
+    ating_d = df_d[df_d["tipo"] == "Atingida"]
+    proj_d = df_d[df_d["tipo"] == "Projetada"]
+    ating_a = df_a[df_a["tipo"] == "Atingida"]
+    proj_a = df_a[df_a["tipo"] == "Projetada"]
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    fig.add_trace(
+        go.Bar(
+            x=ating_d["dia"],
+            y=ating_d["qtd"],
+            name="Qtd atingida (dia)",
+            marker_color=COR_AZUL_ESC,
+            opacity=0.85,
+        ),
+        secondary_y=False,
+    )
+    if not proj_d.empty:
+        fig.add_trace(
+            go.Bar(
+                x=proj_d["dia"],
+                y=proj_d["qtd"],
+                name="Qtd projetada (dia)",
+                marker_color="rgba(203, 9, 53, 0.45)",
+            ),
+            secondary_y=False,
+        )
+
+    fig.add_trace(
+        go.Scatter(
+            x=ating_a["dia"],
+            y=ating_a["acum"],
+            mode="lines+markers",
+            name="Acumulado atingido",
+            line=dict(color=COR_AZUL_ESC, width=3),
+            marker=dict(size=7),
+        ),
+        secondary_y=True,
+    )
+    if not proj_a.empty:
+        # Liga o último ponto atingido ao primeiro projetado
+        x_proj = [dia_hoje] + proj_a["dia"].tolist()
+        y_proj = [float(ating_a["acum"].iloc[-1]) if not ating_a.empty else 0.0] + proj_a["acum"].tolist()
+        fig.add_trace(
+            go.Scatter(
+                x=x_proj,
+                y=y_proj,
+                mode="lines+markers",
+                name="Acumulado projetado",
+                line=dict(color=COR_VERMELHO, width=3, dash="dash"),
+                marker=dict(size=7, color=COR_VERMELHO),
+            ),
+            secondary_y=True,
+        )
+
+    fig.add_vline(
+        x=dia_hoje,
+        line_width=1,
+        line_dash="dot",
+        line_color=COR_TEXTO_MUTED,
+        annotation_text="Hoje",
+        annotation_position="top",
+    )
+
+    fig.update_layout(
+        barmode="overlay",
+        margin=dict(l=20, r=20, t=40, b=20),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter", color=COR_TEXTO_LABEL),
+        legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="center", x=0.5),
+        hovermode="x unified",
+        height=420,
+    )
+    fig.update_xaxes(title_text="Dia do mês", dtick=1, range=[0.5, proj["ultimo_dia"] + 0.5])
+    fig.update_yaxes(title_text="Qtd. no dia", secondary_y=False, showgrid=False)
+    fig.update_yaxes(title_text="Qtd. acumulada", secondary_y=True, showgrid=True, gridcolor="rgba(226,232,240,0.5)")
+
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
 def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_vgv: float, vendas_qtd: float) -> None:
     meta_f = float(meta) if meta and meta > 0 else 0.0
     true_perc = (realizado / meta_f * 100.0) if meta_f > 0 else 0.0
@@ -1099,6 +1423,64 @@ def main() -> None:
         """,
         unsafe_allow_html=True,
     )
+
+    # -------------------------------------------------------------------------
+    # Projeção de Vendas (regressão diária — Contrato gerado em)
+    # -------------------------------------------------------------------------
+    mes_corrente = datetime.now().month
+    metas_mes_atual = metas_f[metas_f["Mes_Num"] == mes_corrente] if "Mes_Num" in metas_f.columns else metas_f.iloc[0:0]
+    if metas_mes_atual.empty and "Mes_Num" in df_metas.columns:
+        # fallback: meta do mês corrente na base completa, com mesmos filtros de região/emp e fator de canal
+        metas_mes_atual = df_metas[df_metas["Mes_Num"] == mes_corrente].copy()
+        if regioes_sel:
+            metas_mes_atual = metas_mes_atual[metas_mes_atual["Regiao_Coord"].isin(regioes_sel)]
+        if emps_sel:
+            metas_mes_atual = metas_mes_atual[metas_mes_atual["Empreendimento"].isin(emps_sel)]
+        metas_mes_atual["Meta_VGV"] = metas_mes_atual["Meta_VGV"] * fator_meta
+    meta_vgv_proj = float(metas_mes_atual["Meta_VGV"].sum()) if not metas_mes_atual.empty else float(total_meta_vgv)
+
+    if col_contrato_gerado:
+        # df_vendas já está filtrado em Venda Comercial?; aplica filtros de região/emp/canal da UI
+        base_proj = df_vendas.copy()
+        if regioes_sel:
+            if "Região" in base_proj.columns:
+                regioes_base = [r.split(" - ")[0].strip() for r in regioes_sel]
+                base_proj = base_proj[
+                    base_proj["Regiao_Coord"].isin(regioes_sel) | base_proj["Região"].isin(regioes_base)
+                ]
+            else:
+                base_proj = base_proj[base_proj["Regiao_Coord"].isin(regioes_sel)]
+        if emps_sel:
+            base_proj = base_proj[base_proj["Empreendimento"].isin(emps_sel)]
+        # mesmo recorte de canal da UI
+        if not (len(canais_sel) == 4 or set(canais_sel) == {"RIO", "DIR", "PARC", "RJ"}):
+            mask_p = pd.Series(False, index=base_proj.index)
+            if "RIO" in canais_sel:
+                mask_p |= (base_proj["Canal_Agrupado"] == "DV RJ")
+            if "DIR" in canais_sel and col_canal:
+                mask_p |= base_proj[col_canal].astype(str).str.upper().str.strip().apply(
+                    lambda x: x.split("-")[0].strip() == "RJG" or x == "RJG"
+                )
+            if "PARC" in canais_sel and col_canal:
+                mask_p |= base_proj[col_canal].astype(str).str.upper().str.strip().apply(
+                    lambda x: x.split("-")[0].strip() == "RJ" or x == "RJ"
+                )
+            if "RJ" in canais_sel and col_canal:
+                mask_p |= base_proj[col_canal].astype(str).str.upper().str.strip().apply(
+                    lambda x: x.split("-")[0].strip() in ("RJ", "RJG") or x in ("RJ", "RJG")
+                )
+            base_proj = base_proj[mask_p]
+
+        try:
+            proj = projetar_vendas_mes_atual(base_proj, col_contrato_gerado, meta_vgv_proj)
+            if proj:
+                render_projecao_vendas(proj)
+            else:
+                st.info("Dados insuficientes para treinar a projeção de vendas (janela de 52 semanas).")
+        except Exception as exc:
+            st.warning(f"Não foi possível calcular a projeção de vendas: {exc}")
+    else:
+        st.warning("Coluna 'Contrato gerado em' não encontrada — seção de Projeção de Vendas indisponível.")
 
     # -------------------------------------------------------------------------
     # Comparativo de Vendas Eficiência Isolado (Janela Histórica: Dia 1 ao Dia Atual MTD)
