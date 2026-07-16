@@ -794,6 +794,93 @@ def _r2_treino(treino: pd.DataFrame, coef: np.ndarray) -> float:
     return 1.0 - (ss_res / ss_tot)
 
 
+def calcular_medias_sazonais(treino: pd.DataFrame) -> Dict[str, Any]:
+    """Médias históricas por dia da semana, dia do mês e mês (+ média geral μ)."""
+    mu = float(treino["qtd"].mean()) if len(treino) else 0.0
+    if mu <= 0:
+        mu = 1e-9
+    return {
+        "mu": mu,
+        "media_dia_semana": {
+            k: float(v) for k, v in treino.groupby("dia_semana")["qtd"].mean().items()
+        },
+        "media_dia_mes": {
+            int(k): float(v) for k, v in treino.groupby("dia_mes")["qtd"].mean().items()
+        },
+        "media_mes": {
+            k: float(v) for k, v in treino.groupby("mes")["qtd"].mean().items()
+        },
+    }
+
+
+def prever_qtd_medias(datas: List[date], medias: Dict[str, Any]) -> np.ndarray:
+    """
+    Combinação multiplicativa das médias:
+      pred = μ × (m_ds/μ) × (m_dm/μ) × (m_mes/μ) = m_ds × m_dm × m_mes / μ²
+    """
+    if not datas:
+        return np.array([])
+    mu = float(medias["mu"])
+    m_ds = medias["media_dia_semana"]
+    m_dm = medias["media_dia_mes"]
+    m_mes = medias["media_mes"]
+    out: List[float] = []
+    for d in datas:
+        a = float(m_ds.get(DIAS_SEMANA_PT[d.weekday()], mu))
+        b = float(m_dm.get(d.day, mu))
+        c = float(m_mes.get(MESES_PT[d.month], mu))
+        out.append(max((a * b * c) / (mu * mu), 0.0))
+    return np.asarray(out, dtype=float)
+
+
+def _distribuir_gap_por_pesos(
+    gap: float,
+    pesos: np.ndarray,
+    dias: List[date],
+    qtd_mtd: float,
+    dia_hoje: int,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    ritmo_diario: List[Dict[str, Any]] = []
+    ritmo_acum: List[Dict[str, Any]] = [{"dia": dia_hoje, "acum": qtd_mtd}]
+    if not dias:
+        return pd.DataFrame(ritmo_diario), pd.DataFrame(ritmo_acum)
+    w = np.maximum(np.asarray(pesos, dtype=float), 0.0)
+    soma = float(w.sum())
+    if soma <= 1e-9:
+        w = np.ones(len(dias), dtype=float)
+        soma = float(len(dias))
+    nec = gap * (w / soma)
+    running = qtd_mtd
+    for i, d in enumerate(dias):
+        v = float(nec[i])
+        ritmo_diario.append({"dia": d.day, "qtd": v})
+        running += v
+        ritmo_acum.append({"dia": d.day, "acum": running})
+    return pd.DataFrame(ritmo_diario), pd.DataFrame(ritmo_acum)
+
+
+def _series_atingido_projetado(
+    dias_passados: List[date],
+    dias_futuros: List[date],
+    mapa_real: Dict[Any, float],
+    pred_futuro: np.ndarray,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    diaria: List[Dict[str, Any]] = []
+    acum: List[Dict[str, Any]] = []
+    running = 0.0
+    for d in dias_passados:
+        q = float(mapa_real.get(d, 0.0))
+        diaria.append({"dia": d.day, "qtd": q, "tipo": "Atingida"})
+        running += q
+        acum.append({"dia": d.day, "acum": running, "tipo": "Atingida"})
+    for i, d in enumerate(dias_futuros):
+        q = float(pred_futuro[i]) if i < len(pred_futuro) else 0.0
+        diaria.append({"dia": d.day, "qtd": q, "tipo": "Projetada"})
+        running += q
+        acum.append({"dia": d.day, "acum": running, "tipo": "Projetada"})
+    return pd.DataFrame(diaria), pd.DataFrame(acum)
+
+
 def projetar_vendas_mes_atual(
     df_vendas: pd.DataFrame,
     col_contrato: str,
@@ -802,8 +889,9 @@ def projetar_vendas_mes_atual(
     hoje: Optional[date] = None,
 ) -> Optional[Dict[str, Any]]:
     """
-    Regressão de qtd/dia ~ dia_mês + dia_semana + mês, janela de 52 semanas,
-    e projeção do restante do mês corrente (somente vendas comerciais na base).
+    Projeção do mês corrente com duas lógicas (mesma janela de 52 semanas):
+      1) Regressão OLS (dia_mês + dia_semana + mês)
+      2) Médias sazonais combinadas (multiplicativo)
     """
     hoje = hoje or date.today()
     inicio, fim_treino = janela_treino_52_semanas(hoje)
@@ -816,6 +904,7 @@ def projetar_vendas_mes_atual(
         return None
 
     modelo = treinar_regressao_vendas_diarias(treino)
+    medias = calcular_medias_sazonais(treino)
 
     ano, mes = hoje.year, hoje.month
     ultimo_dia = calendar.monthrange(ano, mes)[1]
@@ -826,13 +915,14 @@ def projetar_vendas_mes_atual(
     mapa_real = {r["data"]: float(r["qtd"]) for _, r in serie.iterrows()}
     mapa_vgv = {r["data"]: float(r["vgv"]) for _, r in serie.iterrows()}
 
-    qtd_atingida_por_dia = [mapa_real.get(d, 0.0) for d in dias_passados]
-    vgv_mtd = sum(mapa_vgv.get(d, 0.0) for d in dias_passados)
-    qtd_mtd = float(sum(qtd_atingida_por_dia))
+    qtd_mtd = float(sum(mapa_real.get(d, 0.0) for d in dias_passados))
+    vgv_mtd = float(sum(mapa_vgv.get(d, 0.0) for d in dias_passados))
 
-    pred_futuro = prever_qtd_dias(modelo, dias_futuros)
-    qtd_projetada_restante = float(pred_futuro.sum()) if len(pred_futuro) else 0.0
-    qtd_projetada_mes = qtd_mtd + qtd_projetada_restante
+    pred_reg = prever_qtd_dias(modelo, dias_futuros)
+    pred_med = prever_qtd_medias(dias_futuros, medias)
+
+    qtd_proj_reg = qtd_mtd + float(pred_reg.sum() if len(pred_reg) else 0.0)
+    qtd_proj_med = qtd_mtd + float(pred_med.sum() if len(pred_med) else 0.0)
 
     ticket_medio = (vgv_mtd / qtd_mtd) if qtd_mtd > 0 else 0.0
     if ticket_medio <= 0:
@@ -840,53 +930,29 @@ def projetar_vendas_mes_atual(
         v_tr = float(treino["vgv"].sum())
         ticket_medio = (v_tr / q_tr) if q_tr > 0 else 0.0
 
-    vgv_projetado = vgv_mtd + (qtd_projetada_restante * ticket_medio)
-    pct_vgv = (vgv_projetado / meta_vgv_mes * 100.0) if meta_vgv_mes and meta_vgv_mes > 0 else 0.0
+    rest_reg = qtd_proj_reg - qtd_mtd
+    rest_med = qtd_proj_med - qtd_mtd
+    vgv_proj_reg = vgv_mtd + rest_reg * ticket_medio
+    vgv_proj_med = vgv_mtd + rest_med * ticket_medio
+    pct_vgv_reg = (vgv_proj_reg / meta_vgv_mes * 100.0) if meta_vgv_mes and meta_vgv_mes > 0 else 0.0
+    pct_vgv_med = (vgv_proj_med / meta_vgv_mes * 100.0) if meta_vgv_mes and meta_vgv_mes > 0 else 0.0
 
-    # Ritmo necessário para bater a meta de QTD: distribui o gap restante
-    # pelos dias futuros com pesos da regressão (dia do mês / semana / mês).
     meta_qtd = float(meta_qtd_mes or 0.0)
     gap_qtd = max(0.0, meta_qtd - qtd_mtd)
-    ritmo_diario: List[Dict[str, Any]] = []
-    ritmo_acum: List[Dict[str, Any]] = []
 
-    if dias_futuros:
-        pesos = np.asarray(pred_futuro, dtype=float)
-        pesos = np.maximum(pesos, 0.0)
-        soma_pesos = float(pesos.sum())
-        if soma_pesos <= 1e-9:
-            pesos = np.ones(len(dias_futuros), dtype=float)
-            soma_pesos = float(len(dias_futuros))
-        frac = pesos / soma_pesos
-        necessario_dia = gap_qtd * frac
-    else:
-        necessario_dia = np.array([])
+    ritmo_reg_d, ritmo_reg_a = _distribuir_gap_por_pesos(
+        gap_qtd, pred_reg, dias_futuros, qtd_mtd, hoje.day
+    )
+    ritmo_med_d, ritmo_med_a = _distribuir_gap_por_pesos(
+        gap_qtd, pred_med, dias_futuros, qtd_mtd, hoje.day
+    )
 
-    # Acumulado necessário: parte do MTD atual e sobe até a meta
-    ritmo_acum.append({"dia": hoje.day, "acum": qtd_mtd})
-    running_meta = qtd_mtd
-    for i, d in enumerate(dias_futuros):
-        nec = float(necessario_dia[i]) if i < len(necessario_dia) else 0.0
-        ritmo_diario.append({"dia": d.day, "qtd": nec})
-        running_meta += nec
-        ritmo_acum.append({"dia": d.day, "acum": running_meta})
-
-    qtd_diaria_plot = []
-    for d in dias_passados:
-        qtd_diaria_plot.append({"dia": d.day, "qtd": mapa_real.get(d, 0.0), "tipo": "Atingida"})
-    for i, d in enumerate(dias_futuros):
-        qtd_diaria_plot.append({"dia": d.day, "qtd": float(pred_futuro[i]), "tipo": "Projetada"})
-
-    acum = []
-    running = 0.0
-    for d in dias_passados:
-        running += mapa_real.get(d, 0.0)
-        acum.append({"dia": d.day, "acum": running, "tipo": "Atingida"})
-    for i, d in enumerate(dias_futuros):
-        running += float(pred_futuro[i])
-        acum.append({"dia": d.day, "acum": running, "tipo": "Projetada"})
-
-    X_tr_r2 = _r2_treino(treino, modelo)
+    diaria_reg, acum_reg = _series_atingido_projetado(
+        dias_passados, dias_futuros, mapa_real, pred_reg
+    )
+    diaria_med, acum_med = _series_atingido_projetado(
+        dias_passados, dias_futuros, mapa_real, pred_med
+    )
 
     return {
         "hoje": hoje,
@@ -894,122 +960,93 @@ def projetar_vendas_mes_atual(
         "fim_treino": fim_treino,
         "qtd_mtd": qtd_mtd,
         "vgv_mtd": vgv_mtd,
-        "qtd_projetada_mes": qtd_projetada_mes,
-        "vgv_projetado": vgv_projetado,
-        "pct_vgv_meta": pct_vgv,
+        "ticket_medio": ticket_medio,
+        "ultimo_dia": ultimo_dia,
         "meta_vgv_mes": meta_vgv_mes,
         "meta_qtd_mes": meta_qtd,
         "gap_qtd_meta": gap_qtd,
-        "ticket_medio": ticket_medio,
-        "ultimo_dia": ultimo_dia,
-        "diaria": pd.DataFrame(qtd_diaria_plot),
-        "acumulado": pd.DataFrame(acum),
-        "ritmo_meta_diario": pd.DataFrame(ritmo_diario),
-        "ritmo_meta_acum": pd.DataFrame(ritmo_acum),
-        "r2_treino": X_tr_r2,
+        "r2_treino": _r2_treino(treino, modelo),
+        "medias": medias,
+        "qtd_projetada_mes": qtd_proj_reg,
+        "vgv_projetado": vgv_proj_reg,
+        "pct_vgv_meta": pct_vgv_reg,
+        "diaria": diaria_reg,
+        "acumulado": acum_reg,
+        "ritmo_meta_diario": ritmo_reg_d,
+        "ritmo_meta_acum": ritmo_reg_a,
+        "qtd_projetada_medias": qtd_proj_med,
+        "vgv_projetado_medias": vgv_proj_med,
+        "pct_vgv_medias": pct_vgv_med,
+        "diaria_medias": diaria_med,
+        "acumulado_medias": acum_med,
+        "ritmo_meta_diario_medias": ritmo_med_d,
+        "ritmo_meta_acum_medias": ritmo_med_a,
     }
 
 
-def render_projecao_vendas(proj: Dict[str, Any]) -> None:
-    """Seção Streamlit: cartões + gráfico atingido vs projetado."""
-    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
-    st.subheader("Projeção de Vendas")
-    st.caption(
-        f"Regressão diária (dia do mês + dia da semana + mês) · treino "
-        f"{proj['inicio_treino'].strftime('%d/%m/%Y')} a {proj['fim_treino'].strftime('%d/%m/%Y')} "
-        f"(52 semanas, até o dia anterior) · R² treino: {proj['r2_treino']:.2f} · "
-        f"MTD atingido (Contrato gerado em): {fmt_qtd(proj['qtd_mtd'])} vendas / {fmt_br_milhoes(proj['vgv_mtd'])} · "
-        f"Gap p/ meta QTD: {fmt_qtd(proj.get('gap_qtd_meta', 0))} "
-        f"(meta {fmt_qtd(proj.get('meta_qtd_mes', 0))})"
-    )
+def _plot_projecao_mes(
+    titulo: str,
+    caption: str,
+    proj: Dict[str, Any],
+    diaria: pd.DataFrame,
+    acumulado: pd.DataFrame,
+    ritmo_diario: pd.DataFrame,
+    ritmo_acum: pd.DataFrame,
+) -> None:
+    st.markdown(f"##### {titulo}")
+    st.caption(caption)
 
-    st.markdown(
-        f"""
-        <div class="vel-kpi-row">
-            <div class="vel-kpi">
-                <div class="lbl">Qtd. vendas (projetada)</div>
-                <div class="val">{fmt_qtd(proj['qtd_projetada_mes'])}</div>
-            </div>
-            <div class="vel-kpi">
-                <div class="lbl">VGV vendas (projetado)</div>
-                <div class="val val--red">{fmt_br_milhoes(proj['vgv_projetado'])}</div>
-            </div>
-            <div class="vel-kpi">
-                <div class="lbl">% VGV atingido (proj. vs meta)</div>
-                <div class="val">{proj['pct_vgv_meta']:.1f}%</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    df_d = proj["diaria"]
-    df_a = proj["acumulado"]
     dia_hoje = proj["hoje"].day
-    df_ritmo = proj.get("ritmo_meta_diario", pd.DataFrame())
-    df_ritmo_acum = proj.get("ritmo_meta_acum", pd.DataFrame())
-
-    ating_d = df_d[df_d["tipo"] == "Atingida"]
-    proj_d = df_d[df_d["tipo"] == "Projetada"]
-    ating_a = df_a[df_a["tipo"] == "Atingida"]
-    proj_a = df_a[df_a["tipo"] == "Projetada"]
+    ating_d = diaria[diaria["tipo"] == "Atingida"] if not diaria.empty else diaria
+    proj_d = diaria[diaria["tipo"] == "Projetada"] if not diaria.empty else diaria
+    ating_a = acumulado[acumulado["tipo"] == "Atingida"] if not acumulado.empty else acumulado
+    proj_a = acumulado[acumulado["tipo"] == "Projetada"] if not acumulado.empty else acumulado
 
     fig = make_subplots(specs=[[{"secondary_y": True}]])
 
-    fig.add_trace(
-        go.Bar(
-            x=ating_d["dia"],
-            y=ating_d["qtd"],
-            name="Qtd atingida (dia)",
-            marker_color=COR_AZUL_ESC,
-            opacity=0.85,
-        ),
-        secondary_y=False,
-    )
+    if not ating_d.empty:
+        fig.add_trace(
+            go.Bar(
+                x=ating_d["dia"], y=ating_d["qtd"], name="Qtd atingida (dia)",
+                marker_color=COR_AZUL_ESC, opacity=0.85,
+            ),
+            secondary_y=False,
+        )
     if not proj_d.empty:
         fig.add_trace(
             go.Bar(
-                x=proj_d["dia"],
-                y=proj_d["qtd"],
-                name="Qtd projetada (dia)",
+                x=proj_d["dia"], y=proj_d["qtd"], name="Qtd projetada (dia)",
                 marker_color="rgba(203, 9, 53, 0.45)",
             ),
             secondary_y=False,
         )
 
-    # Ritmo diário necessário para bater a meta de quantidade (pesos sazonais)
-    if df_ritmo is not None and not df_ritmo.empty:
+    if ritmo_diario is not None and not ritmo_diario.empty:
         fig.add_trace(
             go.Scatter(
-                x=df_ritmo["dia"],
-                y=df_ritmo["qtd"],
-                mode="lines+markers",
-                name="Ritmo p/ meta QTD (dia)",
+                x=ritmo_diario["dia"], y=ritmo_diario["qtd"],
+                mode="lines+markers", name="Ritmo p/ meta QTD (dia)",
                 line=dict(color="#0f766e", width=3),
                 marker=dict(size=7, symbol="diamond", color="#0f766e"),
             ),
             secondary_y=False,
         )
 
-    fig.add_trace(
-        go.Scatter(
-            x=ating_a["dia"],
-            y=ating_a["acum"],
-            mode="lines+markers",
-            name="Acumulado atingido",
-            line=dict(color=COR_AZUL_ESC, width=3),
-            marker=dict(size=7),
-        ),
-        secondary_y=True,
-    )
+    if not ating_a.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=ating_a["dia"], y=ating_a["acum"], mode="lines+markers",
+                name="Acumulado atingido",
+                line=dict(color=COR_AZUL_ESC, width=3), marker=dict(size=7),
+            ),
+            secondary_y=True,
+        )
     if not proj_a.empty:
         x_proj = [dia_hoje] + proj_a["dia"].tolist()
         y_proj = [float(ating_a["acum"].iloc[-1]) if not ating_a.empty else 0.0] + proj_a["acum"].tolist()
         fig.add_trace(
             go.Scatter(
-                x=x_proj,
-                y=y_proj,
-                mode="lines+markers",
+                x=x_proj, y=y_proj, mode="lines+markers",
                 name="Acumulado projetado",
                 line=dict(color=COR_VERMELHO, width=3, dash="dash"),
                 marker=dict(size=7, color=COR_VERMELHO),
@@ -1017,13 +1054,11 @@ def render_projecao_vendas(proj: Dict[str, Any]) -> None:
             secondary_y=True,
         )
 
-    if df_ritmo_acum is not None and not df_ritmo_acum.empty:
+    if ritmo_acum is not None and not ritmo_acum.empty:
         fig.add_trace(
             go.Scatter(
-                x=df_ritmo_acum["dia"],
-                y=df_ritmo_acum["acum"],
-                mode="lines+markers",
-                name="Acumulado necessário p/ meta QTD",
+                x=ritmo_acum["dia"], y=ritmo_acum["acum"],
+                mode="lines+markers", name="Acumulado necessário p/ meta QTD",
                 line=dict(color="#0f766e", width=3, dash="dot"),
                 marker=dict(size=6, color="#0f766e"),
             ),
@@ -1033,24 +1068,15 @@ def render_projecao_vendas(proj: Dict[str, Any]) -> None:
     meta_qtd = float(proj.get("meta_qtd_mes") or 0.0)
     if meta_qtd > 0:
         fig.add_hline(
-            y=meta_qtd,
-            line_width=1.5,
-            line_dash="dash",
-            line_color="#0f766e",
+            y=meta_qtd, line_width=1.5, line_dash="dash", line_color="#0f766e",
             annotation_text=f"Meta QTD ({fmt_qtd(meta_qtd)})",
-            annotation_position="top left",
-            secondary_y=True,
+            annotation_position="top left", secondary_y=True,
         )
 
     fig.add_vline(
-        x=dia_hoje,
-        line_width=1,
-        line_dash="dot",
-        line_color=COR_TEXTO_MUTED,
-        annotation_text="Hoje",
-        annotation_position="top",
+        x=dia_hoje, line_width=1, line_dash="dot", line_color=COR_TEXTO_MUTED,
+        annotation_text="Hoje", annotation_position="top",
     )
-
     fig.update_layout(
         barmode="overlay",
         margin=dict(l=20, r=20, t=40, b=20),
@@ -1064,8 +1090,74 @@ def render_projecao_vendas(proj: Dict[str, Any]) -> None:
     fig.update_xaxes(title_text="Dia do mês", dtick=1, range=[0.5, proj["ultimo_dia"] + 0.5])
     fig.update_yaxes(title_text="Qtd. no dia", secondary_y=False, showgrid=False)
     fig.update_yaxes(title_text="Qtd. acumulada", secondary_y=True, showgrid=True, gridcolor="rgba(226,232,240,0.5)")
-
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def render_projecao_vendas(proj: Dict[str, Any]) -> None:
+    """Seção Streamlit: cartões + gráficos (regressão e médias)."""
+    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
+    st.subheader("Projeção de Vendas")
+    st.caption(
+        f"Treino {proj['inicio_treino'].strftime('%d/%m/%Y')} a {proj['fim_treino'].strftime('%d/%m/%Y')} "
+        f"(52 semanas, até o dia anterior) · "
+        f"MTD atingido (Contrato gerado em): {fmt_qtd(proj['qtd_mtd'])} vendas / {fmt_br_milhoes(proj['vgv_mtd'])} · "
+        f"Gap p/ meta QTD: {fmt_qtd(proj.get('gap_qtd_meta', 0))} "
+        f"(meta {fmt_qtd(proj.get('meta_qtd_mes', 0))})"
+    )
+
+    st.markdown(
+        f"""
+        <div class="vel-kpi-row">
+            <div class="vel-kpi">
+                <div class="lbl">Qtd. (regressão)</div>
+                <div class="val">{fmt_qtd(proj['qtd_projetada_mes'])}</div>
+            </div>
+            <div class="vel-kpi">
+                <div class="lbl">Qtd. (médias)</div>
+                <div class="val">{fmt_qtd(proj.get('qtd_projetada_medias', 0))}</div>
+            </div>
+            <div class="vel-kpi">
+                <div class="lbl">VGV (regressão)</div>
+                <div class="val val--red">{fmt_br_milhoes(proj['vgv_projetado'])}</div>
+            </div>
+            <div class="vel-kpi">
+                <div class="lbl">VGV (médias)</div>
+                <div class="val val--red">{fmt_br_milhoes(proj.get('vgv_projetado_medias', 0))}</div>
+            </div>
+            <div class="vel-kpi">
+                <div class="lbl">% VGV reg. / médias</div>
+                <div class="val">{proj['pct_vgv_meta']:.1f}% / {proj.get('pct_vgv_medias', 0):.1f}%</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    _plot_projecao_mes(
+        "Projeção por regressão",
+        f"OLS com dummies de dia do mês, dia da semana e mês · R² treino: {proj['r2_treino']:.2f}",
+        proj,
+        proj["diaria"],
+        proj["acumulado"],
+        proj.get("ritmo_meta_diario", pd.DataFrame()),
+        proj.get("ritmo_meta_acum", pd.DataFrame()),
+    )
+
+    med = proj.get("medias") or {}
+    mu = float(med.get("mu") or 0.0)
+    _plot_projecao_mes(
+        "Projeção por médias sazonais",
+        (
+            "Combinação multiplicativa: pred = μ × (média_dia_semana/μ) × (média_dia_mês/μ) × (média_mês/μ) "
+            f"· μ diária histórica = {mu:.2f}"
+        ),
+        proj,
+        proj.get("diaria_medias", pd.DataFrame()),
+        proj.get("acumulado_medias", pd.DataFrame()),
+        proj.get("ritmo_meta_diario_medias", pd.DataFrame()),
+        proj.get("ritmo_meta_acum_medias", pd.DataFrame()),
+    )
+
 
 
 def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_vgv: float, vendas_qtd: float) -> None:
