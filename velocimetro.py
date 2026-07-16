@@ -166,7 +166,6 @@ def _cabecalho_pagina() -> None:
         f'<div class="ficha-hero-stack">'
         f'<div class="ficha-hero">'
         f'<p class="ficha-title">Acompanhamento de metas de vendas</p>'
-        f'<p class="ficha-sub">Realizado vs metas por período.</p>'
         f"</div>"
         f'<div class="ficha-hero-bar-wrap" aria-hidden="true">'
         f'<div class="ficha-hero-bar"></div>'
@@ -294,41 +293,63 @@ def aplicar_estilo() -> None:
                 inset 0 1px 0 rgba(255, 255, 255, 0.55) !important;
             animation: fichaFadeIn 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
         }}
-        /* Títulos de seção do dashboard: azuis */
+        /* Títulos de seção do dashboard: azuis (inclui spans internos do Streamlit) */
         h1, h2, h3, h4,
+        h1 *, h2 *, h3 *, h4 *,
         [data-testid="stMarkdownContainer"] h1,
         [data-testid="stMarkdownContainer"] h2,
         [data-testid="stMarkdownContainer"] h3,
-        [data-testid="stMarkdownContainer"] h4 {{
+        [data-testid="stMarkdownContainer"] h4,
+        [data-testid="stMarkdownContainer"] h1 *,
+        [data-testid="stMarkdownContainer"] h2 *,
+        [data-testid="stMarkdownContainer"] h3 *,
+        [data-testid="stMarkdownContainer"] h4 *,
+        [data-testid="stHeadingWithAction"],
+        [data-testid="stHeadingWithAction"] *,
+        .stHeading, .stHeading * {{
             font-family: 'Montserrat', sans-serif !important;
             color: {COR_AZUL_ESC} !important;
             font-weight: 800 !important;
+        }}
+        h1, h2, h3, h4,
+        [data-testid="stHeadingWithAction"],
+        .stHeading {{
             text-align: center !important;
         }}
         /* Títulos de gráficos (#####): pretos */
         h5, h6,
+        h5 *, h6 *,
         [data-testid="stMarkdownContainer"] h5,
-        [data-testid="stMarkdownContainer"] h6 {{
+        [data-testid="stMarkdownContainer"] h6,
+        [data-testid="stMarkdownContainer"] h5 *,
+        [data-testid="stMarkdownContainer"] h6 * {{
             font-family: 'Montserrat', sans-serif !important;
             color: {COR_TEXTO_PRETO} !important;
             font-weight: 700 !important;
             text-align: center !important;
         }}
-        /* Texto geral do dashboard: preto */
+        /* Texto geral do dashboard: preto (não sobrescreve títulos) */
         .block-container,
-        .block-container p,
-        .block-container span,
+        .block-container > div p,
         .block-container label,
         .block-container li,
-        [data-testid="stMarkdownContainer"] p,
+        [data-testid="stMarkdownContainer"] > p,
         [data-testid="stCaption"],
         [data-testid="stCaptionContainer"],
+        [data-testid="stCaptionContainer"] p,
         [data-testid="stWidgetLabel"] p,
         [data-testid="stWidgetLabel"] label,
         div[data-baseweb="select"] span,
         .stSelectbox label,
         .stMultiSelect label {{
             color: {COR_TEXTO_PRETO} !important;
+        }}
+        .block-container span:not(h1 span):not(h2 span):not(h3 span):not(h4 span) {{
+            color: {COR_TEXTO_PRETO};
+        }}
+        h1 span, h2 span, h3 span, h4 span,
+        [data-testid="stHeadingWithAction"] span {{
+            color: {COR_AZUL_ESC} !important;
         }}
         .ficha-logo-wrap {{
             text-align: center;
@@ -364,12 +385,6 @@ def aplicar_estilo() -> None:
             margin: 0;
             line-height: 1.25;
             letter-spacing: -0.02em;
-        }}
-        .ficha-hero .ficha-sub {{
-            color: {COR_TEXTO_PRETO};
-            font-size: 0.95rem;
-            margin: 0.45rem 0 0 0;
-            line-height: 1.45;
         }}
         .ficha-hero-bar-wrap {{
             width: 100%;
@@ -1111,7 +1126,8 @@ def _plot_projecao_mes(
 ) -> None:
     """Gráfico de projeção: realizado até hoje + projetado a partir de amanhã (sem meta)."""
     st.markdown(f"##### {titulo}")
-    st.caption(caption)
+    if caption:
+        st.caption(caption)
 
     dia_hoje = proj["hoje"].day
     ating_d = diaria[diaria["tipo"] == "Atingida"] if not diaria.empty else diaria
@@ -1211,11 +1227,8 @@ def _plot_meta_diaria_integrada(proj: Dict[str, Any]) -> None:
       3) Meta diária (médias) a partir de amanhã
     """
     ints = proj.get("intensidades_fim_mes") or {}
-    txt_int = " · ".join(f"{j}d={float(ints.get(j, 1)):.2f}x" for j in JANELAS_FIM_MES)
-    st.markdown("##### Meta diária para bater a quantidade")
     st.caption(
-        "3 séries: realizado até hoje · meta (regressão) a partir de amanhã · meta (médias) a partir de amanhã. "
-        f"Sazonalidade fim de mês (15/10/5): {txt_int}. Metas diárias arredondadas para cima."
+        " · ".join(f"Sazonalidade {j}d: {float(ints.get(j, 1)):.2f}x" for j in JANELAS_FIM_MES)
     )
 
     dia_hoje = proj["hoje"].day
@@ -1316,22 +1329,6 @@ def render_projecao_vendas(proj: Dict[str, Any]) -> None:
     """Seção Streamlit: cartões + gráficos de projeção e gráfico único de meta diária."""
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
     st.subheader("Projeção de Vendas")
-    st.caption(
-        f"Treino {proj['inicio_treino'].strftime('%d/%m/%Y')} a {proj['fim_treino'].strftime('%d/%m/%Y')} "
-        f"(52 semanas, até o dia anterior) · "
-        f"MTD atingido (Contrato gerado em): {fmt_qtd(proj['qtd_mtd'])} vendas / {fmt_br_milhoes(proj['vgv_mtd'])} · "
-        f"Ticket médio 30d "
-        f"({proj.get('inicio_ticket_30d', proj['hoje']).strftime('%d/%m')}–"
-        f"{proj.get('fim_ticket_30d', proj['hoje']).strftime('%d/%m')}): "
-        f"{fmt_br_milhoes(proj.get('ticket_medio', 0))} · "
-        f"Gap p/ meta QTD: {fmt_qtd(proj.get('gap_qtd_meta', 0))} "
-        f"(meta {fmt_qtd(proj.get('meta_qtd_mes', 0))}) · "
-        f"Sazonalidade 15/10/5: "
-        + " · ".join(
-            f"{j}d={float((proj.get('intensidades_fim_mes') or {}).get(j, 1)):.2f}x"
-            for j in JANELAS_FIM_MES
-        )
-    )
 
     st.markdown(
         f"""
@@ -1363,7 +1360,7 @@ def render_projecao_vendas(proj: Dict[str, Any]) -> None:
 
     _plot_projecao_mes(
         "Projeção por regressão",
-        f"Realizado até hoje + projetado a partir de amanhã · R² treino: {proj['r2_treino']:.2f}",
+        f"R² treino: {proj['r2_treino']:.2f}",
         proj,
         proj["diaria"],
         proj["acumulado"],
@@ -1373,11 +1370,7 @@ def render_projecao_vendas(proj: Dict[str, Any]) -> None:
     mu = float(med.get("mu") or 0.0)
     _plot_projecao_mes(
         "Projeção por médias sazonais",
-        (
-            "Realizado até hoje + projetado a partir de amanhã · "
-            "pred = μ × (média_dia_semana/μ) × (média_dia_mês/μ) × (média_mês/μ) "
-            f"· μ = {mu:.2f}"
-        ),
+        f"μ: {mu:.2f}",
         proj,
         proj.get("diaria_medias", pd.DataFrame()),
         proj.get("acumulado_medias", pd.DataFrame()),
