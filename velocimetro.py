@@ -839,6 +839,7 @@ def _distribuir_gap_por_pesos(
     dias: List[date],
     qtd_mtd: float,
     dia_hoje: int,
+    arredondar_cima: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     ritmo_diario: List[Dict[str, Any]] = []
     ritmo_acum: List[Dict[str, Any]] = [{"dia": dia_hoje, "acum": qtd_mtd}]
@@ -850,6 +851,8 @@ def _distribuir_gap_por_pesos(
         w = np.ones(len(dias), dtype=float)
         soma = float(len(dias))
     nec = gap * (w / soma)
+    if arredondar_cima and gap > 0:
+        nec = np.ceil(nec)
     running = qtd_mtd
     for i, d in enumerate(dias):
         v = float(nec[i])
@@ -859,46 +862,56 @@ def _distribuir_gap_por_pesos(
     return pd.DataFrame(ritmo_diario), pd.DataFrame(ritmo_acum)
 
 
+JANELAS_FIM_MES = (15, 10, 5)
+
+
 def calcular_intensidade_fim_mes(treino: pd.DataFrame, janela: int = 15) -> float:
     """
     Razão empírica: média dos últimos `janela` dias do mês / média do restante.
-    Usada como teto do fator de sazonalidade de fim de mês.
     """
     if treino.empty:
-        return 1.6
-    # Aproxima "últimos 15 dias" como dia_mes >= 17 (em meses de 31) /
-    # na prática: posição relativa >= (1 - janela/31)
-    limiar = max(1, 31 - janela + 1)  # ~17
+        return 1.4
+    limiar = max(1, 31 - janela + 1)
     early = treino[treino["dia_mes"] < limiar]["qtd"]
     late = treino[treino["dia_mes"] >= limiar]["qtd"]
     m_early = float(early.mean()) if len(early) else 0.0
     m_late = float(late.mean()) if len(late) else 0.0
     if m_early <= 1e-9:
-        return 1.6
+        return 1.4
     ratio = m_late / m_early
-    return float(np.clip(ratio, 1.15, 2.5))
+    return float(np.clip(ratio, 1.10, 2.8))
+
+
+def calcular_intensidades_fim_mes(
+    treino: pd.DataFrame,
+    janelas: Tuple[int, ...] = JANELAS_FIM_MES,
+) -> Dict[int, float]:
+    return {int(j): calcular_intensidade_fim_mes(treino, janela=int(j)) for j in janelas}
 
 
 def fatores_sazonalidade_fim_mes(
     dias: List[date],
     ultimo_dia: int,
-    intensidade: float,
-    janela: int = 15,
+    intensidades: Dict[int, float],
+    janelas: Tuple[int, ...] = JANELAS_FIM_MES,
 ) -> np.ndarray:
     """
-    Fator >= 1 que sobe nos últimos `janela` dias do mês (rampa linear até `intensidade`).
+    Combina sazonalidades de 15, 10 e 5 dias (produto de rampas).
+    Quanto mais perto do fim do mês, maior o fator.
     """
     if not dias:
         return np.array([])
-    inicio_boost = max(1, ultimo_dia - janela + 1)
-    span = max(1, ultimo_dia - inicio_boost)
-    out = []
+    out: List[float] = []
     for d in dias:
-        if d.day < inicio_boost:
-            out.append(1.0)
-        else:
-            t = (d.day - inicio_boost) / span  # 0 → 1
-            out.append(1.0 + (intensidade - 1.0) * t)
+        f = 1.0
+        for janela in janelas:
+            intens = float(intensidades.get(int(janela), 1.0))
+            inicio_boost = max(1, ultimo_dia - int(janela) + 1)
+            if d.day >= inicio_boost:
+                span = max(1, ultimo_dia - inicio_boost)
+                t = (d.day - inicio_boost) / span  # 0 → 1
+                f *= 1.0 + (intens - 1.0) * t
+        out.append(f)
     return np.asarray(out, dtype=float)
 
 
@@ -906,13 +919,13 @@ def aplicar_sazonalidade_fim_mes(
     pesos: np.ndarray,
     dias: List[date],
     ultimo_dia: int,
-    intensidade: float,
-    janela: int = 15,
+    intensidades: Dict[int, float],
+    janelas: Tuple[int, ...] = JANELAS_FIM_MES,
 ) -> np.ndarray:
-    """Multiplica pesos pela sazonalidade de fim de mês."""
+    """Multiplica pesos pela sazonalidade combinada (15/10/5 dias)."""
     if len(pesos) == 0:
         return pesos
-    fat = fatores_sazonalidade_fim_mes(dias, ultimo_dia, intensidade, janela=janela)
+    fat = fatores_sazonalidade_fim_mes(dias, ultimo_dia, intensidades, janelas=janelas)
     return np.maximum(np.asarray(pesos, dtype=float), 0.0) * fat
 
 
@@ -978,10 +991,10 @@ def projetar_vendas_mes_atual(
     pred_reg = prever_qtd_dias(modelo, dias_futuros)
     pred_med = prever_qtd_medias(dias_futuros, medias)
 
-    # Reforço explícito de fim de mês (últimos ~15 dias costumam vender mais)
-    intensidade_fim = calcular_intensidade_fim_mes(treino, janela=15)
-    pred_reg = aplicar_sazonalidade_fim_mes(pred_reg, dias_futuros, ultimo_dia, intensidade_fim, janela=15)
-    pred_med = aplicar_sazonalidade_fim_mes(pred_med, dias_futuros, ultimo_dia, intensidade_fim, janela=15)
+    # Reforço explícito de fim de mês: sazonalidade em 15, 10 e 5 dias
+    intensidades_fim = calcular_intensidades_fim_mes(treino, janelas=JANELAS_FIM_MES)
+    pred_reg = aplicar_sazonalidade_fim_mes(pred_reg, dias_futuros, ultimo_dia, intensidades_fim)
+    pred_med = aplicar_sazonalidade_fim_mes(pred_med, dias_futuros, ultimo_dia, intensidades_fim)
 
     qtd_proj_reg = qtd_mtd + float(pred_reg.sum() if len(pred_reg) else 0.0)
     qtd_proj_med = qtd_mtd + float(pred_med.sum() if len(pred_med) else 0.0)
@@ -1003,10 +1016,10 @@ def projetar_vendas_mes_atual(
     gap_qtd = max(0.0, meta_qtd - qtd_mtd)
 
     ritmo_reg_d, ritmo_reg_a = _distribuir_gap_por_pesos(
-        gap_qtd, pred_reg, dias_futuros, qtd_mtd, hoje.day
+        gap_qtd, pred_reg, dias_futuros, qtd_mtd, hoje.day, arredondar_cima=True
     )
     ritmo_med_d, ritmo_med_a = _distribuir_gap_por_pesos(
-        gap_qtd, pred_med, dias_futuros, qtd_mtd, hoje.day
+        gap_qtd, pred_med, dias_futuros, qtd_mtd, hoje.day, arredondar_cima=True
     )
 
     diaria_reg, acum_reg = _series_atingido_projetado(
@@ -1015,6 +1028,8 @@ def projetar_vendas_mes_atual(
     diaria_med, acum_med = _series_atingido_projetado(
         dias_passados, dias_futuros, mapa_real, pred_med
     )
+
+    intensidade_resumo = float(np.mean(list(intensidades_fim.values()))) if intensidades_fim else 1.0
 
     return {
         "hoje": hoje,
@@ -1029,7 +1044,8 @@ def projetar_vendas_mes_atual(
         "gap_qtd_meta": gap_qtd,
         "r2_treino": _r2_treino(treino, modelo),
         "medias": medias,
-        "intensidade_fim_mes": intensidade_fim,
+        "intensidades_fim_mes": intensidades_fim,
+        "intensidade_fim_mes": intensidade_resumo,
         "qtd_projetada_mes": qtd_proj_reg,
         "vgv_projetado": vgv_proj_reg,
         "pct_vgv_meta": pct_vgv_reg,
@@ -1132,11 +1148,12 @@ def _plot_meta_diaria_integrada(proj: Dict[str, Any]) -> None:
       2) Meta diária (regressão) a partir de amanhã
       3) Meta diária (médias) a partir de amanhã
     """
-    intensidade = float(proj.get("intensidade_fim_mes") or 1.0)
+    ints = proj.get("intensidades_fim_mes") or {}
+    txt_int = " · ".join(f"{j}d={float(ints.get(j, 1)):.2f}x" for j in JANELAS_FIM_MES)
     st.markdown("##### Meta diária para bater a quantidade")
     st.caption(
         "3 séries: realizado até hoje · meta (regressão) a partir de amanhã · meta (médias) a partir de amanhã. "
-        f"Sazonalidade de fim de mês ativa (últimos 15 dias, intensidade histórica ≈ {intensidade:.2f}x)."
+        f"Sazonalidade fim de mês (15/10/5): {txt_int}. Metas diárias arredondadas para cima."
     )
 
     dia_hoje = proj["hoje"].day
@@ -1152,36 +1169,48 @@ def _plot_meta_diaria_integrada(proj: Dict[str, Any]) -> None:
     fig = go.Figure()
 
     if not ating_d.empty:
+        textos_real = [fmt_qtd(float(v)) for v in ating_d["qtd"]]
         fig.add_trace(
             go.Scatter(
                 x=ating_d["dia"],
                 y=ating_d["qtd"],
-                mode="lines+markers",
+                mode="lines+markers+text",
                 name="Realizado até hoje",
+                text=textos_real,
+                textposition="top center",
+                textfont=dict(size=10, color=COR_AZUL_ESC, family="Inter"),
                 line=dict(color=COR_AZUL_ESC, width=3),
                 marker=dict(size=8, color=COR_AZUL_ESC),
             )
         )
 
     if ritmo_reg is not None and not ritmo_reg.empty:
+        textos_reg = [fmt_qtd(float(v)) for v in ritmo_reg["qtd"]]
         fig.add_trace(
             go.Scatter(
                 x=ritmo_reg["dia"],
                 y=ritmo_reg["qtd"],
-                mode="lines+markers",
+                mode="lines+markers+text",
                 name="Meta diária (regressão)",
+                text=textos_reg,
+                textposition="top center",
+                textfont=dict(size=10, color=COR_VERMELHO, family="Inter"),
                 line=dict(color=COR_VERMELHO, width=3),
                 marker=dict(size=8, color=COR_VERMELHO),
             )
         )
 
     if ritmo_med is not None and not ritmo_med.empty:
+        textos_med = [fmt_qtd(float(v)) for v in ritmo_med["qtd"]]
         fig.add_trace(
             go.Scatter(
                 x=ritmo_med["dia"],
                 y=ritmo_med["qtd"],
-                mode="lines+markers",
+                mode="lines+markers+text",
                 name="Meta diária (médias)",
+                text=textos_med,
+                textposition="bottom center",
+                textfont=dict(size=10, color="#0f766e", family="Inter"),
                 line=dict(color="#0f766e", width=3, dash="dash"),
                 marker=dict(size=8, symbol="diamond", color="#0f766e"),
             )
@@ -1192,13 +1221,13 @@ def _plot_meta_diaria_integrada(proj: Dict[str, Any]) -> None:
         annotation_text="Hoje", annotation_position="top",
     )
     fig.update_layout(
-        margin=dict(l=20, r=20, t=40, b=20),
+        margin=dict(l=20, r=20, t=50, b=20),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         font=dict(family="Inter", color=COR_TEXTO_LABEL),
-        legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="center", x=0.5),
+        legend=dict(orientation="h", yanchor="bottom", y=1.10, xanchor="center", x=0.5),
         hovermode="x unified",
-        height=420,
+        height=460,
     )
     fig.update_xaxes(title_text="Dia do mês", dtick=1, range=[0.5, proj["ultimo_dia"] + 0.5])
     fig.update_yaxes(title_text="Qtd. no dia", showgrid=True, gridcolor="rgba(226,232,240,0.5)")
@@ -1215,7 +1244,11 @@ def render_projecao_vendas(proj: Dict[str, Any]) -> None:
         f"MTD atingido (Contrato gerado em): {fmt_qtd(proj['qtd_mtd'])} vendas / {fmt_br_milhoes(proj['vgv_mtd'])} · "
         f"Gap p/ meta QTD: {fmt_qtd(proj.get('gap_qtd_meta', 0))} "
         f"(meta {fmt_qtd(proj.get('meta_qtd_mes', 0))}) · "
-        f"Fator fim de mês: {float(proj.get('intensidade_fim_mes') or 1):.2f}x"
+        f"Sazonalidade 15/10/5: "
+        + " · ".join(
+            f"{j}d={float((proj.get('intensidades_fim_mes') or {}).get(j, 1)):.2f}x"
+            for j in JANELAS_FIM_MES
+        )
     )
 
     st.markdown(
