@@ -990,9 +990,8 @@ def _plot_projecao_mes(
     proj: Dict[str, Any],
     diaria: pd.DataFrame,
     acumulado: pd.DataFrame,
-    ritmo_diario: pd.DataFrame,
-    ritmo_acum: pd.DataFrame,
 ) -> None:
+    """Gráfico de projeção: realizado até hoje + projetado a partir de amanhã (sem meta)."""
     st.markdown(f"##### {titulo}")
     st.caption(caption)
 
@@ -1007,7 +1006,7 @@ def _plot_projecao_mes(
     if not ating_d.empty:
         fig.add_trace(
             go.Bar(
-                x=ating_d["dia"], y=ating_d["qtd"], name="Qtd atingida (dia)",
+                x=ating_d["dia"], y=ating_d["qtd"], name="Realizado (dia)",
                 marker_color=COR_AZUL_ESC, opacity=0.85,
             ),
             secondary_y=False,
@@ -1015,19 +1014,8 @@ def _plot_projecao_mes(
     if not proj_d.empty:
         fig.add_trace(
             go.Bar(
-                x=proj_d["dia"], y=proj_d["qtd"], name="Qtd projetada (dia)",
+                x=proj_d["dia"], y=proj_d["qtd"], name="Projetado (dia)",
                 marker_color="rgba(203, 9, 53, 0.45)",
-            ),
-            secondary_y=False,
-        )
-
-    if ritmo_diario is not None and not ritmo_diario.empty:
-        fig.add_trace(
-            go.Scatter(
-                x=ritmo_diario["dia"], y=ritmo_diario["qtd"],
-                mode="lines+markers", name="Ritmo p/ meta QTD (dia)",
-                line=dict(color="#0f766e", width=3),
-                marker=dict(size=7, symbol="diamond", color="#0f766e"),
             ),
             secondary_y=False,
         )
@@ -1036,7 +1024,7 @@ def _plot_projecao_mes(
         fig.add_trace(
             go.Scatter(
                 x=ating_a["dia"], y=ating_a["acum"], mode="lines+markers",
-                name="Acumulado atingido",
+                name="Acumulado realizado",
                 line=dict(color=COR_AZUL_ESC, width=3), marker=dict(size=7),
             ),
             secondary_y=True,
@@ -1054,11 +1042,113 @@ def _plot_projecao_mes(
             secondary_y=True,
         )
 
+    fig.add_vline(
+        x=dia_hoje, line_width=1, line_dash="dot", line_color=COR_TEXTO_MUTED,
+        annotation_text="Hoje", annotation_position="top",
+    )
+    fig.update_layout(
+        barmode="group",
+        margin=dict(l=20, r=20, t=40, b=20),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter", color=COR_TEXTO_LABEL),
+        legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="center", x=0.5),
+        hovermode="x unified",
+        height=420,
+    )
+    fig.update_xaxes(title_text="Dia do mês", dtick=1, range=[0.5, proj["ultimo_dia"] + 0.5])
+    fig.update_yaxes(title_text="Qtd. no dia", secondary_y=False, showgrid=False)
+    fig.update_yaxes(title_text="Qtd. acumulada", secondary_y=True, showgrid=True, gridcolor="rgba(226,232,240,0.5)")
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def _plot_meta_diaria(
+    titulo: str,
+    caption: str,
+    proj: Dict[str, Any],
+    diaria_realizada: pd.DataFrame,
+    ritmo_diario: pd.DataFrame,
+    ritmo_acum: pd.DataFrame,
+) -> None:
+    """
+    Gráfico separado da meta:
+      - barras azuis: realizado diário até hoje
+      - barras/linha verdes: meta diária a partir de amanhã
+      - acumulado necessário no eixo secundário
+    """
+    st.markdown(f"##### {titulo}")
+    st.caption(caption)
+
+    dia_hoje = proj["hoje"].day
+    ating_d = (
+        diaria_realizada[diaria_realizada["tipo"] == "Atingida"]
+        if (not diaria_realizada.empty and "tipo" in diaria_realizada.columns)
+        else diaria_realizada
+    )
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    if not ating_d.empty:
+        fig.add_trace(
+            go.Bar(
+                x=ating_d["dia"],
+                y=ating_d["qtd"],
+                name="Realizado até hoje (dia)",
+                marker_color=COR_AZUL_ESC,
+                opacity=0.9,
+            ),
+            secondary_y=False,
+        )
+
+    if ritmo_diario is not None and not ritmo_diario.empty:
+        fig.add_trace(
+            go.Bar(
+                x=ritmo_diario["dia"],
+                y=ritmo_diario["qtd"],
+                name="Meta a partir de amanhã (dia)",
+                marker_color="#0f766e",
+                opacity=0.75,
+            ),
+            secondary_y=False,
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=ritmo_diario["dia"],
+                y=ritmo_diario["qtd"],
+                mode="lines+markers",
+                name="Meta diária (linha)",
+                line=dict(color="#115e59", width=2),
+                marker=dict(size=6, color="#115e59"),
+                showlegend=True,
+            ),
+            secondary_y=False,
+        )
+
+    # Acumulado: realizado até hoje + caminho da meta
+    if not ating_d.empty:
+        running = 0.0
+        dias_a, acum_a = [], []
+        for _, row in ating_d.sort_values("dia").iterrows():
+            running += float(row["qtd"])
+            dias_a.append(int(row["dia"]))
+            acum_a.append(running)
+        fig.add_trace(
+            go.Scatter(
+                x=dias_a, y=acum_a, mode="lines+markers",
+                name="Acumulado realizado",
+                line=dict(color=COR_AZUL_ESC, width=3),
+                marker=dict(size=7),
+            ),
+            secondary_y=True,
+        )
+
     if ritmo_acum is not None and not ritmo_acum.empty:
         fig.add_trace(
             go.Scatter(
-                x=ritmo_acum["dia"], y=ritmo_acum["acum"],
-                mode="lines+markers", name="Acumulado necessário p/ meta QTD",
+                x=ritmo_acum["dia"],
+                y=ritmo_acum["acum"],
+                mode="lines+markers",
+                name="Acumulado c/ meta diária",
                 line=dict(color="#0f766e", width=3, dash="dot"),
                 marker=dict(size=6, color="#0f766e"),
             ),
@@ -1085,7 +1175,7 @@ def _plot_projecao_mes(
         font=dict(family="Inter", color=COR_TEXTO_LABEL),
         legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="center", x=0.5),
         hovermode="x unified",
-        height=440,
+        height=420,
     )
     fig.update_xaxes(title_text="Dia do mês", dtick=1, range=[0.5, proj["ultimo_dia"] + 0.5])
     fig.update_yaxes(title_text="Qtd. no dia", secondary_y=False, showgrid=False)
@@ -1094,7 +1184,7 @@ def _plot_projecao_mes(
 
 
 def render_projecao_vendas(proj: Dict[str, Any]) -> None:
-    """Seção Streamlit: cartões + gráficos (regressão e médias)."""
+    """Seção Streamlit: cartões + gráficos de projeção e gráficos de meta diária."""
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
     st.subheader("Projeção de Vendas")
     st.caption(
@@ -1135,12 +1225,10 @@ def render_projecao_vendas(proj: Dict[str, Any]) -> None:
 
     _plot_projecao_mes(
         "Projeção por regressão",
-        f"OLS com dummies de dia do mês, dia da semana e mês · R² treino: {proj['r2_treino']:.2f}",
+        f"Realizado até hoje + projetado a partir de amanhã · R² treino: {proj['r2_treino']:.2f}",
         proj,
         proj["diaria"],
         proj["acumulado"],
-        proj.get("ritmo_meta_diario", pd.DataFrame()),
-        proj.get("ritmo_meta_acum", pd.DataFrame()),
     )
 
     med = proj.get("medias") or {}
@@ -1148,16 +1236,39 @@ def render_projecao_vendas(proj: Dict[str, Any]) -> None:
     _plot_projecao_mes(
         "Projeção por médias sazonais",
         (
-            "Combinação multiplicativa: pred = μ × (média_dia_semana/μ) × (média_dia_mês/μ) × (média_mês/μ) "
-            f"· μ diária histórica = {mu:.2f}"
+            "Realizado até hoje + projetado a partir de amanhã · "
+            "pred = μ × (média_dia_semana/μ) × (média_dia_mês/μ) × (média_mês/μ) "
+            f"· μ = {mu:.2f}"
         ),
         proj,
         proj.get("diaria_medias", pd.DataFrame()),
         proj.get("acumulado_medias", pd.DataFrame()),
+    )
+
+    st.markdown("<br/>", unsafe_allow_html=True)
+    st.subheader("Meta diária para bater a quantidade")
+    st.caption(
+        "Série separada: realizado diário (dia 1 → hoje) e meta diária necessária "
+        "(amanhã → fim do mês), distribuída com sazonalidade (não linear)."
+    )
+
+    _plot_meta_diaria(
+        "Meta diária — pesos da regressão",
+        f"Gap restante: {fmt_qtd(proj.get('gap_qtd_meta', 0))} vendas · distribuição pelos pesos da regressão",
+        proj,
+        proj["diaria"],
+        proj.get("ritmo_meta_diario", pd.DataFrame()),
+        proj.get("ritmo_meta_acum", pd.DataFrame()),
+    )
+
+    _plot_meta_diaria(
+        "Meta diária — pesos das médias sazonais",
+        f"Gap restante: {fmt_qtd(proj.get('gap_qtd_meta', 0))} vendas · distribuição pelos pesos das médias",
+        proj,
+        proj.get("diaria_medias", pd.DataFrame()),
         proj.get("ritmo_meta_diario_medias", pd.DataFrame()),
         proj.get("ritmo_meta_acum_medias", pd.DataFrame()),
     )
-
 
 
 def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_vgv: float, vendas_qtd: float) -> None:
