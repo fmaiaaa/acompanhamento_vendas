@@ -787,11 +787,11 @@ def calendario_diario(inicio: date, fim: date, serie: pd.DataFrame) -> pd.DataFr
     return cal
 
 
-def _matriz_explicativas(df: pd.DataFrame) -> np.ndarray:
-    """One-hot (numpy) de dia do mês, dia da semana e mês + intercepto."""
+def _matriz_explicativas(df: pd.DataFrame, incluir_mes: bool = True) -> np.ndarray:
+    """One-hot (numpy) de dia do mês + dia da semana (+ mês opcional) + intercepto."""
     n = len(df)
-    # 31 dias + 7 dias da semana + 12 meses + intercepto
-    X = np.zeros((n, 31 + 7 + 12 + 1), dtype=float)
+    n_cols = 31 + 7 + (12 if incluir_mes else 0) + 1
+    X = np.zeros((n, n_cols), dtype=float)
     X[:, -1] = 1.0  # intercepto
 
     dias_semana_idx = {nome: i for i, nome in DIAS_SEMANA_PT.items()}
@@ -804,34 +804,46 @@ def _matriz_explicativas(df: pd.DataFrame) -> np.ndarray:
         ds = dias_semana_idx.get(str(row.dia_semana), None)
         if ds is not None:
             X[i, 31 + ds] = 1.0
-        ms = meses_idx.get(str(row.mes), None)
-        if ms is not None:
-            X[i, 31 + 7 + (ms - 1)] = 1.0
+        if incluir_mes:
+            ms = meses_idx.get(str(row.mes), None)
+            if ms is not None:
+                X[i, 31 + 7 + (ms - 1)] = 1.0
     return X
 
 
-def treinar_regressao_vendas_diarias(treino: pd.DataFrame) -> np.ndarray:
+def treinar_regressao_vendas_diarias(
+    treino: pd.DataFrame,
+    incluir_mes: bool = True,
+) -> np.ndarray:
     """OLS via numpy.linalg.lstsq. Retorna vetor de coeficientes."""
-    X = _matriz_explicativas(treino)
+    X = _matriz_explicativas(treino, incluir_mes=incluir_mes)
     y = treino["qtd"].astype(float).values
     coef, *_ = np.linalg.lstsq(X, y, rcond=None)
     return coef
 
 
-def prever_qtd_dias(coef: np.ndarray, datas: List[date]) -> np.ndarray:
+def prever_qtd_dias(
+    coef: np.ndarray,
+    datas: List[date],
+    incluir_mes: bool = True,
+) -> np.ndarray:
     if not datas:
         return np.array([])
     df = pd.DataFrame({"data": datas})
     df["dia_mes"] = df["data"].map(lambda d: d.day)
     df["dia_semana"] = df["data"].map(lambda d: DIAS_SEMANA_PT[d.weekday()])
     df["mes"] = df["data"].map(lambda d: MESES_PT[d.month])
-    X = _matriz_explicativas(df)
+    X = _matriz_explicativas(df, incluir_mes=incluir_mes)
     pred = X @ coef
     return np.maximum(pred, 0.0)
 
 
-def _r2_treino(treino: pd.DataFrame, coef: np.ndarray) -> float:
-    X = _matriz_explicativas(treino)
+def _r2_treino(
+    treino: pd.DataFrame,
+    coef: np.ndarray,
+    incluir_mes: bool = True,
+) -> float:
+    X = _matriz_explicativas(treino, incluir_mes=incluir_mes)
     y = treino["qtd"].astype(float).values
     y_hat = X @ coef
     ss_res = float(np.sum((y - y_hat) ** 2))
@@ -841,42 +853,57 @@ def _r2_treino(treino: pd.DataFrame, coef: np.ndarray) -> float:
     return 1.0 - (ss_res / ss_tot)
 
 
-def calcular_medias_sazonais(treino: pd.DataFrame) -> Dict[str, Any]:
-    """Médias históricas por dia da semana, dia do mês e mês (+ média geral μ)."""
+def calcular_medias_sazonais(
+    treino: pd.DataFrame,
+    incluir_mes: bool = True,
+) -> Dict[str, Any]:
+    """Médias históricas por dia da semana, dia do mês e (opcionalmente) mês."""
     mu = float(treino["qtd"].mean()) if len(treino) else 0.0
     if mu <= 0:
         mu = 1e-9
-    return {
+    out: Dict[str, Any] = {
         "mu": mu,
+        "incluir_mes": incluir_mes,
         "media_dia_semana": {
             k: float(v) for k, v in treino.groupby("dia_semana")["qtd"].mean().items()
         },
         "media_dia_mes": {
             int(k): float(v) for k, v in treino.groupby("dia_mes")["qtd"].mean().items()
         },
-        "media_mes": {
-            k: float(v) for k, v in treino.groupby("mes")["qtd"].mean().items()
-        },
     }
+    if incluir_mes:
+        out["media_mes"] = {
+            k: float(v) for k, v in treino.groupby("mes")["qtd"].mean().items()
+        }
+    return out
 
 
-def prever_qtd_medias(datas: List[date], medias: Dict[str, Any]) -> np.ndarray:
+def prever_qtd_medias(
+    datas: List[date],
+    medias: Dict[str, Any],
+    incluir_mes: bool = True,
+) -> np.ndarray:
     """
-    Combinação multiplicativa das médias:
-      pred = μ × (m_ds/μ) × (m_dm/μ) × (m_mes/μ) = m_ds × m_dm × m_mes / μ²
+    Combinação multiplicativa das médias.
+    Com mês:   pred = m_ds × m_dm × m_mes / μ²
+    Sem mês:   pred = m_ds × m_dm / μ
     """
     if not datas:
         return np.array([])
     mu = float(medias["mu"])
     m_ds = medias["media_dia_semana"]
     m_dm = medias["media_dia_mes"]
-    m_mes = medias["media_mes"]
+    m_mes = medias.get("media_mes") or {}
+    usar_mes = incluir_mes and bool(m_mes)
     out: List[float] = []
     for d in datas:
         a = float(m_ds.get(DIAS_SEMANA_PT[d.weekday()], mu))
         b = float(m_dm.get(d.day, mu))
-        c = float(m_mes.get(MESES_PT[d.month], mu))
-        out.append(max((a * b * c) / (mu * mu), 0.0))
+        if usar_mes:
+            c = float(m_mes.get(MESES_PT[d.month], mu))
+            out.append(max((a * b * c) / (mu * mu), 0.0))
+        else:
+            out.append(max((a * b) / mu, 0.0))
     return np.asarray(out, dtype=float)
 
 
@@ -1004,11 +1031,13 @@ def projetar_vendas_mes_atual(
     meta_vgv_mes: float,
     meta_qtd_mes: float = 0.0,
     hoje: Optional[date] = None,
+    incluir_mes: bool = True,
 ) -> Optional[Dict[str, Any]]:
     """
     Projeção do mês corrente com duas lógicas (mesma janela de 52 semanas):
-      1) Regressão OLS (dia_mês + dia_semana + mês)
+      1) Regressão OLS (dia_mês + dia_semana [+ mês])
       2) Médias sazonais combinadas (multiplicativo)
+    Com incluir_mes=False, remove o efeito/beta de mês (só dia do mês e dia da semana).
     """
     hoje = hoje or date.today()
     inicio, fim_treino = janela_treino_52_semanas(hoje)
@@ -1020,8 +1049,8 @@ def projetar_vendas_mes_atual(
     if treino["qtd"].sum() <= 0 or len(treino) < 30:
         return None
 
-    modelo = treinar_regressao_vendas_diarias(treino)
-    medias = calcular_medias_sazonais(treino)
+    modelo = treinar_regressao_vendas_diarias(treino, incluir_mes=incluir_mes)
+    medias = calcular_medias_sazonais(treino, incluir_mes=incluir_mes)
 
     ano, mes = hoje.year, hoje.month
     ultimo_dia = calendar.monthrange(ano, mes)[1]
@@ -1035,8 +1064,8 @@ def projetar_vendas_mes_atual(
     qtd_mtd = float(sum(mapa_real.get(d, 0.0) for d in dias_passados))
     vgv_mtd = float(sum(mapa_vgv.get(d, 0.0) for d in dias_passados))
 
-    pred_reg = prever_qtd_dias(modelo, dias_futuros)
-    pred_med = prever_qtd_medias(dias_futuros, medias)
+    pred_reg = prever_qtd_dias(modelo, dias_futuros, incluir_mes=incluir_mes)
+    pred_med = prever_qtd_medias(dias_futuros, medias, incluir_mes=incluir_mes)
 
     # Reforço explícito de fim de mês: sazonalidade em 15, 10 e 5 dias
     intensidades_fim = calcular_intensidades_fim_mes(treino, janelas=JANELAS_FIM_MES)
@@ -1087,6 +1116,7 @@ def projetar_vendas_mes_atual(
         "hoje": hoje,
         "inicio_treino": inicio,
         "fim_treino": fim_treino,
+        "incluir_mes": incluir_mes,
         "qtd_mtd": qtd_mtd,
         "vgv_mtd": vgv_mtd,
         "ticket_medio": ticket_medio,
@@ -1096,7 +1126,7 @@ def projetar_vendas_mes_atual(
         "meta_vgv_mes": meta_vgv_mes,
         "meta_qtd_mes": meta_qtd,
         "gap_qtd_meta": gap_qtd,
-        "r2_treino": _r2_treino(treino, modelo),
+        "r2_treino": _r2_treino(treino, modelo, incluir_mes=incluir_mes),
         "medias": medias,
         "intensidades_fim_mes": intensidades_fim,
         "intensidade_fim_mes": intensidade_resumo,
@@ -1325,10 +1355,21 @@ def _plot_meta_diaria_integrada(proj: Dict[str, Any]) -> None:
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
-def render_projecao_vendas(proj: Dict[str, Any]) -> None:
+def render_projecao_vendas(
+    proj: Dict[str, Any],
+    titulo: Optional[str] = None,
+) -> None:
     """Seção Streamlit: cartões + gráficos de projeção e gráfico único de meta diária."""
+    incluir_mes = bool(proj.get("incluir_mes", True))
+    if titulo is None:
+        titulo = (
+            "Projeção de Vendas"
+            if incluir_mes
+            else "Projeção de Vendas (sem efeito de mês)"
+        )
+
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
-    st.subheader("Projeção de Vendas")
+    st.subheader(titulo)
 
     st.markdown(
         f"""
@@ -1377,7 +1418,11 @@ def render_projecao_vendas(proj: Dict[str, Any]) -> None:
     )
 
     st.markdown("<br/>", unsafe_allow_html=True)
-    st.subheader("Meta diária para bater a quantidade")
+    st.subheader(
+        "Meta diária para bater a quantidade"
+        if incluir_mes
+        else "Meta diária para bater a quantidade (sem efeito de mês)"
+    )
     _plot_meta_diaria_integrada(proj)
 
 
@@ -1891,6 +1936,16 @@ def main() -> None:
                 render_projecao_vendas(proj)
             else:
                 st.info("Dados insuficientes para treinar a projeção de vendas (janela de 52 semanas).")
+
+            proj_sem_mes = projetar_vendas_mes_atual(
+                base_proj,
+                col_contrato_gerado,
+                meta_vgv_proj,
+                meta_qtd_mes=meta_qtd_proj,
+                incluir_mes=False,
+            )
+            if proj_sem_mes:
+                render_projecao_vendas(proj_sem_mes)
         except Exception as exc:
             st.warning(f"Não foi possível calcular a projeção de vendas: {exc}")
     else:
