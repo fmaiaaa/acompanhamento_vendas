@@ -728,15 +728,24 @@ MESES_PT = {
 }
 
 
-def janela_treino_52_semanas(hoje: Optional[date] = None) -> Tuple[date, date]:
+def janela_treino_meses_exatos(hoje: Optional[date] = None) -> Tuple[date, date]:
     """
-    Corte de 1 ano: do dia atual menos 52 semanas até o dia da semana
-    anterior ao dia atual (ontem).
+    Janela de treino em meses calendário exatos, excluindo o mês atual.
+    Ex.: se hoje = julho/2026 → 01/07/2025 a 30/06/2026.
     """
     hoje = hoje or date.today()
-    fim = hoje - timedelta(days=1)
-    inicio = hoje - timedelta(weeks=52)
+    inicio = date(hoje.year - 1, hoje.month, 1)
+    if hoje.month == 1:
+        fim = date(hoje.year - 1, 12, 31)
+    else:
+        ano_fim, mes_fim = hoje.year, hoje.month - 1
+        fim = date(ano_fim, mes_fim, calendar.monthrange(ano_fim, mes_fim)[1])
     return inicio, fim
+
+
+def janela_treino_52_semanas(hoje: Optional[date] = None) -> Tuple[date, date]:
+    """Compatibilidade: encaminha para janela de meses exatos."""
+    return janela_treino_meses_exatos(hoje)
 
 
 def serie_diaria_contratos(
@@ -1034,13 +1043,15 @@ def projetar_vendas_mes_atual(
     incluir_mes: bool = True,
 ) -> Optional[Dict[str, Any]]:
     """
-    Projeção do mês corrente com duas lógicas (mesma janela de 52 semanas):
+    Projeção do mês corrente com duas lógicas (mesma janela de meses exatos):
       1) Regressão OLS (dia_mês + dia_semana [+ mês])
       2) Médias sazonais combinadas (multiplicativo)
     Com incluir_mes=False, remove o efeito/beta de mês (só dia do mês e dia da semana).
+    Treino: do mês atual − 1 ano até o fim do mês anterior
+    (ex.: jul/2026 → 01/07/2025 a 30/06/2026).
     """
     hoje = hoje or date.today()
-    inicio, fim_treino = janela_treino_52_semanas(hoje)
+    inicio, fim_treino = janela_treino_meses_exatos(hoje)
     serie = serie_diaria_contratos(df_vendas, col_contrato)
     if serie.empty:
         return None
@@ -1064,13 +1075,27 @@ def projetar_vendas_mes_atual(
     qtd_mtd = float(sum(mapa_real.get(d, 0.0) for d in dias_passados))
     vgv_mtd = float(sum(mapa_vgv.get(d, 0.0) for d in dias_passados))
 
-    pred_reg = prever_qtd_dias(modelo, dias_futuros, incluir_mes=incluir_mes)
-    pred_med = prever_qtd_medias(dias_futuros, medias, incluir_mes=incluir_mes)
+    pred_reg_mes = prever_qtd_dias(modelo, dias_mes, incluir_mes=incluir_mes)
+    pred_med_mes = prever_qtd_medias(dias_mes, medias, incluir_mes=incluir_mes)
 
     # Reforço explícito de fim de mês: sazonalidade em 15, 10 e 5 dias
     intensidades_fim = calcular_intensidades_fim_mes(treino, janelas=JANELAS_FIM_MES)
-    pred_reg = aplicar_sazonalidade_fim_mes(pred_reg, dias_futuros, ultimo_dia, intensidades_fim)
-    pred_med = aplicar_sazonalidade_fim_mes(pred_med, dias_futuros, ultimo_dia, intensidades_fim)
+    pred_reg_mes = aplicar_sazonalidade_fim_mes(pred_reg_mes, dias_mes, ultimo_dia, intensidades_fim)
+    pred_med_mes = aplicar_sazonalidade_fim_mes(pred_med_mes, dias_mes, ultimo_dia, intensidades_fim)
+
+    n_passados = len(dias_passados)
+    pred_reg = pred_reg_mes[n_passados:] if len(pred_reg_mes) else np.array([])
+    pred_med = pred_med_mes[n_passados:] if len(pred_med_mes) else np.array([])
+
+    # Comparativo dia a dia: projetado (modelo) × realizado (mês atual)
+    comp_reg: List[Dict[str, Any]] = []
+    comp_med: List[Dict[str, Any]] = []
+    for i, d in enumerate(dias_mes):
+        real = float(mapa_real.get(d, 0.0)) if d <= hoje else None
+        p_reg = float(pred_reg_mes[i]) if i < len(pred_reg_mes) else 0.0
+        p_med = float(pred_med_mes[i]) if i < len(pred_med_mes) else 0.0
+        comp_reg.append({"dia": d.day, "realizado": real, "projetado": p_reg})
+        comp_med.append({"dia": d.day, "realizado": real, "projetado": p_med})
 
     qtd_proj_reg = qtd_mtd + float(pred_reg.sum() if len(pred_reg) else 0.0)
     qtd_proj_med = qtd_mtd + float(pred_med.sum() if len(pred_med) else 0.0)
@@ -1144,6 +1169,8 @@ def projetar_vendas_mes_atual(
         "acumulado_medias": acum_med,
         "ritmo_meta_diario_medias": ritmo_med_d,
         "ritmo_meta_acum_medias": ritmo_med_a,
+        "comparativo_diario_reg": pd.DataFrame(comp_reg),
+        "comparativo_diario_medias": pd.DataFrame(comp_med),
     }
 
 
@@ -1355,6 +1382,104 @@ def _plot_meta_diaria_integrada(proj: Dict[str, Any]) -> None:
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
+def _plot_comparativo_realizado_projetado(proj: Dict[str, Any]) -> None:
+    """Gráfico: projetado × realizado por dia no mês atual (regressão e médias)."""
+    st.markdown("##### Projetado × realizado por dia (mês atual)")
+
+    dia_hoje = proj["hoje"].day
+    df_reg = proj.get("comparativo_diario_reg", pd.DataFrame())
+    df_med = proj.get("comparativo_diario_medias", pd.DataFrame())
+    if (df_reg is None or df_reg.empty) and (df_med is None or df_med.empty):
+        st.info("Sem dados para o comparativo diário.")
+        return
+
+    fig = go.Figure()
+
+    # Realizado (uma série; igual em reg e médias)
+    base = df_reg if (df_reg is not None and not df_reg.empty) else df_med
+    real = base.dropna(subset=["realizado"]) if "realizado" in base.columns else pd.DataFrame()
+    if not real.empty:
+        textos_real = [fmt_qtd(float(v)) for v in real["realizado"]]
+        fig.add_trace(
+            go.Scatter(
+                x=real["dia"],
+                y=real["realizado"],
+                mode="lines+markers+text",
+                name="Realizado",
+                text=textos_real,
+                textposition="top center",
+                textfont=dict(size=10, color=COR_AZUL_ESC, family="Inter"),
+                line=dict(color=COR_AZUL_ESC, width=3),
+                marker=dict(size=8, color=COR_AZUL_ESC),
+            )
+        )
+
+    if df_reg is not None and not df_reg.empty:
+        textos_reg = [fmt_qtd(float(v)) for v in df_reg["projetado"]]
+        fig.add_trace(
+            go.Scatter(
+                x=df_reg["dia"],
+                y=df_reg["projetado"],
+                mode="lines+markers+text",
+                name="Projetado (regressão)",
+                text=textos_reg,
+                textposition="bottom center",
+                textfont=dict(size=10, color=COR_VERMELHO, family="Inter"),
+                line=dict(color=COR_VERMELHO, width=3, dash="dash"),
+                marker=dict(size=8, color=COR_VERMELHO),
+            )
+        )
+
+    if df_med is not None and not df_med.empty:
+        textos_med = [fmt_qtd(float(v)) for v in df_med["projetado"]]
+        fig.add_trace(
+            go.Scatter(
+                x=df_med["dia"],
+                y=df_med["projetado"],
+                mode="lines+markers+text",
+                name="Projetado (médias)",
+                text=textos_med,
+                textposition="top center",
+                textfont=dict(size=10, color="#0f766e", family="Inter"),
+                line=dict(color="#0f766e", width=3, dash="dot"),
+                marker=dict(size=8, symbol="diamond", color="#0f766e"),
+            )
+        )
+
+    fig.add_vline(
+        x=dia_hoje, line_width=1, line_dash="dot", line_color="#64748b",
+        annotation_text="Hoje", annotation_position="top",
+        annotation_font=dict(color=COR_TEXTO_PRETO, size=11, family="Inter"),
+    )
+    fig.update_layout(
+        margin=dict(l=20, r=20, t=50, b=20),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter", color=COR_TEXTO_PRETO),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.10, xanchor="center", x=0.5,
+            font=dict(color=COR_TEXTO_PRETO, family="Inter", size=12),
+        ),
+        hovermode="x unified",
+        height=460,
+    )
+    fig.update_xaxes(
+        title_text="Dia do mês",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        dtick=1,
+        range=[0.5, proj["ultimo_dia"] + 0.5],
+    )
+    fig.update_yaxes(
+        title_text="Qtd. no dia",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        showgrid=True,
+        gridcolor="rgba(226,232,240,0.5)",
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
 def render_projecao_vendas(
     proj: Dict[str, Any],
     titulo: Optional[str] = None,
@@ -1416,6 +1541,9 @@ def render_projecao_vendas(
         proj.get("diaria_medias", pd.DataFrame()),
         proj.get("acumulado_medias", pd.DataFrame()),
     )
+
+    st.markdown("<br/>", unsafe_allow_html=True)
+    _plot_comparativo_realizado_projetado(proj)
 
     st.markdown("<br/>", unsafe_allow_html=True)
     st.subheader(
@@ -1935,7 +2063,7 @@ def main() -> None:
             if proj:
                 render_projecao_vendas(proj)
             else:
-                st.info("Dados insuficientes para treinar a projeção de vendas (janela de 52 semanas).")
+                st.info("Dados insuficientes para treinar a projeção de vendas (janela de meses exatos).")
 
             proj_sem_mes = projetar_vendas_mes_atual(
                 base_proj,
