@@ -22,8 +22,6 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
-from sklearn.linear_model import LinearRegression
-from sklearn.preprocessing import OneHotEncoder
 
 # -----------------------------------------------------------------------------
 # Identificação da planilha e Arquivos Visuais
@@ -742,47 +740,58 @@ def calendario_diario(inicio: date, fim: date, serie: pd.DataFrame) -> pd.DataFr
     return cal
 
 
-def _matriz_explicativas(df: pd.DataFrame, encoder: Optional[OneHotEncoder] = None):
-    """One-hot de dia do mês, dia da semana e mês."""
-    X_cat = df[["dia_mes", "dia_semana", "mes"]].copy()
-    X_cat["dia_mes"] = X_cat["dia_mes"].astype(str)
-    if encoder is None:
-        encoder = OneHotEncoder(
-            categories=[
-                [str(i) for i in range(1, 32)],
-                list(DIAS_SEMANA_PT.values()),
-                list(MESES_PT.values()),
-            ],
-            handle_unknown="ignore",
-            sparse_output=False,
-        )
-        X = encoder.fit_transform(X_cat)
-        return X, encoder
-    return encoder.transform(X_cat), encoder
+def _matriz_explicativas(df: pd.DataFrame) -> np.ndarray:
+    """One-hot (numpy) de dia do mês, dia da semana e mês + intercepto."""
+    n = len(df)
+    # 31 dias + 7 dias da semana + 12 meses + intercepto
+    X = np.zeros((n, 31 + 7 + 12 + 1), dtype=float)
+    X[:, -1] = 1.0  # intercepto
+
+    dias_semana_idx = {nome: i for i, nome in DIAS_SEMANA_PT.items()}
+    meses_idx = {nome: i for i, nome in MESES_PT.items()}
+
+    for i, row in enumerate(df.itertuples(index=False)):
+        dia = int(row.dia_mes)
+        if 1 <= dia <= 31:
+            X[i, dia - 1] = 1.0
+        ds = dias_semana_idx.get(str(row.dia_semana), None)
+        if ds is not None:
+            X[i, 31 + ds] = 1.0
+        ms = meses_idx.get(str(row.mes), None)
+        if ms is not None:
+            X[i, 31 + 7 + (ms - 1)] = 1.0
+    return X
 
 
-def treinar_regressao_vendas_diarias(treino: pd.DataFrame) -> Tuple[LinearRegression, OneHotEncoder]:
-    X, encoder = _matriz_explicativas(treino)
+def treinar_regressao_vendas_diarias(treino: pd.DataFrame) -> np.ndarray:
+    """OLS via numpy.linalg.lstsq. Retorna vetor de coeficientes."""
+    X = _matriz_explicativas(treino)
     y = treino["qtd"].astype(float).values
-    modelo = LinearRegression()
-    modelo.fit(X, y)
-    return modelo, encoder
+    coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+    return coef
 
 
-def prever_qtd_dias(
-    modelo: LinearRegression,
-    encoder: OneHotEncoder,
-    datas: List[date],
-) -> np.ndarray:
+def prever_qtd_dias(coef: np.ndarray, datas: List[date]) -> np.ndarray:
     if not datas:
         return np.array([])
     df = pd.DataFrame({"data": datas})
     df["dia_mes"] = df["data"].map(lambda d: d.day)
     df["dia_semana"] = df["data"].map(lambda d: DIAS_SEMANA_PT[d.weekday()])
     df["mes"] = df["data"].map(lambda d: MESES_PT[d.month])
-    X, _ = _matriz_explicativas(df, encoder=encoder)
-    pred = modelo.predict(X)
+    X = _matriz_explicativas(df)
+    pred = X @ coef
     return np.maximum(pred, 0.0)
+
+
+def _r2_treino(treino: pd.DataFrame, coef: np.ndarray) -> float:
+    X = _matriz_explicativas(treino)
+    y = treino["qtd"].astype(float).values
+    y_hat = X @ coef
+    ss_res = float(np.sum((y - y_hat) ** 2))
+    ss_tot = float(np.sum((y - y.mean()) ** 2))
+    if ss_tot <= 0:
+        return 0.0
+    return 1.0 - (ss_res / ss_tot)
 
 
 def projetar_vendas_mes_atual(
@@ -805,7 +814,7 @@ def projetar_vendas_mes_atual(
     if treino["qtd"].sum() <= 0 or len(treino) < 30:
         return None
 
-    modelo, encoder = treinar_regressao_vendas_diarias(treino)
+    modelo = treinar_regressao_vendas_diarias(treino)
 
     ano, mes = hoje.year, hoje.month
     ultimo_dia = calendar.monthrange(ano, mes)[1]
@@ -820,7 +829,7 @@ def projetar_vendas_mes_atual(
     vgv_mtd = sum(mapa_vgv.get(d, 0.0) for d in dias_passados)
     qtd_mtd = float(sum(qtd_atingida_por_dia))
 
-    pred_futuro = prever_qtd_dias(modelo, encoder, dias_futuros)
+    pred_futuro = prever_qtd_dias(modelo, dias_futuros)
     qtd_projetada_restante = float(pred_futuro.sum()) if len(pred_futuro) else 0.0
     qtd_projetada_mes = qtd_mtd + qtd_projetada_restante
 
@@ -851,8 +860,7 @@ def projetar_vendas_mes_atual(
         running += float(pred_futuro[i])
         acum.append({"dia": d.day, "acum": running, "tipo": "Projetada"})
 
-    X_tr, _ = _matriz_explicativas(treino, encoder=encoder)
-    r2 = float(modelo.score(X_tr, treino["qtd"].astype(float).values))
+    X_tr_r2 = _r2_treino(treino, modelo)
 
     return {
         "hoje": hoje,
@@ -868,7 +876,7 @@ def projetar_vendas_mes_atual(
         "ultimo_dia": ultimo_dia,
         "diaria": pd.DataFrame(qtd_diaria_plot),
         "acumulado": pd.DataFrame(acum),
-        "r2_treino": r2,
+        "r2_treino": X_tr_r2,
     }
 
 
