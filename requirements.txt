@@ -1,8 +1,13 @@
-streamlit
+streamlit>=1.28.0
 st-gsheets-connection
-pandas
-plotly
+pandas>=2.0.0
+plotly>=5.18.0
 openpyxl
 statsmodels
 geopy
-sklearn
+scikit-learn>=1.3.0
+
+playwright>=1.40.0
+numpy>=1.24.0
+gspread>=6.0.0
+google-auth>=2.23.0
