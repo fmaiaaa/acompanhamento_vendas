@@ -999,7 +999,12 @@ def projetar_vendas_mes_atual(
     qtd_proj_reg = qtd_mtd + float(pred_reg.sum() if len(pred_reg) else 0.0)
     qtd_proj_med = qtd_mtd + float(pred_med.sum() if len(pred_med) else 0.0)
 
-    ticket_medio = (vgv_mtd / qtd_mtd) if qtd_mtd > 0 else 0.0
+    # Ticket médio dos 30 dias anteriores à projeção (estoque muda constantemente)
+    fim_ticket = hoje - timedelta(days=1)
+    inicio_ticket = hoje - timedelta(days=30)
+    qtd_30 = float(sum(mapa_real.get(inicio_ticket + timedelta(days=i), 0.0) for i in range(30)))
+    vgv_30 = float(sum(mapa_vgv.get(inicio_ticket + timedelta(days=i), 0.0) for i in range(30)))
+    ticket_medio = (vgv_30 / qtd_30) if qtd_30 > 0 else 0.0
     if ticket_medio <= 0:
         q_tr = float(treino["qtd"].sum())
         v_tr = float(treino["vgv"].sum())
@@ -1038,6 +1043,8 @@ def projetar_vendas_mes_atual(
         "qtd_mtd": qtd_mtd,
         "vgv_mtd": vgv_mtd,
         "ticket_medio": ticket_medio,
+        "inicio_ticket_30d": inicio_ticket,
+        "fim_ticket_30d": fim_ticket,
         "ultimo_dia": ultimo_dia,
         "meta_vgv_mes": meta_vgv_mes,
         "meta_qtd_mes": meta_qtd,
@@ -1242,6 +1249,10 @@ def render_projecao_vendas(proj: Dict[str, Any]) -> None:
         f"Treino {proj['inicio_treino'].strftime('%d/%m/%Y')} a {proj['fim_treino'].strftime('%d/%m/%Y')} "
         f"(52 semanas, até o dia anterior) · "
         f"MTD atingido (Contrato gerado em): {fmt_qtd(proj['qtd_mtd'])} vendas / {fmt_br_milhoes(proj['vgv_mtd'])} · "
+        f"Ticket médio 30d "
+        f"({proj.get('inicio_ticket_30d', proj['hoje']).strftime('%d/%m')}–"
+        f"{proj.get('fim_ticket_30d', proj['hoje']).strftime('%d/%m')}): "
+        f"{fmt_br_milhoes(proj.get('ticket_medio', 0))} · "
         f"Gap p/ meta QTD: {fmt_qtd(proj.get('gap_qtd_meta', 0))} "
         f"(meta {fmt_qtd(proj.get('meta_qtd_mes', 0))}) · "
         f"Sazonalidade 15/10/5: "
