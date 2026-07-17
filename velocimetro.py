@@ -36,6 +36,7 @@ SPREADSHEET_FUNIL_ID = "1ckdfpUr7qhr9YHnlfJ_rYrs6c6ZFugqYG0zrZDI9bck"
 ABA_AGENDAMENTOS_VISITAS = "Dados Únicos"
 ABA_PASTAS = "BASE"
 FUNIL_ETAPAS = ("agendamentos", "visitas", "pastas", "pastas_aprovadas", "vendas")
+FUNIL_DRIVERS = ("agendamentos", "visitas", "pastas", "pastas_aprovadas")
 FUNIL_LABELS = {
     "agendamentos": "Agendamentos",
     "visitas": "Visitas",
@@ -43,7 +44,14 @@ FUNIL_LABELS = {
     "pastas_aprovadas": "Pastas aprovadas",
     "vendas": "Vendas",
 }
-FUNIL_LAGS = (1, 3, 7, 14)
+FUNIL_LAGS = (0, 1, 3, 7, 14)  # inclui efeito contemporâneo (lag 0)
+FUNIL_LAGS_PERFIL = tuple(range(0, 15))  # perfil dia a dia: quanto tempo até afetar vendas
+FUNIL_CORES_DRIVER = {
+    "agendamentos": "#04428f",
+    "visitas": "#cb0935",
+    "pastas": "#0f766e",
+    "pastas_aprovadas": "#b45309",
+}
 
 _DIR_APP = Path(__file__).resolve().parent
 LOGO_TOPO_ARQUIVO = "502.57_LOGO DIRECIONAL_V2F-01.png"
@@ -1822,24 +1830,38 @@ def calendario_funil_diario(
     return cal
 
 
-def _cols_lag_funil(lags: Tuple[int, ...] = FUNIL_LAGS) -> List[str]:
-    return [f"{e}_lag{L}" for e in FUNIL_ETAPAS for L in lags]
+def _cols_lag_funil(
+    lags: Tuple[int, ...] = FUNIL_LAGS,
+    alvo: Optional[str] = None,
+    etapas: Optional[Tuple[str, ...]] = None,
+) -> List[str]:
+    """Lags das etapas; exclui lag 0 do próprio alvo (colinear com y)."""
+    etapas_uso = etapas if etapas is not None else FUNIL_ETAPAS
+    cols: List[str] = []
+    for e in etapas_uso:
+        for L in lags:
+            if L == 0 and alvo is not None and e == alvo:
+                continue
+            cols.append(f"{e}_lag{L}")
+    return cols
 
 
 def _matriz_funil_explicativas(
     df: pd.DataFrame,
     incluir_mes: bool = True,
     lags: Tuple[int, ...] = FUNIL_LAGS,
-) -> np.ndarray:
-    """Calendário (dia_mês + dia_semana [+ mês]) + lags do funil + intercepto."""
+    alvo: Optional[str] = None,
+    etapas_lag: Optional[Tuple[str, ...]] = None,
+) -> Tuple[np.ndarray, List[str]]:
+    """Calendário + lags do funil + intercepto. Retorna (X, nomes das cols de lag)."""
     X_cal = _matriz_explicativas(df, incluir_mes=incluir_mes)
-    lag_cols = _cols_lag_funil(lags)
+    lag_cols = _cols_lag_funil(lags, alvo=alvo, etapas=etapas_lag)
     X_lag = np.zeros((len(df), len(lag_cols)), dtype=float)
     for j, c in enumerate(lag_cols):
         if c in df.columns:
             X_lag[:, j] = pd.to_numeric(df[c], errors="coerce").fillna(0.0).values
-    # [dummies calendário sem intercepto | lags | intercepto]
-    return np.hstack([X_cal[:, :-1], X_lag, X_cal[:, -1:]])
+    X = np.hstack([X_cal[:, :-1], X_lag, X_cal[:, -1:]])
+    return X, lag_cols
 
 
 def treinar_regressao_funil(
@@ -1848,7 +1870,7 @@ def treinar_regressao_funil(
     incluir_mes: bool = True,
     lags: Tuple[int, ...] = FUNIL_LAGS,
 ) -> np.ndarray:
-    X = _matriz_funil_explicativas(treino, incluir_mes=incluir_mes, lags=lags)
+    X, _ = _matriz_funil_explicativas(treino, incluir_mes=incluir_mes, lags=lags, alvo=alvo)
     y = treino[alvo].astype(float).values
     coef, *_ = np.linalg.lstsq(X, y, rcond=None)
     return coef
@@ -1861,7 +1883,7 @@ def _r2_funil(
     incluir_mes: bool = True,
     lags: Tuple[int, ...] = FUNIL_LAGS,
 ) -> float:
-    X = _matriz_funil_explicativas(treino, incluir_mes=incluir_mes, lags=lags)
+    X, _ = _matriz_funil_explicativas(treino, incluir_mes=incluir_mes, lags=lags, alvo=alvo)
     y = treino[alvo].astype(float).values
     y_hat = X @ coef
     ss_res = float(np.sum((y - y_hat) ** 2))
@@ -1939,17 +1961,112 @@ def _prever_linha_reg_funil(
     row_df: pd.DataFrame,
     incluir_mes: bool,
     lags: Tuple[int, ...],
+    alvo: str,
 ) -> float:
-    X = _matriz_funil_explicativas(row_df, incluir_mes=incluir_mes, lags=lags)
+    X, _ = _matriz_funil_explicativas(row_df, incluir_mes=incluir_mes, lags=lags, alvo=alvo)
     return float(max((X @ coef)[0], 0.0))
 
 
 def _atualizar_lags_linha(cal: pd.DataFrame, i: int, lags: Tuple[int, ...]) -> None:
     for etapa in FUNIL_ETAPAS:
         for L in lags:
-            j = i - L
-            cal.at[i, f"{etapa}_lag{L}"] = float(cal.at[j, etapa]) if j >= 0 else 0.0
+            if L == 0:
+                cal.at[i, f"{etapa}_lag0"] = float(cal.at[i, etapa])
+            else:
+                j = i - L
+                cal.at[i, f"{etapa}_lag{L}"] = float(cal.at[j, etapa]) if j >= 0 else 0.0
 
+
+def estimar_efeitos_lags_sobre_vendas(
+    treino: pd.DataFrame,
+    lags: Tuple[int, ...] = FUNIL_LAGS_PERFIL,
+    incluir_mes: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """
+    OLS: vendas ~ calendário + lags 0..N de agendamentos/visitas/pastas/pastas_aprovadas.
+    Mostra quanto tempo cada variável demora para afetar vendas.
+    """
+    if treino.empty or float(treino["vendas"].sum()) <= 0 or len(treino) < 40:
+        return None
+
+    # Garante colunas de lag do perfil
+    cal = treino.copy()
+    for etapa in FUNIL_DRIVERS:
+        if etapa not in cal.columns:
+            return None
+        for L in lags:
+            col = f"{etapa}_lag{L}"
+            if col not in cal.columns:
+                cal[col] = cal[etapa].shift(L).fillna(0.0)
+
+    X, lag_cols = _matriz_funil_explicativas(
+        cal,
+        incluir_mes=incluir_mes,
+        lags=lags,
+        alvo="vendas",
+        etapas_lag=FUNIL_DRIVERS,
+    )
+    y = cal["vendas"].astype(float).values
+    coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+
+    n_cal = X.shape[1] - len(lag_cols) - 1
+    coef_lags = coef[n_cal:n_cal + len(lag_cols)]
+
+    perfis: Dict[str, pd.DataFrame] = {}
+    resumo: List[Dict[str, Any]] = []
+    for etapa in FUNIL_DRIVERS:
+        efeitos = []
+        for L in lags:
+            col = f"{etapa}_lag{L}"
+            if col in lag_cols:
+                efeitos.append(float(coef_lags[lag_cols.index(col)]))
+            else:
+                efeitos.append(0.0)
+        df_p = pd.DataFrame({"lag": list(lags), "efeito": efeitos})
+        df_p["acumulado"] = df_p["efeito"].cumsum()
+        perfis[etapa] = df_p
+
+        # Lag de pico (maior |efeito|); preferir efeito positivo se houver
+        pos = df_p[df_p["efeito"] > 0]
+        if not pos.empty:
+            i_peak = int(pos["efeito"].idxmax())
+        else:
+            i_peak = int(df_p["efeito"].abs().idxmax())
+        lag_pico = int(df_p.loc[i_peak, "lag"])
+        efeito_pico = float(df_p.loc[i_peak, "efeito"])
+        acum_pos = float(df_p.loc[df_p["efeito"] > 0, "efeito"].sum()) if (df_p["efeito"] > 0).any() else 0.0
+        # dias até ~50% do efeito positivo acumulado
+        lag_meia = lag_pico
+        if acum_pos > 1e-9:
+            running = 0.0
+            lag_meia = int(df_p["lag"].iloc[-1])
+            for _, r in df_p.iterrows():
+                if float(r["efeito"]) > 0:
+                    running += float(r["efeito"])
+                    if running >= 0.5 * acum_pos:
+                        lag_meia = int(r["lag"])
+                        break
+        resumo.append({
+            "etapa": etapa,
+            "label": FUNIL_LABELS.get(etapa, etapa),
+            "lag_pico": lag_pico,
+            "efeito_pico": efeito_pico,
+            "lag_meia_vida": lag_meia,
+            "efeito_lag0": float(df_p.loc[df_p["lag"] == 0, "efeito"].iloc[0]) if (df_p["lag"] == 0).any() else 0.0,
+            "efeito_acum": float(df_p["efeito"].sum()),
+        })
+
+    y_hat = X @ coef
+    ss_res = float(np.sum((y - y_hat) ** 2))
+    ss_tot = float(np.sum((y - y.mean()) ** 2))
+    r2 = (1.0 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+
+    return {
+        "r2": r2,
+        "lags": lags,
+        "perfis": perfis,
+        "resumo": resumo,
+    }
 
 def projetar_funil_mes_atual(
     mapas: Dict[str, Dict[date, float]],
@@ -2006,18 +2123,20 @@ def projetar_funil_mes_atual(
             continue
         _atualizar_lags_linha(cal_reg, i, lags)
         _atualizar_lags_linha(cal_med, i, lags)
-        row_reg = cal_reg.loc[[i]]
-        row_med = cal_med.loc[[i]]
         for etapa in FUNIL_ETAPAS:
-            pred_r = _prever_linha_reg_funil(coefs[etapa], row_reg, incluir_mes, lags)
+            row_reg = cal_reg.loc[[i]]
+            row_med = cal_med.loc[[i]]
+            pred_r = _prever_linha_reg_funil(coefs[etapa], row_reg, incluir_mes, lags, etapa)
             info = medias["etapas"][etapa]
             saz = _pred_sazonal_etapa(d, info, incluir_mes)
             intens = _intensidade_lags_linha(row_med.iloc[0], info)
             pred_m = max(saz * intens, 0.0)
             cal_reg.at[i, etapa] = pred_r
             cal_med.at[i, etapa] = pred_m
-            # atualiza lags das próximas etapas no mesmo dia (já calculados no início do loop;
-            # lags usam dias anteriores, então ok)
+            # lag 0 disponível para etapas seguintes no mesmo dia
+            if 0 in lags:
+                cal_reg.at[i, f"{etapa}_lag0"] = pred_r
+                cal_med.at[i, f"{etapa}_lag0"] = pred_m
 
     # montar resultados por etapa
     resultados: Dict[str, Any] = {}
@@ -2035,11 +2154,8 @@ def projetar_funil_mes_atual(
             p_med = float(cal_med.at[i, etapa])
             if d <= hoje:
                 mtd += real or 0.0
-                # no passado, série "projetada" = previsão in-sample do modelo no dia
-                # para comparativo usamos pred do modelo no calendário treinado...
-                # Recalcula previsão in-sample para o dia passado:
                 row = cal.loc[[i]]
-                p_reg = _prever_linha_reg_funil(coefs[etapa], row, incluir_mes, lags)
+                p_reg = _prever_linha_reg_funil(coefs[etapa], row, incluir_mes, lags, etapa)
                 info = medias["etapas"][etapa]
                 p_med = max(
                     _pred_sazonal_etapa(d, info, incluir_mes)
@@ -2063,6 +2179,21 @@ def projetar_funil_mes_atual(
             "diaria": pd.DataFrame(diaria),
         }
 
+    # Perfil de lags 0..14 sobre vendas (tempo até o efeito)
+    max_perfil = max(FUNIL_LAGS_PERFIL) if FUNIL_LAGS_PERFIL else 0
+    cal_perfil = calendario_funil_diario(
+        inicio - timedelta(days=max_perfil),
+        fim_treino,
+        mapas,
+        lags=FUNIL_LAGS_PERFIL,
+    )
+    treino_perfil = cal_perfil.loc[
+        (cal_perfil["data"] >= inicio) & (cal_perfil["data"] <= fim_treino)
+    ].copy()
+    efeitos_lags = estimar_efeitos_lags_sobre_vendas(
+        treino_perfil, lags=FUNIL_LAGS_PERFIL, incluir_mes=incluir_mes
+    )
+
     return {
         "hoje": hoje,
         "inicio_treino": inicio,
@@ -2073,6 +2204,7 @@ def projetar_funil_mes_atual(
         "r2s": r2s,
         "medias": medias,
         "etapas": resultados,
+        "efeitos_lags_vendas": efeitos_lags,
     }
 
 
@@ -2227,6 +2359,132 @@ def render_projecao_funil(proj: Dict[str, Any]) -> None:
     for etapa in FUNIL_ETAPAS:
         df = (etapas.get(etapa) or {}).get("diaria", pd.DataFrame())
         _plot_funil_etapa_comparativo(etapa, df, ultimo, dia_hoje)
+
+    efeitos = proj.get("efeitos_lags_vendas")
+    if efeitos:
+        render_efeitos_lags_sobre_vendas(efeitos)
+
+
+def render_efeitos_lags_sobre_vendas(efeitos: Dict[str, Any]) -> None:
+    """Perfil de lags (0–14d) das etapas do funil sobre vendas."""
+    st.markdown("<br/>", unsafe_allow_html=True)
+    st.subheader("Tempo até o efeito nas vendas (lags)")
+    st.caption(
+        f"R²: {float(efeitos.get('r2', 0)):.2f} · "
+        "efeito = Δ vendas por unidade da variável no lag (controlando calendário)"
+    )
+
+    resumo = efeitos.get("resumo") or []
+    if resumo:
+        cards = []
+        for r in resumo:
+            cards.append(
+                f"""
+                <div class="vel-kpi">
+                    <div class="lbl">{r.get('label')}</div>
+                    <div class="val">{int(r.get('lag_pico', 0))}d</div>
+                    <div class="lbl" style="margin-top:6px;opacity:0.75;">
+                        Pico · meia-vida {int(r.get('lag_meia_vida', 0))}d
+                        · lag0 {float(r.get('efeito_lag0', 0)):.2f}
+                    </div>
+                </div>
+                """
+            )
+        st.markdown(f'<div class="vel-kpi-row">{"".join(cards)}</div>', unsafe_allow_html=True)
+
+    perfis = efeitos.get("perfis") or {}
+    fig = go.Figure()
+    for etapa in FUNIL_DRIVERS:
+        df = perfis.get(etapa)
+        if df is None or df.empty:
+            continue
+        cor = FUNIL_CORES_DRIVER.get(etapa, COR_AZUL_ESC)
+        fig.add_trace(
+            go.Scatter(
+                x=df["lag"],
+                y=df["efeito"],
+                mode="lines+markers+text",
+                name=FUNIL_LABELS.get(etapa, etapa),
+                text=[f"{float(v):.2f}" for v in df["efeito"]],
+                textposition="top center",
+                textfont=dict(size=9, color=cor, family="Inter"),
+                line=dict(color=cor, width=3),
+                marker=dict(size=8, color=cor),
+            )
+        )
+    fig.add_hline(y=0, line_width=1, line_dash="dot", line_color="#64748b")
+    fig.update_layout(
+        margin=dict(l=20, r=20, t=50, b=20),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter", color=COR_TEXTO_PRETO),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.10, xanchor="center", x=0.5,
+            font=dict(color=COR_TEXTO_PRETO, family="Inter", size=12),
+        ),
+        hovermode="x unified",
+        height=420,
+    )
+    fig.update_xaxes(
+        title_text="Lag (dias)",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        dtick=1,
+    )
+    fig.update_yaxes(
+        title_text="Efeito nas vendas",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        showgrid=True,
+        gridcolor="rgba(226,232,240,0.5)",
+    )
+    st.markdown("##### Efeito por lag (0 = mesmo dia)")
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+    fig_c = go.Figure()
+    for etapa in FUNIL_DRIVERS:
+        df = perfis.get(etapa)
+        if df is None or df.empty:
+            continue
+        cor = FUNIL_CORES_DRIVER.get(etapa, COR_AZUL_ESC)
+        fig_c.add_trace(
+            go.Scatter(
+                x=df["lag"],
+                y=df["acumulado"],
+                mode="lines+markers",
+                name=FUNIL_LABELS.get(etapa, etapa),
+                line=dict(color=cor, width=3),
+                marker=dict(size=7, color=cor),
+            )
+        )
+    fig_c.add_hline(y=0, line_width=1, line_dash="dot", line_color="#64748b")
+    fig_c.update_layout(
+        margin=dict(l=20, r=20, t=50, b=20),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter", color=COR_TEXTO_PRETO),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.10, xanchor="center", x=0.5,
+            font=dict(color=COR_TEXTO_PRETO, family="Inter", size=12),
+        ),
+        hovermode="x unified",
+        height=380,
+    )
+    fig_c.update_xaxes(
+        title_text="Lag (dias)",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        dtick=1,
+    )
+    fig_c.update_yaxes(
+        title_text="Efeito acumulado",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        showgrid=True,
+        gridcolor="rgba(226,232,240,0.5)",
+    )
+    st.markdown("##### Efeito acumulado até o lag")
+    st.plotly_chart(fig_c, use_container_width=True, config={"displayModeBar": False})
 
 
 def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_vgv: float, vendas_qtd: float) -> None:
