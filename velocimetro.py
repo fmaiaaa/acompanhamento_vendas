@@ -77,6 +77,10 @@ FUNIL_CORES_DRIVER = {
 }
 FUNIL_CORES_NIVEIS = ["#022654", "#04428f", "#1e60b3", "#cb0935", "#9e0828"]
 COLUNAS_PASTAS_ALIASES = [
+    "Data Primeiro Envio Análise", "Data Primeiro Envio Analise",
+    "Data do Primeiro Envio Análise", "Data do Primeiro Envio Analise",
+    "Primeiro Envio Análise", "Primeiro Envio Analise",
+    "Data 1º Envio Análise", "Data 1o Envio Analise",
     "Data da Análise", "Data da Analise", "Data Análise", "Data Analise",
 ]
 COLUNAS_PASTAS_APROV_ALIASES = [
@@ -835,6 +839,25 @@ def achar_coluna_aprovacao_safi(df: pd.DataFrame) -> Optional[str]:
         elif "safi" in cn and "data" in cn:
             candidatas.append(c)
     return candidatas[0] if candidatas else None
+
+
+def achar_coluna_primeiro_envio_analise(df: pd.DataFrame) -> Optional[str]:
+    """Localiza Data Primeiro Envio Análise (prioridade: 'primeiro' + 'envio')."""
+    col = achar_coluna(df, COLUNAS_PASTAS_ALIASES)
+    if col and "primeiro" in _norm_txt_col(col) and "envio" in _norm_txt_col(col):
+        return col
+    if df is None or df.empty:
+        return None
+    for c in df.columns:
+        cn = _norm_txt_col(c)
+        if "primeiro" in cn and "envio" in cn:
+            return c
+        if "1o" in cn and "envio" in cn:
+            return c
+        if "1" in cn and "envio" in cn and "analise" in cn:
+            return c
+    # fallback: aliases genéricos (ex.: Data da Análise) se não houver coluna específica
+    return col
 
 
 def _celula_vazia(val: Any) -> bool:
@@ -2324,12 +2347,12 @@ def deduplicar_vendas_funil(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def deduplicar_pastas_funil(df: pd.DataFrame) -> pd.DataFrame:
-    """Uma linha por Nome da Avaliação de crédito (Data Aprovação SAFI mais recente)."""
-    col_safi = achar_coluna_aprovacao_safi(df)
-    if not col_safi:
+    """Uma linha por Nome da Avaliação (Data Primeiro Envio Análise mais recente)."""
+    col_envio = achar_coluna_primeiro_envio_analise(df)
+    if not col_envio:
         return df if df is not None else pd.DataFrame()
     return deduplicar_por_chave_mais_recente(
-        df, ALIASES_NOME_AVALIACAO_CREDITO, [col_safi]
+        df, ALIASES_NOME_AVALIACAO_CREDITO, [col_envio]
     )
 
 
@@ -2350,13 +2373,13 @@ def montar_mapa_funil_diario(
     Séries diárias do funil:
       agendamentos ← Data de criação
       visitas ← Data da visita
-      pastas ← Data Aprovação SAFI (relatório SF 00OU600000FEOoDMAX)
+      pastas ← Data Primeiro Envio Análise (relatório SF 00OU600000FEOoDMAX)
       pastas_aprovadas ← Data Aprovação SAFI (Status Análise aprovada + filtros SAFI)
       vendas ← Contrato gerado em, somente vendas comerciais
 
     Deduplicação antes da contagem:
       vendas → ID da Oportunidade (Contrato gerado em mais recente)
-      pastas → Nome da Avaliação de crédito (Data Aprovação SAFI mais recente)
+      pastas → Nome da Avaliação (Data Primeiro Envio Análise mais recente)
       pastas aprovadas → Nome da Avaliação (Data Aprovação SAFI mais recente, após filtros)
       agendamentos → Código do agendamento (Data de criação mais recente)
     """
@@ -2377,10 +2400,10 @@ def montar_mapa_funil_diario(
         for _, r in serie_vendas.iterrows():
             mapa_vendas[r["data"]] = float(r["qtd"])
 
-    col_safi_pas = achar_coluna_aprovacao_safi(df_pas)
+    col_envio = achar_coluna_primeiro_envio_analise(df_pas)
     col_safi_aprov = achar_coluna_aprovacao_safi(df_pas_aprov)
     mapa_pastas = (
-        contar_eventos_por_coluna(df_pas, col_safi_pas) if col_safi_pas else {}
+        contar_eventos_por_coluna(df_pas, col_envio) if col_envio else {}
     )
     mapa_aprov = (
         contar_eventos_por_coluna(df_pas_aprov, col_safi_aprov) if col_safi_aprov else {}
@@ -4332,8 +4355,16 @@ def main() -> None:
                         SF_REPORT_PASTAS_ID, rotulo="pastas"
                     )
                     n_pas_bruto = len(df_pastas_funil)
+                    col_envio = achar_coluna_primeiro_envio_analise(df_pastas_funil)
                     col_safi = achar_coluna_aprovacao_safi(df_pastas_funil)
+                    n_com_envio = 0
                     n_com_safi = 0
+                    if col_envio:
+                        n_com_envio = int(
+                            pd.to_datetime(
+                                df_pastas_funil[col_envio], dayfirst=True, errors="coerce"
+                            ).notna().sum()
+                        )
                     if col_safi:
                         n_com_safi = int(
                             pd.to_datetime(
@@ -4345,8 +4376,9 @@ def main() -> None:
                     st.caption(
                         f"Pastas: {origem_pastas} · "
                         f"{n_pas_bruto:,} → {len(df_pastas_funil):,} linhas "
-                        f"(dedup Nome da Avaliação · data: Aprovação SAFI) · "
-                        f"'{col_safi or '?'}' ({n_com_safi:,}) · "
+                        f"(dedup Nome da Avaliação) · "
+                        f"1º envio: '{col_envio or '?'}' ({n_com_envio:,}) · "
+                        f"Aprov. SAFI: '{col_safi or '?'}' ({n_com_safi:,}) · "
                         f"aprovadas filtradas: {n_aprov_filt:,}"
                     )
                 except Exception as e_sf_p:
