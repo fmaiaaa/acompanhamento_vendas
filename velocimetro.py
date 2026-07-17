@@ -950,11 +950,13 @@ def fmt_qtd(v: float) -> str:
 
 
 def fmt_funil_valor(v: float) -> str:
-    """Valor exibido no funil: no máximo 2 casas decimais."""
-    v = float(v)
-    if abs(v - round(v)) < 0.005:
-        return str(int(round(v)))
-    return f"{v:.2f}"
+    """Valor exibido no funil: sempre inteiro (já arredondado para cima)."""
+    return str(int(math.ceil(max(0.0, float(v)))))
+
+
+def ceil_funil_totais(totais: Dict[str, float]) -> Dict[str, float]:
+    """Arredonda para cima todos os volumes do funil."""
+    return {e: float(math.ceil(max(0.0, float((totais or {}).get(e, 0.0))))) for e in FUNIL_ETAPAS}
 
 
 FUNIL_FONTE_TAMANHO = 18
@@ -969,10 +971,10 @@ def _criar_fig_funil(
     altura: int = 380,
 ) -> go.Figure:
     """
-    Funil Plotly com texto branco dentro do bloco, 2 casas decimais e
-    textposition=auto (fora do bloco quando não couber dentro).
+    Funil Plotly com texto branco dentro do bloco.
+    Volumes sempre arredondados para cima (ceil).
     """
-    vals = [max(0.0, float(v)) for v in valores]
+    vals = [float(math.ceil(max(0.0, float(v)))) for v in valores]
     textos = [fmt_funil_valor(v) for v in vals]
     fig = go.Figure(go.Funnel(
         y=labels,
@@ -3639,10 +3641,11 @@ def _render_conversoes_funil(conversoes: Dict[str, Any]) -> None:
     if ini and fim:
         periodo = f"{ini.strftime('%d/%m/%Y')} a {fim.strftime('%d/%m/%Y')}"
 
-    st.markdown("##### Conversões etapa → etapa")
+    st.markdown("##### Referência: conversões MTD × histórico")
     st.caption(f"Mês atual (MTD) × histórico ({periodo or 'janela de treino'})")
     pares_m = mes.get("etapa_a_etapa") or []
     pares_h = {r["label"]: r for r in (hist.get("etapa_a_etapa") or [])}
+    st.caption("Conversões etapa → etapa")
     _render_kpi_cards([
         {
             "lbl": str(r.get("label", "")),
@@ -3652,11 +3655,7 @@ def _render_conversoes_funil(conversoes: Dict[str, Any]) -> None:
         for r in pares_m
     ])
 
-    st.markdown("##### Conversões finais (indicador → venda)")
-    st.caption(
-        "Mês atual usa o funil do mês; histórico exclui o mês corrente "
-        "(até 1 ano atrás) — base das metas diárias e do funil necessário."
-    )
+    st.caption("Conversões diretas (indicador → venda)")
     fins_m = mes.get("para_venda") or []
     fins_h = {r["label"]: r for r in (hist.get("para_venda") or [])}
     _render_kpi_cards([
@@ -3739,10 +3738,62 @@ def _render_conversoes_funil(conversoes: Dict[str, Any]) -> None:
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
+def _render_conversoes_de_totais(
+    totais: Dict[str, float],
+    titulo: str = "",
+) -> None:
+    """Conversões etapa→etapa e diretas (indicador→venda) de um funil."""
+    conv = calcular_conversoes_totais(ceil_funil_totais(totais))
+    if titulo:
+        st.markdown(f"###### {titulo}")
+    pares = conv.get("etapa_a_etapa") or []
+    diretas = conv.get("para_venda") or []
+    st.caption("Conversões etapa → etapa")
+    _render_kpi_cards([
+        {
+            "lbl": str(r.get("label", "")),
+            "val": _fmt_taxa_pct(r.get("taxa")),
+            "sub": (
+                f"{fmt_qtd(float(r.get('destino_qtd', 0)))} / "
+                f"{fmt_qtd(float(r.get('origem_qtd', 0)))}"
+            ),
+        }
+        for r in pares
+    ])
+    st.caption("Conversões diretas (indicador → venda)")
+    _render_kpi_cards([
+        {
+            "lbl": str(r.get("label", "")),
+            "val": _fmt_taxa_pct(r.get("taxa")),
+            "sub": (
+                f"{fmt_qtd(float(r.get('destino_qtd', 0)))} / "
+                f"{fmt_qtd(float(r.get('origem_qtd', 0)))}"
+            ),
+        }
+        for r in diretas
+    ])
+
+
+def _render_conversoes_par_funis(
+    totais_a: Dict[str, float],
+    label_a: str,
+    totais_b: Dict[str, float],
+    label_b: str,
+) -> None:
+    """Exibe conversões etapa→etapa e diretas dos dois funis da seção."""
+    st.markdown("###### Conversões etapa → etapa e diretas")
+    ca, cb = st.columns(2)
+    with ca:
+        _render_conversoes_de_totais(totais_a, titulo=label_a)
+    with cb:
+        _render_conversoes_de_totais(totais_b, titulo=label_b)
+
+
 def _plot_funil_go(titulo: str, totais: Dict[str, float], altura: int = 350) -> None:
-    """Funil estilo marketing (go.Funnel), não barras."""
+    """Funil estilo marketing (go.Funnel); volumes arredondados para cima."""
     labels = [FUNIL_LABELS[e] for e in FUNIL_ETAPAS]
-    vals = [float(totais.get(e, 0.0)) for e in FUNIL_ETAPAS]
+    ceil_tot = ceil_funil_totais(totais)
+    vals = [float(ceil_tot.get(e, 0.0)) for e in FUNIL_ETAPAS]
     fig = _criar_fig_funil(labels, vals, titulo=titulo, altura=altura)
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -3915,7 +3966,7 @@ def render_projecao_funil(proj: Dict[str, Any]) -> None:
     st.markdown("##### 1) Realizado até agora × Projetado até agora")
     st.caption(
         "Compara o funil realizado (MTD) com o que o modelo previa até hoje. "
-        "Razão > 1 = acima do projetado; < 1 = abaixo."
+        "Razão > 1 = acima do projetado; < 1 = abaixo. Volumes arredondados para cima."
     )
     c1, c2 = st.columns(2)
     with c1:
@@ -3926,6 +3977,10 @@ def render_projecao_funil(proj: Dict[str, Any]) -> None:
         razoes_1,
         "Razões realizado / projetado até agora",
         "Por etapa: realizado ÷ projetado MTD do modelo.",
+    )
+    _render_conversoes_par_funis(
+        totais_mtd, "Realizado até agora",
+        totais_proj_mtd, "Projetado até agora",
     )
 
     # -------------------------------------------------------------------------
@@ -3947,16 +4002,20 @@ def render_projecao_funil(proj: Dict[str, Any]) -> None:
         "Razões projetado do mês / necessário para a meta",
         "Por etapa: projetado do mês ÷ necessário.",
     )
+    _render_conversoes_par_funis(
+        totais_proj, "Projetado do mês",
+        funil_nec, "Necessário p/ meta",
+    )
 
     # -------------------------------------------------------------------------
     # Seção 3 — Meta do dia × Meta da semana
     # -------------------------------------------------------------------------
     funil_dia = proj.get("funil_meta_dia") or {}
     funil_sem = proj.get("funil_meta_semana") or {}
-    meta_v_dia = float(proj.get("meta_vendas_dia") or 0.0)
-    meta_v_sem = float(proj.get("meta_vendas_semana") or 0.0)
-    meta_v_sem_mes = float(proj.get("meta_vendas_semana_mes") or 0.0)
-    gap_v = float(proj.get("gap_vendas") or 0.0)
+    meta_v_dia = float(math.ceil(float(proj.get("meta_vendas_dia") or 0.0)))
+    meta_v_sem = float(math.ceil(float(proj.get("meta_vendas_semana") or 0.0)))
+    meta_v_sem_mes = float(math.ceil(float(proj.get("meta_vendas_semana_mes") or 0.0)))
+    gap_v = float(math.ceil(float(proj.get("gap_vendas") or 0.0)))
     dias_prox = proj.get("dias_semana_prox") or []
     fim_mes = proj.get("fim_mes")
     fim_semana = proj.get("fim_semana")
@@ -3990,7 +4049,12 @@ def render_projecao_funil(proj: Dict[str, Any]) -> None:
         _plot_funil_go(
             f"Meta da semana ({fmt_qtd(meta_v_sem)} vendas)", funil_sem, altura=380
         )
+    _render_conversoes_par_funis(
+        funil_dia, "Meta do dia",
+        funil_sem, "Meta da semana",
+    )
 
+    # Comparativo histórico de conversões (referência)
     _render_conversoes_funil(proj.get("conversoes") or {})
 
     # Metas diárias por indicador
