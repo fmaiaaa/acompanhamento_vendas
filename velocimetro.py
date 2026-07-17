@@ -2665,6 +2665,108 @@ def calcular_conversoes_totais(totais: Dict[str, float]) -> Dict[str, Any]:
     return {"etapa_a_etapa": etapa_a_etapa, "para_venda": para_venda}
 
 
+def _funil_gap_vendas(
+    gap_vendas: float,
+    taxas_hist_frac: Dict[str, Optional[float]],
+    totais_hist: Dict[str, float],
+    gap_vendas_mes: Optional[float] = None,
+    funil_necessario: Optional[Dict[str, float]] = None,
+    totais_mtd: Optional[Dict[str, float]] = None,
+) -> Dict[str, float]:
+    """
+    Funil por etapa a partir de um gap de vendas (restante para a meta).
+    Usa conversão histórica indicador→venda; fallback proporcional ao gap do mês.
+    """
+    gap_v = max(0.0, float(gap_vendas))
+    gap_mes = max(0.0, float(gap_vendas_mes if gap_vendas_mes is not None else gap_v))
+    funil: Dict[str, float] = {"vendas": gap_v}
+    for etapa in FUNIL_DRIVERS:
+        t = taxas_hist_frac.get(etapa)
+        if gap_v > 0 and t is not None and t > 1e-9:
+            funil[etapa] = float(math.ceil(gap_v / t))
+            continue
+        v_h = float(totais_hist.get("vendas", 0.0))
+        i_h = float(totais_hist.get(etapa, 0.0))
+        if gap_v > 0 and v_h > 0 and i_h > 0:
+            funil[etapa] = float(math.ceil(gap_v * (i_h / v_h)))
+            continue
+        if (
+            gap_v > 0
+            and gap_mes > 1e-9
+            and funil_necessario is not None
+            and totais_mtd is not None
+        ):
+            gap_etapa_mes = max(
+                0.0,
+                float(funil_necessario.get(etapa, 0.0)) - float(totais_mtd.get(etapa, 0.0)),
+            )
+            funil[etapa] = float(math.ceil(gap_etapa_mes * (gap_v / gap_mes)))
+        else:
+            funil[etapa] = 0.0
+    return funil
+
+
+def _pesos_distribuicao_gap(
+    dias_distrib: List[date],
+    resultados: Dict[str, Any],
+) -> np.ndarray:
+    """Pesos diários para distribuir o gap de vendas (projeção reg. de vendas)."""
+    df_ven = (resultados.get("vendas") or {}).get("diaria", pd.DataFrame())
+    pesos: List[float] = []
+    for d in dias_distrib:
+        p = 1.0
+        if df_ven is not None and not df_ven.empty and "dia" in df_ven.columns:
+            row = df_ven.loc[df_ven["dia"] == d.day]
+            if not row.empty and "projetado_reg" in row.columns:
+                p = max(float(row["projetado_reg"].iloc[0]), 0.0)
+        pesos.append(p if p > 0 else 1.0)
+    return np.asarray(pesos, dtype=float)
+
+
+def _meta_vendas_por_pesos(
+    gap_vendas: float,
+    dias_alvo: List[date],
+    dias_distrib: List[date],
+    pesos: np.ndarray,
+) -> float:
+    """Parcela do gap de vendas alocada a um conjunto de dias (pesos normalizados)."""
+    if gap_vendas <= 0 or not dias_alvo or not dias_distrib:
+        return 0.0
+    w = np.maximum(np.asarray(pesos, dtype=float), 0.0)
+    soma = float(w.sum())
+    if soma <= 1e-9:
+        w = np.ones(len(dias_distrib), dtype=float)
+        soma = float(len(dias_distrib))
+    mapa = {dias_distrib[i]: float(w[i] / soma) for i in range(len(dias_distrib))}
+    return float(gap_vendas) * sum(mapa.get(d, 0.0) for d in dias_alvo)
+
+
+def _razoes_entre_funis(
+    numerador: Dict[str, float],
+    denominador: Dict[str, float],
+) -> Dict[str, Optional[float]]:
+    """Razão numerador/denominador por etapa (None se denominador ≤ 0)."""
+    out: Dict[str, Optional[float]] = {}
+    for etapa in FUNIL_ETAPAS:
+        den = float(denominador.get(etapa, 0.0))
+        num = float(numerador.get(etapa, 0.0))
+        out[etapa] = (num / den) if den > 1e-9 else None
+    return out
+
+
+def _somar_funis(*funis: Dict[str, float]) -> Dict[str, float]:
+    out: Dict[str, float] = {e: 0.0 for e in FUNIL_ETAPAS}
+    for f in funis:
+        for e in FUNIL_ETAPAS:
+            out[e] += float((f or {}).get(e, 0.0))
+    return out
+
+
+def _domingo_semana_iso(d: date) -> date:
+    """Último dia (domingo) da semana ISO que contém d."""
+    return d + timedelta(days=(7 - d.isoweekday()))
+
+
 def _cols_lag_funil(
     lags: Tuple[int, ...] = FUNIL_LAGS,
     alvo: Optional[str] = None,
@@ -3065,8 +3167,12 @@ def projetar_funil_mes_atual(
     ano, mes = hoje.year, hoje.month
     ultimo_dia = calendar.monthrange(ano, mes)[1]
     fim_mes = date(ano, mes, ultimo_dia)
+    # Se a semana ISO atravessa o fim do mês, estende o calendário até o domingo
+    # para completar a meta da semana com o projetado do mês seguinte.
+    fim_semana = _domingo_semana_iso(hoje)
+    fim_cal = max(fim_mes, fim_semana)
 
-    cal = calendario_funil_diario(inicio_cal, fim_mes, mapas, lags=lags)
+    cal = calendario_funil_diario(inicio_cal, fim_cal, mapas, lags=lags)
     cal = cal.reset_index(drop=True)
     cal["data"] = cal["data"].map(_as_date_funil)
     cal = cal.dropna(subset=["data"]).reset_index(drop=True)
@@ -3094,10 +3200,15 @@ def projetar_funil_mes_atual(
     cal_med = cal.copy()
 
     dias_mes = [date(ano, mes, d) for d in range(1, ultimo_dia + 1)]
-    dias_futuros = [d for d in dias_mes if d > hoje]
+    # Projeta dias futuros do mês atual + dias da semana no mês seguinte (se houver)
+    dias_a_projetar = []
+    d_cursor = hoje + timedelta(days=1)
+    while d_cursor <= fim_cal:
+        dias_a_projetar.append(d_cursor)
+        d_cursor += timedelta(days=1)
     idx_por_data = _indice_por_data_cal(cal_reg)
 
-    for d in dias_futuros:
+    for d in dias_a_projetar:
         i = idx_por_data.get(d)
         if i is None:
             continue
@@ -3135,14 +3246,17 @@ def projetar_funil_mes_atual(
                 cal_reg.at[i, "vendas_lag0"] = pred_r
                 cal_med.at[i, "vendas_lag0"] = pred_m
 
+    dias_futuros_mes = [d for d in dias_mes if d > hoje]
     _garantir_previsoes_futuras_funil(
-        cal_reg, cal_med, idx_por_data, dias_futuros, treino, medias, coefs, incluir_mes, lags
+        cal_reg, cal_med, idx_por_data, dias_futuros_mes, treino, medias, coefs, incluir_mes, lags
     )
 
     # montar resultados por etapa
     resultados: Dict[str, Any] = {}
     for etapa in FUNIL_ETAPAS:
         mtd = 0.0
+        proj_mtd_reg = 0.0
+        proj_mtd_med = 0.0
         rest_reg = 0.0
         rest_med = 0.0
         diaria: List[Dict[str, Any]] = []
@@ -3160,6 +3274,8 @@ def projetar_funil_mes_atual(
                 pred_med_dia = _prever_linha_medias_funil(
                     cal_med.iloc[i], d, etapa, medias, incluir_mes
                 )
+                proj_mtd_reg += pred_reg_dia
+                proj_mtd_med += pred_med_dia
             else:
                 pred_reg_dia = float(cal_reg.at[i, etapa])
                 pred_med_dia = float(cal_med.at[i, etapa])
@@ -3173,6 +3289,8 @@ def projetar_funil_mes_atual(
             })
         resultados[etapa] = {
             "mtd": mtd,
+            "projetado_mtd_reg": proj_mtd_reg,
+            "projetado_mtd_med": proj_mtd_med,
             "projetado_reg": mtd + rest_reg,
             "projetado_med": mtd + rest_med,
             "r2": r2s[etapa],
@@ -3181,12 +3299,16 @@ def projetar_funil_mes_atual(
         }
 
     totais_mtd = {e: float((resultados.get(e) or {}).get("mtd", 0)) for e in FUNIL_ETAPAS}
+    totais_proj_mtd = {
+        e: float((resultados.get(e) or {}).get("projetado_mtd_reg", 0)) for e in FUNIL_ETAPAS
+    }
     totais_proj = {e: float((resultados.get(e) or {}).get("projetado_reg", 0)) for e in FUNIL_ETAPAS}
     totais_hist = {e: float(treino[e].sum()) for e in FUNIL_ETAPAS}
 
     # Conversões do mês (MTD / projetado) × histórico (treino: sem mês atual, até 1 ano)
     conversoes = {
         "realizado_mtd": calcular_conversoes_totais(totais_mtd),
+        "projetado_mtd": calcular_conversoes_totais(totais_proj_mtd),
         "projetado_mes": calcular_conversoes_totais(totais_proj),
         "historico": calcular_conversoes_totais(totais_hist),
         "inicio_hist": inicio,
@@ -3216,17 +3338,62 @@ def projetar_funil_mes_atual(
             else:
                 funil_necessario[etapa] = float(totais_proj.get(etapa, 0.0))
 
-    # Gap restante por indicador:
-    # vendas faltantes ÷ conversão histórica indicador→venda
-    gap_indicadores: Dict[str, float] = {"vendas": gap_vendas}
-    for etapa in FUNIL_DRIVERS:
-        t = taxas_hist_frac.get(etapa)
-        if gap_vendas > 0 and t is not None and t > 1e-9:
-            gap_indicadores[etapa] = float(math.ceil(gap_vendas / t))
-        else:
-            gap_indicadores[etapa] = max(
-                0.0, float(funil_necessario.get(etapa, 0.0)) - float(totais_mtd.get(etapa, 0.0))
-            )
+    # Gap restante por indicador (conversão histórica indicador→venda)
+    gap_indicadores = _funil_gap_vendas(
+        gap_vendas,
+        taxas_hist_frac,
+        totais_hist,
+        gap_vendas_mes=gap_vendas,
+        funil_necessario=funil_necessario,
+        totais_mtd=totais_mtd,
+    )
+
+    # Distribuição do gap só nos dias restantes do mês atual
+    dias_distrib = [d for d in dias_mes if d >= hoje]
+    pesos_gap = _pesos_distribuicao_gap(dias_distrib, resultados)
+    meta_vendas_dia = _meta_vendas_por_pesos(gap_vendas, [hoje], dias_distrib, pesos_gap)
+
+    semana_iso = hoje.isocalendar()[:2]
+    dias_semana_rest = []
+    d_sem = hoje
+    while d_sem <= fim_semana and d_sem.isocalendar()[:2] == semana_iso:
+        dias_semana_rest.append(d_sem)
+        d_sem += timedelta(days=1)
+    dias_semana_mes = [d for d in dias_semana_rest if d <= fim_mes]
+    dias_semana_prox = [d for d in dias_semana_rest if d > fim_mes]
+
+    meta_vendas_semana_mes = _meta_vendas_por_pesos(
+        gap_vendas, dias_semana_mes, dias_distrib, pesos_gap
+    )
+    funil_meta_dia = _funil_gap_vendas(
+        meta_vendas_dia,
+        taxas_hist_frac,
+        totais_hist,
+        gap_vendas_mes=gap_vendas,
+        funil_necessario=funil_necessario,
+        totais_mtd=totais_mtd,
+    )
+    funil_semana_mes = _funil_gap_vendas(
+        meta_vendas_semana_mes,
+        taxas_hist_frac,
+        totais_hist,
+        gap_vendas_mes=gap_vendas,
+        funil_necessario=funil_necessario,
+        totais_mtd=totais_mtd,
+    )
+    # Completa a semana com o projetado do mês seguinte (dias após fim do mês)
+    funil_semana_prox: Dict[str, float] = {e: 0.0 for e in FUNIL_ETAPAS}
+    for d in dias_semana_prox:
+        i = idx_por_data.get(d)
+        if i is None:
+            continue
+        for etapa in FUNIL_ETAPAS:
+            funil_semana_prox[etapa] += float(cal_reg.at[i, etapa])
+    funil_meta_semana = _somar_funis(funil_semana_mes, funil_semana_prox)
+    meta_vendas_semana = float(funil_meta_semana.get("vendas", 0.0))
+
+    razoes_real_vs_proj_mtd = _razoes_entre_funis(totais_mtd, totais_proj_mtd)
+    razoes_proj_vs_nec = _razoes_entre_funis(totais_proj, funil_necessario)
 
     dias_futuros = [d for d in dias_mes if d > hoje]
     metas_diarias: Dict[str, Any] = {}
@@ -3293,6 +3460,8 @@ def projetar_funil_mes_atual(
         "incluir_mes": incluir_mes,
         "lags": lags,
         "ultimo_dia": ultimo_dia,
+        "fim_mes": fim_mes,
+        "fim_semana": fim_semana,
         "meta_qtd_mes": meta_qtd,
         "gap_vendas": gap_vendas,
         "r2s": r2s,
@@ -3300,9 +3469,20 @@ def projetar_funil_mes_atual(
         "medias": medias,
         "etapas": resultados,
         "totais_mtd": totais_mtd,
+        "totais_proj_mtd": totais_proj_mtd,
         "totais_proj": totais_proj,
         "totais_hist": totais_hist,
         "funil_necessario": funil_necessario,
+        "funil_meta_dia": funil_meta_dia,
+        "funil_meta_semana": funil_meta_semana,
+        "funil_semana_mes": funil_semana_mes,
+        "funil_semana_prox": funil_semana_prox,
+        "meta_vendas_dia": meta_vendas_dia,
+        "meta_vendas_semana": meta_vendas_semana,
+        "meta_vendas_semana_mes": meta_vendas_semana_mes,
+        "dias_semana_prox": dias_semana_prox,
+        "razoes_real_vs_proj_mtd": razoes_real_vs_proj_mtd,
+        "razoes_proj_vs_nec": razoes_proj_vs_nec,
         "conversoes": conversoes,
         "metas_diarias": metas_diarias,
         "efeitos_lags_vendas": efeitos_lags,
@@ -3313,6 +3493,34 @@ def _fmt_taxa_pct(taxa: Optional[float]) -> str:
     if taxa is None:
         return "—"
     return f"{float(taxa):.1f}%"
+
+
+def _fmt_razao(r: Optional[float]) -> str:
+    if r is None:
+        return "—"
+    return f"{float(r):.2f}×"
+
+
+def _render_razoes_funil(
+    razoes: Dict[str, Optional[float]],
+    titulo: str,
+    caption: str = "",
+) -> None:
+    """Cards com razão entre dois funis por etapa."""
+    st.markdown(f"###### {titulo}")
+    if caption:
+        st.caption(caption)
+    _render_kpi_cards([
+        {
+            "lbl": FUNIL_LABELS.get(etapa, etapa),
+            "val": _fmt_razao(razoes.get(etapa)),
+            "sub": (
+                "acima" if (razoes.get(etapa) or 0) > 1.02
+                else ("abaixo" if (razoes.get(etapa) is not None and float(razoes.get(etapa)) < 0.98) else "no ritmo")
+            ),
+        }
+        for etapa in FUNIL_ETAPAS
+    ])
 
 
 def _plot_funil_etapa_comparativo(etapa: str, df: pd.DataFrame, ultimo_dia: int, dia_hoje: int) -> None:
@@ -3688,27 +3896,100 @@ def render_projecao_funil(proj: Dict[str, Any]) -> None:
             for r in resumo
         ])
 
-    # Três funis (go.Funnel)
-    st.markdown("##### Funis: realizado · projetado · necessário")
-    st.caption(
-        "Necessário = volumes do funil para bater a meta de vendas, "
-        "usando conversões históricas indicador→venda (sem o mês atual)."
-    )
+    # -------------------------------------------------------------------------
+    # Seção 1 — Realizado até agora × Projetado até agora
+    # -------------------------------------------------------------------------
     totais_mtd = proj.get("totais_mtd") or {
         e: float((etapas.get(e) or {}).get("mtd", 0)) for e in FUNIL_ETAPAS
+    }
+    totais_proj_mtd = proj.get("totais_proj_mtd") or {
+        e: float((etapas.get(e) or {}).get("projetado_mtd_reg", 0)) for e in FUNIL_ETAPAS
     }
     totais_proj = proj.get("totais_proj") or {
         e: float((etapas.get(e) or {}).get("projetado_reg", 0)) for e in FUNIL_ETAPAS
     }
     funil_nec = proj.get("funil_necessario") or totais_proj
+    razoes_1 = proj.get("razoes_real_vs_proj_mtd") or _razoes_entre_funis(totais_mtd, totais_proj_mtd)
+    razoes_2 = proj.get("razoes_proj_vs_nec") or _razoes_entre_funis(totais_proj, funil_nec)
 
-    c1, c2, c3 = st.columns(3)
+    st.markdown("##### 1) Realizado até agora × Projetado até agora")
+    st.caption(
+        "Compara o funil realizado (MTD) com o que o modelo previa até hoje. "
+        "Razão > 1 = acima do projetado; < 1 = abaixo."
+    )
+    c1, c2 = st.columns(2)
     with c1:
-        _plot_funil_go("Realizado (MTD)", totais_mtd, altura=380)
+        _plot_funil_go("Realizado até agora (MTD)", totais_mtd, altura=380)
     with c2:
-        _plot_funil_go("Projetado do mês", totais_proj, altura=380)
+        _plot_funil_go("Projetado até agora (modelo)", totais_proj_mtd, altura=380)
+    _render_razoes_funil(
+        razoes_1,
+        "Razões realizado / projetado até agora",
+        "Por etapa: realizado ÷ projetado MTD do modelo.",
+    )
+
+    # -------------------------------------------------------------------------
+    # Seção 2 — Projetado do mês × Necessário para a meta
+    # -------------------------------------------------------------------------
+    st.markdown("##### 2) Projetado do mês × Necessário para a meta")
+    st.caption(
+        "Projetado do mês = realizado até agora + projeção dos dias restantes. "
+        "Necessário = volumes para bater a meta de vendas (conversões históricas). "
+        "Razão ≥ 1 sugere que, mantendo o previsto, a meta é atingível."
+    )
+    c3, c4 = st.columns(2)
     with c3:
+        _plot_funil_go("Projetado do mês", totais_proj, altura=380)
+    with c4:
         _plot_funil_go("Necessário p/ meta", funil_nec, altura=380)
+    _render_razoes_funil(
+        razoes_2,
+        "Razões projetado do mês / necessário para a meta",
+        "Por etapa: projetado do mês ÷ necessário.",
+    )
+
+    # -------------------------------------------------------------------------
+    # Seção 3 — Meta do dia × Meta da semana
+    # -------------------------------------------------------------------------
+    funil_dia = proj.get("funil_meta_dia") or {}
+    funil_sem = proj.get("funil_meta_semana") or {}
+    meta_v_dia = float(proj.get("meta_vendas_dia") or 0.0)
+    meta_v_sem = float(proj.get("meta_vendas_semana") or 0.0)
+    meta_v_sem_mes = float(proj.get("meta_vendas_semana_mes") or 0.0)
+    gap_v = float(proj.get("gap_vendas") or 0.0)
+    dias_prox = proj.get("dias_semana_prox") or []
+    fim_mes = proj.get("fim_mes")
+    fim_semana = proj.get("fim_semana")
+    nota_prox = ""
+    if dias_prox:
+        d0 = min(dias_prox)
+        d1 = max(dias_prox)
+        fim_mes_txt = f" ({fim_mes.strftime('%d/%m')})" if fim_mes else ""
+        nota_prox = (
+            f" Semana atravessa o fim do mês{fim_mes_txt}: "
+            f"dias {d0.strftime('%d/%m')}–{d1.strftime('%d/%m')} "
+            f"completados com o projetado do mês seguinte "
+            f"(meta do mês na semana: {fmt_qtd(meta_v_sem_mes)} vendas)."
+        )
+
+    st.markdown("##### 3) Meta do dia × Meta da semana (para bater a meta de vendas)")
+    st.caption(
+        f"Restante do mês: {fmt_qtd(gap_v)} vendas · "
+        f"hoje: {fmt_qtd(meta_v_dia)} · semana: {fmt_qtd(meta_v_sem)}"
+        + (
+            f" (até {fim_semana.strftime('%d/%m')})"
+            if fim_semana else ""
+        )
+        + " · gap do mês distribuído pelos pesos da projeção diária."
+        + nota_prox
+    )
+    c5, c6 = st.columns(2)
+    with c5:
+        _plot_funil_go(f"Meta do dia ({fmt_qtd(meta_v_dia)} vendas)", funil_dia, altura=380)
+    with c6:
+        _plot_funil_go(
+            f"Meta da semana ({fmt_qtd(meta_v_sem)} vendas)", funil_sem, altura=380
+        )
 
     _render_conversoes_funil(proj.get("conversoes") or {})
 
