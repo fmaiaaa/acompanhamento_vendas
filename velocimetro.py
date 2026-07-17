@@ -1338,9 +1338,10 @@ def projetar_vendas_mes_atual(
     meta_vgv_mes: float,
     meta_qtd_mes: float = 0.0,
     hoje: Optional[date] = None,
+    incluir_mes: bool = True,
 ) -> Optional[Dict[str, Any]]:
     """
-    Regressão de qtd/dia ~ dia_mês + dia_semana + mês, janela de 52 semanas,
+    Regressão de qtd/dia ~ dia_mês + dia_semana (+ mês), janela de 52 semanas,
     e projeção do restante do mês corrente (somente vendas comerciais na base).
     """
     hoje = hoje or date.today()
@@ -1353,7 +1354,7 @@ def projetar_vendas_mes_atual(
     if treino["qtd"].sum() <= 0 or len(treino) < 30:
         return None
 
-    modelo = treinar_regressao_vendas_diarias(treino)
+    modelo = treinar_regressao_vendas_diarias(treino, incluir_mes=incluir_mes)
 
     ano, mes = hoje.year, hoje.month
     ultimo_dia = calendar.monthrange(ano, mes)[1]
@@ -1368,7 +1369,7 @@ def projetar_vendas_mes_atual(
     vgv_mtd = sum(mapa_vgv.get(d, 0.0) for d in dias_passados)
     qtd_mtd = float(sum(qtd_atingida_por_dia))
 
-    pred_futuro = prever_qtd_dias(modelo, dias_futuros)
+    pred_futuro = prever_qtd_dias(modelo, dias_futuros, incluir_mes=incluir_mes)
     qtd_projetada_restante = float(pred_futuro.sum()) if len(pred_futuro) else 0.0
     qtd_projetada_mes = qtd_mtd + qtd_projetada_restante
 
@@ -1424,10 +1425,11 @@ def projetar_vendas_mes_atual(
         running += float(pred_futuro[i])
         acum.append({"dia": d.day, "acum": running, "tipo": "Projetada"})
 
-    X_tr_r2 = _r2_treino(treino, modelo)
+    X_tr_r2 = _r2_treino(treino, modelo, incluir_mes=incluir_mes)
 
     return {
         "hoje": hoje,
+        "incluir_mes": incluir_mes,
         "inicio_treino": inicio,
         "fim_treino": fim_treino,
         "qtd_mtd": qtd_mtd,
@@ -3954,19 +3956,11 @@ def main() -> None:
             if proj:
                 render_projecao_vendas(proj)
             else:
-                st.info("Dados insuficientes para treinar a projeção de vendas (janela de meses exatos).")
+                st.info("Dados insuficientes para treinar a projeção de vendas.")
+        except Exception as exc:
+            st.warning(f"Não foi possível calcular a projeção de vendas: {exc}")
 
-            proj_sem_mes = projetar_vendas_mes_atual(
-                base_proj,
-                col_contrato_gerado,
-                meta_vgv_proj,
-                meta_qtd_mes=meta_qtd_proj,
-                incluir_mes=False,
-            )
-            if proj_sem_mes:
-                render_projecao_vendas(proj_sem_mes)
-
-            # Efeitos sazonais relativos a segunda / dia 1 / janeiro
+        try:
             hoje_ef = date.today()
             ini_ef, fim_ef = janela_treino_meses_exatos(hoje_ef)
             serie_ef = serie_diaria_contratos(base_proj, col_contrato_gerado)
@@ -3975,77 +3969,77 @@ def main() -> None:
                 efeitos = estimar_efeitos_sazonais(treino_ef)
                 if efeitos:
                     render_efeitos_sazonais(efeitos)
-
-            # Projeção do funil — 3 relatórios Salesforce (agendamentos, pastas, vendas)
-            try:
-                # 1) Agendamentos / visitas
-                try:
-                    df_ag_vis, _origem_ag = carregar_relatorio_salesforce(
-                        SF_REPORT_AGENDAMENTOS_ID, rotulo="agendamentos/visitas"
-                    )
-                    df_ag_vis = deduplicar_agendamentos_funil(df_ag_vis)
-                except Exception as e_sf:
-                    st.warning(
-                        f"SF agendamentos indisponível ({e_sf}). Fallback Sheets 'Dados Únicos'."
-                    )
-                    df_ag_vis = normalizar_colunas(
-                        ler_planilha_aba_df(
-                            SPREADSHEET_FUNIL_ID, ABA_AGENDAMENTOS_VISITAS, cred_fp
-                        )
-                    )
-                    df_ag_vis = deduplicar_agendamentos_funil(df_ag_vis)
-
-                # 2) Pastas / pastas aprovadas
-                try:
-                    df_pastas_funil, _origem_pastas = carregar_relatorio_salesforce(
-                        SF_REPORT_PASTAS_ID, rotulo="pastas"
-                    )
-                    df_pastas_funil = deduplicar_pastas_funil(df_pastas_funil)
-                except Exception as e_sf_p:
-                    st.warning(
-                        f"SF pastas indisponível ({e_sf_p}). Tentando planilha Sheets…"
-                    )
-                    sid_pastas = (SPREADSHEET_PASTAS_ID or "").strip()
-                    df_pastas_funil, _origem_pastas = carregar_df_pastas_funil(
-                        SPREADSHEET_FUNIL_ID, sid, sid_pastas, cred_fp
-                    )
-                    if df_pastas_funil.empty:
-                        st.warning("Pastas não carregadas — funil sem essa etapa.")
-                    else:
-                        df_pastas_funil = deduplicar_pastas_funil(df_pastas_funil)
-
-                # 3) Vendas (Contrato gerado em)
-                df_vendas_funil = pd.DataFrame()
-                serie_vendas_funil = None
-                try:
-                    df_vendas_funil, _origem_vendas = carregar_relatorio_salesforce(
-                        SF_REPORT_VENDAS_ID, rotulo="vendas"
-                    )
-                    df_vendas_funil = deduplicar_vendas_funil(df_vendas_funil)
-                except Exception as e_sf_v:
-                    st.warning(
-                        f"SF vendas indisponível ({e_sf_v}). "
-                        "Usando vendas filtradas do painel (Contrato gerado em)."
-                    )
-                    serie_vendas_funil = serie_diaria_contratos(base_proj, col_contrato_gerado)
-
-                mapas_funil = montar_mapa_funil_diario(
-                    df_ag_vis,
-                    df_pastas_funil if df_pastas_funil is not None else pd.DataFrame(),
-                    serie_vendas=serie_vendas_funil,
-                    df_vendas=df_vendas_funil if not df_vendas_funil.empty else None,
-                )
-                proj_funil = projetar_funil_mes_atual(
-                    mapas_funil, incluir_mes=True, meta_qtd_mes=meta_qtd_proj
-                )
-                if proj_funil:
-                    render_projecao_funil(proj_funil)
-                else:
-                    st.info("Dados insuficientes para a projeção do funil comercial.")
-            except Exception as exc_funil:
-                st.warning(f"Não foi possível calcular a projeção do funil: {exc_funil}")
         except Exception as exc:
-            st.warning(f"Não foi possível calcular a projeção de vendas: {exc}")
+            st.warning(f"Não foi possível calcular os efeitos sazonais: {exc}")
+
+        try:
+            # Projeção do funil — 3 relatórios Salesforce (agendamentos, pastas, vendas)
+            # 1) Agendamentos / visitas
+            try:
+                df_ag_vis, _origem_ag = carregar_relatorio_salesforce(
+                    SF_REPORT_AGENDAMENTOS_ID, rotulo="agendamentos/visitas"
+                )
+                df_ag_vis = deduplicar_agendamentos_funil(df_ag_vis)
+            except Exception as e_sf:
+                st.warning(
+                    f"SF agendamentos indisponível ({e_sf}). Fallback Sheets 'Dados Únicos'."
+                )
+                df_ag_vis = normalizar_colunas(
+                    ler_planilha_aba_df(
+                        SPREADSHEET_FUNIL_ID, ABA_AGENDAMENTOS_VISITAS, cred_fp
+                    )
+                )
+                df_ag_vis = deduplicar_agendamentos_funil(df_ag_vis)
+
+            # 2) Pastas / pastas aprovadas
+            try:
+                df_pastas_funil, _origem_pastas = carregar_relatorio_salesforce(
+                    SF_REPORT_PASTAS_ID, rotulo="pastas"
+                )
+                df_pastas_funil = deduplicar_pastas_funil(df_pastas_funil)
+            except Exception as e_sf_p:
+                st.warning(
+                    f"SF pastas indisponível ({e_sf_p}). Tentando planilha Sheets…"
+                )
+                sid_pastas = (SPREADSHEET_PASTAS_ID or "").strip()
+                df_pastas_funil, _origem_pastas = carregar_df_pastas_funil(
+                    SPREADSHEET_FUNIL_ID, sid, sid_pastas, cred_fp
+                )
+                if df_pastas_funil.empty:
+                    st.warning("Pastas não carregadas — funil sem essa etapa.")
+                else:
+                    df_pastas_funil = deduplicar_pastas_funil(df_pastas_funil)
+
+            # 3) Vendas (Contrato gerado em)
+            df_vendas_funil = pd.DataFrame()
+            serie_vendas_funil = None
+            try:
+                df_vendas_funil, _origem_vendas = carregar_relatorio_salesforce(
+                    SF_REPORT_VENDAS_ID, rotulo="vendas"
+                )
+                df_vendas_funil = deduplicar_vendas_funil(df_vendas_funil)
+            except Exception as e_sf_v:
+                st.warning(
+                    f"SF vendas indisponível ({e_sf_v}). "
+                    "Usando vendas filtradas do painel (Contrato gerado em)."
+                )
+                serie_vendas_funil = serie_diaria_contratos(base_proj, col_contrato_gerado)
+
+            mapas_funil = montar_mapa_funil_diario(
+                df_ag_vis,
+                df_pastas_funil if df_pastas_funil is not None else pd.DataFrame(),
+                serie_vendas=serie_vendas_funil,
+                df_vendas=df_vendas_funil if not df_vendas_funil.empty else None,
+            )
+            proj_funil = projetar_funil_mes_atual(
+                mapas_funil, incluir_mes=True, meta_qtd_mes=meta_qtd_proj
+            )
+            if proj_funil:
+                render_projecao_funil(proj_funil)
+            else:
+                st.info("Dados insuficientes para a projeção do funil comercial.")
+        except Exception as exc:
+            st.warning(f"Não foi possível calcular a projeção do funil: {exc}")
     else:
         st.warning("Coluna 'Contrato gerado em' não encontrada — seção de Projeção de Vendas indisponível.")
 
