@@ -65,7 +65,7 @@ FUNIL_PARES_ETAPA = (
     ("pastas_aprovadas", "vendas"),
 )
 FUNIL_LAGS = tuple(range(1, 31))  # lags 1..30
-FUNIL_LAGS_PERFIL = tuple(range(1, 31))
+FUNIL_LAGS_PERFIL = tuple(range(0, 31))
 FUNIL_JANELA_CONV = 30  # janela móvel para conversão → vendas (sem vazamento do dia)
 FUNIL_JANELA_FORCA = 7  # janela da força de trabalho (atividade cruzada)
 FUNIL_ITERS_CRUZADAS = 3  # iterações na projeção (efeitos contemporâneos cruzados)
@@ -76,11 +76,6 @@ FUNIL_CORES_DRIVER = {
     "pastas_aprovadas": "#b45309",
 }
 COLUNAS_PASTAS_ALIASES = [
-    "Data Criação Pasta", "Data Criacao Pasta",
-    "Data de Criação Pasta", "Data de Criacao Pasta",
-    "Data Criação da Pasta", "Data Criacao da Pasta",
-    "Criação Pasta", "Criacao Pasta",
-    # fallbacks legados
     "Data da Análise", "Data da Analise", "Data Análise", "Data Analise",
 ]
 COLUNAS_PASTAS_APROV_ALIASES = [
@@ -2809,7 +2804,7 @@ def estimar_efeitos_lags_sobre_vendas(
             "lag_pico": lag_pico,
             "efeito_pico": efeito_pico,
             "lag_meia_vida": lag_meia,
-            "efeito_lag0": float(df_p.loc[df_p["lag"] == 1, "efeito"].iloc[0]) if (df_p["lag"] == 1).any() else 0.0,
+            "efeito_lag0": float(df_p.loc[df_p["lag"] == 0, "efeito"].iloc[0]) if (df_p["lag"] == 0).any() else 0.0,
             "efeito_acum": float(df_p["efeito"].sum()),
         })
 
@@ -2933,11 +2928,9 @@ def projetar_funil_mes_atual(
             p_med = float(cal_med.at[i, etapa])
             if d <= hoje:
                 mtd += real or 0.0
-                row = cal.loc[[i]]
-                p_reg = _prever_linha_reg_funil(coefs[etapa], row, incluir_mes, lags, etapa)
-                p_med = _prever_linha_medias_funil(
-                    row.iloc[0], d, etapa, medias, incluir_mes
-                )
+                # Projeção do mês começa amanhã: até hoje, "projetado" = realizado
+                p_reg = float(real or 0.0)
+                p_med = float(real or 0.0)
             else:
                 rest_reg += p_reg
                 rest_med += p_med
@@ -3319,16 +3312,17 @@ def _plot_funil_go(titulo: str, totais: Dict[str, float], altura: int = 350) -> 
         x=vals,
         textinfo="value",
         textposition="inside",
+        textfont=dict(size=20, color=COR_TEXTO_PRETO, family="Inter"),
         marker={"color": FUNIL_CORES_NIVEIS},
         connector={"fillcolor": "rgba(4, 66, 143, 0.15)"},
     ))
     fig.update_layout(
-        title=dict(text=titulo, font=dict(family="Inter", color=COR_TEXTO_PRETO, size=14)),
+        title=dict(text=titulo, font=dict(family="Inter", color=COR_TEXTO_PRETO, size=16)),
         margin=dict(l=20, r=20, t=50, b=20),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         height=altura,
-        font=dict(family="Inter", color=COR_TEXTO_PRETO),
+        font=dict(family="Inter", color=COR_TEXTO_PRETO, size=16),
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -3473,7 +3467,7 @@ def render_projecao_funil(proj: Dict[str, Any]) -> None:
                 "val": f"{int(r.get('lag_pico', 0))}d",
                 "sub": (
                     f"Meia-vida {int(r.get('lag_meia_vida', 0))}d"
-                    f" · lag1 {float(r.get('efeito_lag0', 0)):.2f}"
+                    f" · lag0 {float(r.get('efeito_lag0', 0)):.2f}"
                     f" · acum {float(r.get('efeito_acum', 0)):.2f}"
                 ),
             }
@@ -3598,7 +3592,7 @@ def render_efeitos_lags_sobre_vendas(
         showgrid=True,
         gridcolor="rgba(226,232,240,0.5)",
     )
-    st.markdown("##### Efeito por lag (1–30 dias)")
+    st.markdown("##### Efeito por lag (0–30 dias)")
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
     fig_c = go.Figure()
