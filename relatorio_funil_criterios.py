@@ -398,6 +398,23 @@ def aplicar_estilo() -> None:
         .stCaption, [data-testid="stCaptionContainer"] {{
             text-align: center !important;
         }}
+        .stTabs [data-baseweb="tab-list"] {{
+            justify-content: center !important;
+            gap: 0.35rem !important;
+        }}
+        .stTabs [data-baseweb="tab"] {{
+            color: {COR_AZUL_ESC} !important;
+            font-family: 'Montserrat', sans-serif !important;
+            font-weight: 700 !important;
+        }}
+        .stTabs [aria-selected="true"] {{
+            color: {COR_AZUL_ESC} !important;
+            border-bottom-color: {COR_VERMELHO} !important;
+        }}
+        .bloco-pessoa .nome,
+        .ficha-hero .ficha-title {{
+            color: {COR_AZUL_ESC} !important;
+        }}
         h1, h2, h3, h4,
         h1 *, h2 *, h3 *, h4 *,
         [data-testid="stMarkdownContainer"] h1,
@@ -1018,28 +1035,21 @@ def _render_aba_criterios(
     agg = agregar_funil_por_dimensao(ev, dimensao)
 
     if agg.empty:
-        st.info(f"Nenhum {label_dim.lower()} com indicadores no período.")
         return
 
-    # Critérios todos 0 → mostra todos com ≥1 indicador positivo
     mask_pos = agg[list(FUNIL_ETAPAS)].sum(axis=1) > 0
     agg = agg.loc[mask_pos].copy()
     if agg.empty:
-        st.info(f"Nenhum {label_dim.lower()} com indicador positivo no período.")
         return
 
     filtrado = _aplicar_criterios(agg, criterios) if ativos else agg
-
     if filtrado.empty:
-        st.warning("Nenhuma pessoa atende aos critérios no período.")
         return
 
     ordem = [e for e in FUNIL_ETAPAS if criterios.get(e) is not None]
     if "vendas" not in ordem:
         ordem.append("vendas")
     filtrado = filtrado.sort_values(ordem, ascending=[False] * len(ordem))
-
-    st.success(f"{len(filtrado)} resultado(s) encontrados.")
 
     cols_show = [dimensao] + list(FUNIL_ETAPAS)
     df_show = filtrado[cols_show].copy()
@@ -1049,7 +1059,6 @@ def _render_aba_criterios(
             df_show[c] = df_show[c].map(lambda x: fmt_num(float(x), 0))
     st.dataframe(df_show, use_container_width=True, hide_index=True)
 
-    st.markdown("##### Detalhamento")
     for _, row in filtrado.iterrows():
         nome = limpar_nome(row[dimensao])
         if not nome:
@@ -1088,11 +1097,6 @@ def main() -> None:
     )
     aplicar_estilo()
     _cabecalho_pagina("Funil por critérios de quantidade")
-    st.caption(
-        "Defina o período (padrão: semana atual) e mínimos opcionais. "
-        "Com todos os critérios em 0, lista quem teve pelo menos 1 indicador. "
-        "Abas: Regional, Gerente de vendas e Corretor."
-    )
 
     hoje = date.today()
     sem_ini, sem_fim = semana_iso_atual(hoje)
@@ -1106,23 +1110,18 @@ def main() -> None:
         st.session_state["crit_ini"] = sem_ini
         st.session_state["crit_fim"] = sem_fim
 
-    st.markdown("##### Período de análise")
     p1, p2 = st.columns(2)
     with p1:
         ini = st.date_input("Início", key="crit_ini")
     with p2:
         fim = st.date_input("Fim", key="crit_fim")
 
-    b_full = st.columns(1)[0]
-    with b_full:
-        st.button(
-            "Usar semana atual (seg–dom)",
-            on_click=_btn_semana_atual_crit,
-            use_container_width=True,
-        )
+    st.button(
+        "Usar semana atual (seg–dom)",
+        on_click=_btn_semana_atual_crit,
+        use_container_width=True,
+    )
 
-    st.markdown("##### Critérios (mínimos)")
-    st.caption("Deixe em 0 para não filtrar aquele indicador. Todos em 0 = listar todos com atividade.")
     criterios: Dict[str, Optional[float]] = {}
     ativos: List[str] = []
     cols_crit = st.columns(len(FUNIL_ETAPAS))
@@ -1146,31 +1145,15 @@ def main() -> None:
         return
 
     try:
-        eventos, origens = carregar_eventos_funil_pessoas()
+        eventos, _origens = carregar_eventos_funil_pessoas()
     except Exception as e:
         st.error(f"Falha ao carregar bases Salesforce: {e}")
         return
-
-    with st.expander("Origem dos dados", expanded=False):
-        for k, v in origens.items():
-            st.caption(f"**{k}:** {v}")
-        st.caption(f"Eventos carregados: {len(eventos):,}".replace(",", "."))
-
-    st.markdown(
-        f"**Período:** {ini.strftime('%d/%m/%Y')} → {fim.strftime('%d/%m/%Y')} "
-        f"({n_dias_periodo(ini, fim)} dias)"
-        + (f" · **Critérios:** {' · '.join(ativos)}" if ativos else " · **Sem filtro de mínimos**")
-    )
 
     tabs = st.tabs([DIM_LABELS[d] for d in DIMENSOES])
     for tab, dim in zip(tabs, DIMENSOES):
         with tab:
             _render_aba_criterios(eventos, dim, ini, fim, criterios, ativos)
-
-    st.markdown(
-        '<div class="footer">Direcional Engenharia · Vendas — Relatório de funil</div>',
-        unsafe_allow_html=True,
-    )
 
 
 if __name__ == "__main__":
