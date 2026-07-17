@@ -35,7 +35,11 @@ WS_METAS = "Metas"
 SPREADSHEET_FUNIL_ID = "1ckdfpUr7qhr9YHnlfJ_rYrs6c6ZFugqYG0zrZDI9bck"
 # Pastas / pastas aprovadas (aba BASE)
 SPREADSHEET_PASTAS_ID: Optional[str] = "1wnJgJyrVM2k9SfQ8PCxFRr9odh75DEOg0tjtkPfyroc"
-ABA_AGENDAMENTOS_VISITAS = "Dados Únicos"
+# Agendamentos/visitas, pastas e vendas: relatórios Salesforce (evita limite do Sheets)
+SF_REPORT_AGENDAMENTOS_ID = "00OU600000AcFGPMA3"
+SF_REPORT_PASTAS_ID = "00OTT000005ywmD2AQ"
+SF_REPORT_VENDAS_ID = "00O3Z000005ZsPmUAK"
+ABA_AGENDAMENTOS_VISITAS = "Dados Únicos"  # fallback Sheets se SF falhar
 ABA_PASTAS_CANDIDATAS = (
     "BASE",
     "Base",
@@ -1867,6 +1871,166 @@ def render_efeitos_sazonais(efeitos: Dict[str, Any]) -> None:
 # Funil comercial: agendamentos → visitas → pastas → pastas aprovadas → vendas
 # -----------------------------------------------------------------------------
 
+def _aplicar_secrets_salesforce() -> None:
+    """Copia [salesforce] dos secrets Streamlit para variáveis de ambiente."""
+    try:
+        if hasattr(st, "secrets") and "salesforce" in st.secrets:
+            sec = st.secrets["salesforce"]
+            if sec.get("USER"):
+                os.environ["SALESFORCE_USER"] = str(sec["USER"]).strip()
+            if sec.get("PASSWORD"):
+                os.environ["SALESFORCE_PASSWORD"] = str(sec["PASSWORD"]).strip()
+            if sec.get("TOKEN"):
+                os.environ["SALESFORCE_TOKEN"] = str(sec["TOKEN"]).strip()
+            dom = str(sec.get("DOMAIN") or sec.get("domain") or "").strip()
+            if dom:
+                os.environ["SALESFORCE_DOMAIN"] = dom
+    except Exception:
+        pass
+
+
+def conectar_salesforce_app() -> Tuple[Any, Optional[str]]:
+    """Conecta ao Salesforce via simple_salesforce. Retorna (cliente, erro)."""
+    _aplicar_secrets_salesforce()
+    try:
+        from simple_salesforce import Salesforce, SalesforceAuthenticationFailed
+    except ImportError:
+        return None, "Pacote simple-salesforce não instalado (pip install simple-salesforce)."
+
+    username = (os.environ.get("SALESFORCE_USER") or "").strip()
+    password = (os.environ.get("SALESFORCE_PASSWORD") or "").strip()
+    token = (os.environ.get("SALESFORCE_TOKEN") or "").strip()
+    domain = (os.environ.get("SALESFORCE_DOMAIN") or "login").strip() or "login"
+    if not username or not password:
+        return None, "Credenciais Salesforce ausentes ([salesforce] USER/PASSWORD/TOKEN nos secrets)."
+    try:
+        kwargs: Dict[str, Any] = {
+            "username": username,
+            "password": password,
+            "domain": domain,
+        }
+        if token:
+            kwargs["security_token"] = token
+        return Salesforce(**kwargs), None
+    except SalesforceAuthenticationFailed as e:
+        return None, f"Autenticação Salesforce recusada: {e}"
+    except Exception as e:
+        return None, f"{type(e).__name__}: {e}"
+
+
+def _relatorio_sf_via_csv(sf: Any, report_id: str) -> pd.DataFrame:
+    """
+    Exporta o relatório como CSV (melhor para volumes grandes ~100k+).
+    Endpoint clássico: /{reportId}?isdtp=p1&export=1&enc=UTF-8&xf=csv
+    """
+    import requests
+    from io import StringIO
+
+    rid = (report_id or "").strip()
+    if not rid:
+        return pd.DataFrame()
+
+    base = (getattr(sf, "sf_instance", None) or "").rstrip("/")
+    if not base.startswith("http"):
+        base = f"https://{base}"
+    url = f"{base}/{rid}?isdtp=p1&export=1&enc=UTF-8&xf=csv"
+    resp = requests.get(
+        url,
+        headers=dict(getattr(sf, "headers", {}) or {}),
+        cookies={"sid": getattr(sf, "session_id", "")},
+        timeout=600,
+    )
+    resp.raise_for_status()
+    text = resp.content.decode("utf-8", errors="replace")
+    # Se veio HTML (login/redirect), falha
+    sample = text.lstrip()[:200].lower()
+    if sample.startswith("<!doctype") or sample.startswith("<html") or "<table" in sample[:500]:
+        raise ValueError("Export CSV do relatório retornou HTML (sessão/permissão).")
+    return pd.read_csv(StringIO(text))
+
+
+def _relatorio_sf_via_analytics(sf: Any, report_id: str) -> pd.DataFrame:
+    """
+    Analytics API síncrona (limite típico ~2.000 linhas de detalhe).
+    Usado só como fallback.
+    """
+    rid = (report_id or "").strip()
+    raw = sf.restful(f"analytics/reports/{rid}", params={"includeDetails": "true"})
+    meta = (raw.get("reportMetadata") or {})
+    cols_meta = meta.get("detailColumns") or []
+    # labels amigáveis
+    ext = ((raw.get("reportExtendedMetadata") or {}).get("detailColumnInfo") or {})
+    headers: List[str] = []
+    for c in cols_meta:
+        info = ext.get(c) or {}
+        headers.append(str(info.get("label") or c))
+
+    rows_out: List[List[Any]] = []
+    fact = (raw.get("factMap") or {}).get("T!T") or {}
+    for row in fact.get("rows") or []:
+        cells = row.get("dataCells") or []
+        vals = []
+        for cell in cells:
+            v = cell.get("value")
+            if v is None:
+                v = cell.get("label")
+            vals.append(v)
+        # alinha ao nº de colunas
+        if len(vals) < len(headers):
+            vals = vals + [None] * (len(headers) - len(vals))
+        rows_out.append(vals[: len(headers)])
+    if not headers:
+        return pd.DataFrame()
+    return pd.DataFrame(rows_out, columns=headers)
+
+
+@st.cache_data(ttl=3600, show_spinner="Baixando relatório do Salesforce…")
+def carregar_relatorio_salesforce(
+    report_id: str,
+    rotulo: str = "relatório",
+) -> Tuple[pd.DataFrame, str]:
+    """
+    Baixa qualquer relatório Salesforce por ID.
+    Preferência: export CSV (volume grande). Fallback: Analytics API.
+    Retorna (df, origem).
+    """
+    sf, err = conectar_salesforce_app()
+    if sf is None:
+        raise RuntimeError(err or "Falha ao conectar no Salesforce.")
+
+    rid = (report_id or "").strip()
+    if not rid:
+        raise RuntimeError(f"Report ID vazio ({rotulo}).")
+
+    tentativas: List[str] = []
+    try:
+        df = _relatorio_sf_via_csv(sf, rid)
+        origem = f"Salesforce CSV · {rotulo} · {rid}"
+    except Exception as e_csv:
+        tentativas.append(f"CSV: {e_csv}")
+        try:
+            df = _relatorio_sf_via_analytics(sf, rid)
+            origem = f"Salesforce Analytics · {rotulo} · {rid} (pode limitar ~2k linhas)"
+        except Exception as e_an:
+            tentativas.append(f"Analytics: {e_an}")
+            raise RuntimeError(
+                f"Não foi possível baixar o {rotulo} ({rid}). "
+                + " | ".join(tentativas)
+            ) from e_an
+
+    df = normalizar_colunas(df)
+    if df.empty:
+        raise RuntimeError(f"Relatório {rotulo} ({rid}) retornou vazio.")
+    return df, origem
+
+
+def carregar_agendamentos_visitas_salesforce(
+    report_id: str = SF_REPORT_AGENDAMENTOS_ID,
+) -> Tuple[pd.DataFrame, str]:
+    """Compatibilidade: delega para carregar_relatorio_salesforce."""
+    return carregar_relatorio_salesforce(report_id, rotulo="agendamentos/visitas")
+
+
 def contar_eventos_por_dia(df: pd.DataFrame, aliases: List[str]) -> Dict[date, float]:
     """Conta ocorrências por dia a partir de uma coluna de data."""
     col = achar_coluna(df, aliases)
@@ -1883,7 +2047,8 @@ def contar_eventos_por_dia(df: pd.DataFrame, aliases: List[str]) -> Dict[date, f
 def montar_mapa_funil_diario(
     df_ag_vis: pd.DataFrame,
     df_pastas: pd.DataFrame,
-    serie_vendas: pd.DataFrame,
+    serie_vendas: Optional[pd.DataFrame] = None,
+    df_vendas: Optional[pd.DataFrame] = None,
 ) -> Dict[str, Dict[date, float]]:
     """
     Séries diárias do funil:
@@ -1891,19 +2056,37 @@ def montar_mapa_funil_diario(
       visitas ← Data da visita
       pastas ← Data da Análise
       pastas_aprovadas ← Data Aprovação SAFI
-      vendas ← Contrato gerado em (série já agregada)
+      vendas ← Contrato gerado em (relatório SF ou série agregada)
     """
     mapa_vendas: Dict[date, float] = {}
-    if serie_vendas is not None and not serie_vendas.empty:
+    if df_vendas is not None and not df_vendas.empty:
+        mapa_vendas = contar_eventos_por_dia(
+            df_vendas,
+            [
+                "Contrato gerado em", "Contrato Gerado em", "Contrato gerado",
+                "Data do Contrato", "Data Contrato", "Close Date", "Data da venda",
+                "Data Venda", "Created Date",
+            ],
+        )
+    elif serie_vendas is not None and not serie_vendas.empty:
         for _, r in serie_vendas.iterrows():
             mapa_vendas[r["data"]] = float(r["qtd"])
 
     return {
         "agendamentos": contar_eventos_por_dia(
-            df_ag_vis, ["Data de criação", "Data de criacao", "Data Criação", "Data Criacao"]
+            df_ag_vis,
+            [
+                "Data de criação", "Data de criacao", "Data Criação", "Data Criacao",
+                "Created Date", "Data de Criação", "Criado em", "Data criação",
+            ],
         ),
         "visitas": contar_eventos_por_dia(
-            df_ag_vis, ["Data da visita", "Data da Visita", "Data visita"]
+            df_ag_vis,
+            [
+                "Data da visita", "Data da Visita", "Data visita", "Data Visita",
+                "Activity Date", "Data da Atividade", "Data do agendamento",
+                "Data Agendamento", "Start Date Time", "Data/Hora",
+            ],
         ),
         "pastas": contar_eventos_por_dia(df_pastas, COLUNAS_PASTAS_ALIASES),
         "pastas_aprovadas": contar_eventos_por_dia(df_pastas, COLUNAS_PASTAS_APROV_ALIASES),
@@ -3159,44 +3342,63 @@ def main() -> None:
                 if efeitos:
                     render_efeitos_sazonais(efeitos)
 
-            # Projeção do funil (agendamentos → visitas → pastas → aprovadas → vendas)
+            # Projeção do funil — 3 relatórios Salesforce (agendamentos, pastas, vendas)
             try:
-                df_ag_vis = normalizar_colunas(
-                    ler_planilha_aba_df(SPREADSHEET_FUNIL_ID, ABA_AGENDAMENTOS_VISITAS, cred_fp)
-                )
-                sid_pastas = (SPREADSHEET_PASTAS_ID or "").strip()
+                # 1) Agendamentos / visitas
                 try:
-                    if hasattr(st, "secrets") and st.secrets.get("connections"):
-                        gcfg = st.secrets["connections"].get("gsheets") or {}
-                        sid_pastas = sid_pastas or str(
-                            gcfg.get("spreadsheet_pastas_id")
-                            or gcfg.get("SPREADSHEET_PASTAS_ID")
-                            or ""
-                        ).strip()
-                except Exception:
-                    pass
-
-                df_pastas_funil, origem_pastas = carregar_df_pastas_funil(
-                    SPREADSHEET_FUNIL_ID,
-                    sid,
-                    sid_pastas,
-                    cred_fp,
-                )
-                if df_pastas_funil.empty:
-                    st.warning(
-                        "Aba de pastas não encontrada (esperava colunas "
-                        "'Data da Análise' / 'Data Aprovação SAFI'). "
-                        "O funil seguirá só com agendamentos, visitas e vendas. "
-                        "Se a base estiver em outra planilha, informe o ID em "
-                        "`SPREADSHEET_PASTAS_ID` ou em secrets "
-                        "`connections.gsheets.spreadsheet_pastas_id`."
+                    df_ag_vis, origem_ag = carregar_relatorio_salesforce(
+                        SF_REPORT_AGENDAMENTOS_ID, rotulo="agendamentos/visitas"
                     )
-                else:
-                    st.caption(f"Pastas carregadas de: {origem_pastas}")
+                    st.caption(f"Agendamentos/visitas: {origem_ag} · {len(df_ag_vis):,} linhas")
+                except Exception as e_sf:
+                    st.warning(
+                        f"SF agendamentos indisponível ({e_sf}). Fallback Sheets 'Dados Únicos'."
+                    )
+                    df_ag_vis = normalizar_colunas(
+                        ler_planilha_aba_df(
+                            SPREADSHEET_FUNIL_ID, ABA_AGENDAMENTOS_VISITAS, cred_fp
+                        )
+                    )
 
-                serie_vendas_funil = serie_diaria_contratos(base_proj, col_contrato_gerado)
+                # 2) Pastas / pastas aprovadas
+                try:
+                    df_pastas_funil, origem_pastas = carregar_relatorio_salesforce(
+                        SF_REPORT_PASTAS_ID, rotulo="pastas"
+                    )
+                    st.caption(f"Pastas: {origem_pastas} · {len(df_pastas_funil):,} linhas")
+                except Exception as e_sf_p:
+                    st.warning(
+                        f"SF pastas indisponível ({e_sf_p}). Tentando planilha Sheets…"
+                    )
+                    sid_pastas = (SPREADSHEET_PASTAS_ID or "").strip()
+                    df_pastas_funil, origem_pastas = carregar_df_pastas_funil(
+                        SPREADSHEET_FUNIL_ID, sid, sid_pastas, cred_fp
+                    )
+                    if df_pastas_funil.empty:
+                        st.warning("Pastas não carregadas — funil sem essa etapa.")
+                    else:
+                        st.caption(f"Pastas (Sheets): {origem_pastas}")
+
+                # 3) Vendas (Contrato gerado em)
+                df_vendas_funil = pd.DataFrame()
+                serie_vendas_funil = None
+                try:
+                    df_vendas_funil, origem_vendas = carregar_relatorio_salesforce(
+                        SF_REPORT_VENDAS_ID, rotulo="vendas"
+                    )
+                    st.caption(f"Vendas: {origem_vendas} · {len(df_vendas_funil):,} linhas")
+                except Exception as e_sf_v:
+                    st.warning(
+                        f"SF vendas indisponível ({e_sf_v}). "
+                        "Usando vendas filtradas do painel (Contrato gerado em)."
+                    )
+                    serie_vendas_funil = serie_diaria_contratos(base_proj, col_contrato_gerado)
+
                 mapas_funil = montar_mapa_funil_diario(
-                    df_ag_vis, df_pastas_funil, serie_vendas_funil
+                    df_ag_vis,
+                    df_pastas_funil if df_pastas_funil is not None else pd.DataFrame(),
+                    serie_vendas=serie_vendas_funil,
+                    df_vendas=df_vendas_funil if not df_vendas_funil.empty else None,
                 )
                 proj_funil = projetar_funil_mes_atual(mapas_funil, incluir_mes=True)
                 if proj_funil:
