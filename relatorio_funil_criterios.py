@@ -329,7 +329,7 @@ def aplicar_estilo() -> None:
             margin-left: auto !important;
             margin-right: auto !important;
             padding: 1.45rem 2.25rem 1.55rem 2.25rem !important;
-            background: rgba(255, 255, 255, 0.78) !important;
+            background: rgba(255, 255, 255, 0.96) !important;
             backdrop-filter: blur(18px) saturate(1.15);
             -webkit-backdrop-filter: blur(18px) saturate(1.15);
             border-radius: 24px !important;
@@ -340,7 +340,7 @@ def aplicar_estilo() -> None:
                 inset 0 1px 0 rgba(255, 255, 255, 0.55) !important;
             animation: fichaFadeIn 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
         }}
-        /* Sem sidebar nestes relatórios */
+        /* Sem sidebar + forçar tema claro */
         [data-testid="stSidebar"],
         [data-testid="stSidebarNav"],
         section[data-testid="stSidebar"],
@@ -349,6 +349,54 @@ def aplicar_estilo() -> None:
         }}
         [data-testid="stAppViewContainer"] > .main {{
             margin-left: 0 !important;
+        }}
+        [data-testid="stApp"],
+        [data-testid="stAppViewContainer"],
+        [data-testid="stMain"],
+        .main,
+        .block-container,
+        [data-testid="stMarkdownContainer"],
+        [data-testid="stVerticalBlock"],
+        [data-baseweb="base-input"],
+        [data-baseweb="input"],
+        [data-baseweb="select"] > div,
+        .stSelectbox div[data-baseweb="select"] > div,
+        .stMultiSelect div[data-baseweb="select"] > div,
+        .stDateInput > div > div,
+        .stNumberInput > div > div,
+        .stRadio,
+        .stTabs [data-baseweb="tab-list"],
+        .stDataFrame,
+        [data-testid="stDataFrame"] {{
+            color-scheme: light !important;
+        }}
+        .stButton > button {{
+            width: 100% !important;
+            background: linear-gradient(135deg, {COR_AZUL_ESC} 0%, #0a5bb8 100%) !important;
+            color: #ffffff !important;
+            border: none !important;
+            border-radius: 10px !important;
+            font-family: 'Montserrat', sans-serif !important;
+            font-weight: 700 !important;
+            box-shadow: 0 4px 12px rgba({RGB_AZUL_CSS}, 0.22) !important;
+        }}
+        .stButton > button:hover {{
+            background: linear-gradient(135deg, {COR_VERMELHO} 0%, #e11d48 100%) !important;
+            color: #ffffff !important;
+        }}
+        .stButton > button[kind="secondary"],
+        .stButton > button[data-testid="baseButton-secondary"] {{
+            background: #ffffff !important;
+            color: {COR_AZUL_ESC} !important;
+            border: 1.5px solid {COR_AZUL_ESC} !important;
+        }}
+        div[data-baseweb="select"] > div,
+        .stMultiSelect [data-baseweb="tag"] {{
+            background-color: #ffffff !important;
+            color: {COR_TEXTO_PRETO} !important;
+        }}
+        .stCaption, [data-testid="stCaptionContainer"] {{
+            text-align: center !important;
         }}
         h1, h2, h3, h4,
         h1 *, h2 *, h3 *, h4 *,
@@ -957,8 +1005,77 @@ def _aplicar_criterios(
     return out.reset_index(drop=True)
 
 
-def _fmt_funil_row(row: pd.Series) -> Dict[str, str]:
-    return {FUNIL_LABELS[e]: fmt_num(float(row.get(e, 0.0)), 0) for e in FUNIL_ETAPAS}
+def _render_aba_criterios(
+    eventos: pd.DataFrame,
+    dimensao: str,
+    ini: date,
+    fim: date,
+    criterios: Dict[str, Optional[float]],
+    ativos: List[str],
+) -> None:
+    label_dim = DIM_LABELS.get(dimensao, dimensao)
+    ev = filtrar_periodo(eventos, ini, fim)
+    agg = agregar_funil_por_dimensao(ev, dimensao)
+
+    if agg.empty:
+        st.info(f"Nenhum {label_dim.lower()} com indicadores no período.")
+        return
+
+    # Critérios todos 0 → mostra todos com ≥1 indicador positivo
+    mask_pos = agg[list(FUNIL_ETAPAS)].sum(axis=1) > 0
+    agg = agg.loc[mask_pos].copy()
+    if agg.empty:
+        st.info(f"Nenhum {label_dim.lower()} com indicador positivo no período.")
+        return
+
+    filtrado = _aplicar_criterios(agg, criterios) if ativos else agg
+
+    if filtrado.empty:
+        st.warning("Nenhuma pessoa atende aos critérios no período.")
+        return
+
+    ordem = [e for e in FUNIL_ETAPAS if criterios.get(e) is not None]
+    if "vendas" not in ordem:
+        ordem.append("vendas")
+    filtrado = filtrado.sort_values(ordem, ascending=[False] * len(ordem))
+
+    st.success(f"{len(filtrado)} resultado(s) encontrados.")
+
+    cols_show = [dimensao] + list(FUNIL_ETAPAS)
+    df_show = filtrado[cols_show].copy()
+    df_show = df_show.rename(columns={dimensao: label_dim, **FUNIL_LABELS})
+    for c in FUNIL_LABELS.values():
+        if c in df_show.columns:
+            df_show[c] = df_show[c].map(lambda x: fmt_num(float(x), 0))
+    st.dataframe(df_show, use_container_width=True, hide_index=True)
+
+    st.markdown("##### Detalhamento")
+    for _, row in filtrado.iterrows():
+        nome = limpar_nome(row[dimensao])
+        if not nome:
+            continue
+        partes = [
+            f"{FUNIL_LABELS[e]}: {fmt_num(float(row.get(e, 0.0)), 0)}" for e in FUNIL_ETAPAS
+        ]
+        st.markdown(
+            f'<div class="bloco-pessoa">'
+            f'<div class="nome">{nome}</div>'
+            f'<div style="color:{COR_TEXTO_PRETO};font-size:0.95rem;">'
+            + " &nbsp;·&nbsp; ".join(partes)
+            + "</div></div>",
+            unsafe_allow_html=True,
+        )
+
+    csv = filtrado.rename(columns={dimensao: label_dim, **FUNIL_LABELS}).to_csv(
+        index=False, sep=";", decimal=","
+    )
+    st.download_button(
+        "Baixar CSV",
+        data=csv.encode("utf-8-sig"),
+        file_name=f"funil_criterios_{dimensao}_{ini}_{fim}.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
 
 
 def main() -> None:
@@ -972,9 +1089,9 @@ def main() -> None:
     aplicar_estilo()
     _cabecalho_pagina("Funil por critérios de quantidade")
     st.caption(
-        "Filtre o período e defina mínimos em um ou mais indicadores. "
-        "O relatório devolve somente Regionais, Gerentes ou Corretores "
-        "que atingem todos os critérios escolhidos — com o funil completo."
+        "Defina o período (padrão: semana atual) e mínimos opcionais. "
+        "Com todos os critérios em 0, lista quem teve pelo menos 1 indicador. "
+        "Abas: Regional, Gerente de vendas e Corretor."
     )
 
     hoje = date.today()
@@ -989,30 +1106,23 @@ def main() -> None:
         st.session_state["crit_ini"] = sem_ini
         st.session_state["crit_fim"] = sem_fim
 
-    st.markdown("##### Período e dimensão")
-    p1, p2, p3, p4 = st.columns([1.1, 1.1, 1.4, 1.6])
+    st.markdown("##### Período de análise")
+    p1, p2 = st.columns(2)
     with p1:
         ini = st.date_input("Início", key="crit_ini")
     with p2:
         fim = st.date_input("Fim", key="crit_fim")
-    with p3:
-        st.write("")
+
+    b_full = st.columns(1)[0]
+    with b_full:
         st.button(
             "Usar semana atual (seg–dom)",
             on_click=_btn_semana_atual_crit,
             use_container_width=True,
         )
-    with p4:
-        dim = st.radio(
-            "Analisar por",
-            options=list(DIMENSOES),
-            format_func=lambda x: DIM_LABELS[x],
-            index=0,
-            horizontal=True,
-        )
 
     st.markdown("##### Critérios (mínimos)")
-    st.caption("Deixe em 0 para não filtrar aquele indicador.")
+    st.caption("Deixe em 0 para não filtrar aquele indicador. Todos em 0 = listar todos com atividade.")
     criterios: Dict[str, Optional[float]] = {}
     ativos: List[str] = []
     cols_crit = st.columns(len(FUNIL_ETAPAS))
@@ -1035,12 +1145,6 @@ def main() -> None:
         st.error("O fim do período deve ser ≥ início.")
         return
 
-    if not ativos:
-        st.info(
-            "Defina pelo menos um critério > 0 "
-            "(ex.: Vendas ≥ 3, Pastas ≥ 10)."
-        )
-
     try:
         eventos, origens = carregar_eventos_funil_pessoas()
     except Exception as e:
@@ -1054,64 +1158,14 @@ def main() -> None:
 
     st.markdown(
         f"**Período:** {ini.strftime('%d/%m/%Y')} → {fim.strftime('%d/%m/%Y')} "
-        f"({n_dias_periodo(ini, fim)} dias) · "
-        f"**Dimensão:** {DIM_LABELS[dim]}"
+        f"({n_dias_periodo(ini, fim)} dias)"
+        + (f" · **Critérios:** {' · '.join(ativos)}" if ativos else " · **Sem filtro de mínimos**")
     )
-    if ativos:
-        st.markdown("**Critérios ativos:** " + " · ".join(ativos))
 
-    ev = filtrar_periodo(eventos, ini, fim)
-    agg = agregar_funil_por_dimensao(ev, dim)
-    filtrado = _aplicar_criterios(agg, criterios) if ativos else agg.iloc[0:0]
-
-    if not ativos:
-        return
-
-    if filtrado.empty:
-        st.warning("Nenhuma pessoa atende aos critérios no período.")
-        return
-
-    # Ordena pelo primeiro critério ativo (maior valor), depois vendas
-    ordem = [e for e in FUNIL_ETAPAS if criterios.get(e) is not None]
-    if "vendas" not in ordem:
-        ordem.append("vendas")
-    filtrado = filtrado.sort_values(ordem, ascending=[False] * len(ordem))
-
-    st.success(f"{len(filtrado)} resultado(s) encontrados.")
-
-    # Tabela consolidada
-    cols_show = [dim] + list(FUNIL_ETAPAS)
-    df_show = filtrado[cols_show].copy()
-    df_show = df_show.rename(columns={dim: DIM_LABELS[dim], **FUNIL_LABELS})
-    for c in FUNIL_LABELS.values():
-        if c in df_show.columns:
-            df_show[c] = df_show[c].map(lambda x: fmt_num(float(x), 0))
-    st.dataframe(df_show, use_container_width=True, hide_index=True)
-
-    st.markdown("##### Detalhamento")
-    for _, row in filtrado.iterrows():
-        nome = limpar_nome(row[dim])
-        if not nome:
-            continue
-        partes = [f"{FUNIL_LABELS[e]}: {fmt_num(float(row.get(e, 0.0)), 0)}" for e in FUNIL_ETAPAS]
-        st.markdown(
-            f'<div class="bloco-pessoa">'
-            f'<div class="nome">{nome}</div>'
-            f'<div style="color:{COR_TEXTO_PRETO};font-size:0.95rem;">'
-            + " &nbsp;·&nbsp; ".join(partes)
-            + "</div></div>",
-            unsafe_allow_html=True,
-        )
-
-    csv = filtrado.rename(columns={dim: DIM_LABELS[dim], **FUNIL_LABELS}).to_csv(
-        index=False, sep=";", decimal=","
-    )
-    st.download_button(
-        "Baixar CSV",
-        data=csv.encode("utf-8-sig"),
-        file_name=f"funil_criterios_{dim}_{ini}_{fim}.csv",
-        mime="text/csv",
-    )
+    tabs = st.tabs([DIM_LABELS[d] for d in DIMENSOES])
+    for tab, dim in zip(tabs, DIMENSOES):
+        with tab:
+            _render_aba_criterios(eventos, dim, ini, fim, criterios, ativos)
 
     st.markdown(
         '<div class="footer">Direcional Engenharia · Vendas — Relatório de funil</div>',
