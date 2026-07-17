@@ -860,26 +860,9 @@ def achar_coluna_primeiro_envio_analise(df: pd.DataFrame) -> Optional[str]:
     return col
 
 
-def _celula_vazia(val: Any) -> bool:
-    if val is None or (isinstance(val, float) and pd.isna(val)):
-        return True
-    s = str(val).strip().lower()
-    return s in ("", "nan", "none", "null", "-", "n/a", "na")
-
-
 ALIASES_VENDA_COMERCIAL = [
     "Venda Comercial?", "Venda Comercial", "Venda comercial?",
     "Venda comercial", "Comercial?",
-]
-ALIASES_STATUS_PASTAS = [
-    "Status", "Status da Análise", "Status da Analise",
-    "Status Análise", "Status Analise",
-]
-ALIASES_SICAQ = ["SICAQ", "SiCAQ", "Sicaq"]
-ALIASES_MOTIVO_PENDENCIA_SAFI = [
-    "Motivo Pendência SAFI", "Motivo Pendencia SAFI",
-    "Motivo Pend. SAFI", "Motivo da Pendência SAFI",
-    "Motivo da Pendencia SAFI",
 ]
 
 
@@ -895,42 +878,6 @@ def filtrar_vendas_comerciais(df: pd.DataFrame) -> pd.DataFrame:
         | (df[col].astype(str).str.strip().str.upper().isin(["SIM", "TRUE", "1", "1.0"]))
     )
     return df.loc[mask].copy()
-
-
-def filtrar_pastas_aprovadas_funil(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Pastas aprovadas no funil:
-      - Status = Análise aprovada
-      - SICAQ sem 'Reprovado'
-      - Motivo Pendência SAFI vazio
-      - Data Aprovação SAFI preenchida
-    """
-    if df is None or df.empty:
-        return df if df is not None else pd.DataFrame()
-    out = df.copy()
-
-    col_status = achar_coluna(out, ALIASES_STATUS_PASTAS)
-    if col_status:
-        alvo = _norm_txt_col("Análise aprovada")
-        out = out[out[col_status].map(_norm_txt_col) == alvo]
-    else:
-        return pd.DataFrame()
-
-    col_sicaq = achar_coluna(out, ALIASES_SICAQ)
-    if col_sicaq:
-        out = out[~out[col_sicaq].astype(str).str.lower().str.contains("reprovado", na=False)]
-
-    col_motivo = achar_coluna(out, ALIASES_MOTIVO_PENDENCIA_SAFI)
-    if col_motivo:
-        out = out[out[col_motivo].map(_celula_vazia)]
-
-    col_safi = achar_coluna_aprovacao_safi(out)
-    if col_safi:
-        out = out[pd.to_datetime(out[col_safi], dayfirst=True, errors="coerce").notna()]
-    else:
-        return pd.DataFrame()
-
-    return out
 
 
 def normalizar_colunas(df: pd.DataFrame) -> pd.DataFrame:
@@ -1096,6 +1043,79 @@ def janela_treino_meses_exatos(hoje: Optional[date] = None) -> Tuple[date, date]
 def janela_treino_52_semanas(hoje: Optional[date] = None) -> Tuple[date, date]:
     """Compatibilidade: encaminha para janela de meses exatos."""
     return janela_treino_meses_exatos(hoje)
+
+
+def _as_date_funil(val: Any) -> Optional[date]:
+    """Normaliza valor para date (evita falha de lookup Timestamp vs date)."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return None
+    if isinstance(val, datetime):
+        return val.date()
+    if isinstance(val, date):
+        return val
+    if isinstance(val, pd.Timestamp):
+        return val.date()
+    try:
+        return pd.to_datetime(val, dayfirst=True, errors="coerce").date()
+    except Exception:
+        return None
+
+
+def _indice_por_data_cal(cal: pd.DataFrame) -> Dict[date, int]:
+    """Mapa data → posição no calendário (índice resetado)."""
+    out: Dict[date, int] = {}
+    for i, r in cal.reset_index(drop=True).iterrows():
+        d = _as_date_funil(r["data"])
+        if d is not None:
+            out[d] = int(i)
+    return out
+
+
+def _media_etapa_dia_semana(treino: pd.DataFrame, etapa: str, d: date) -> float:
+    if treino.empty or etapa not in treino.columns:
+        return 0.0
+    ds = DIAS_SEMANA_PT[d.weekday()]
+    sub = treino[treino["dia_semana"] == ds]
+    if not sub.empty:
+        return max(float(sub[etapa].mean()), 0.0)
+    return max(float(treino[etapa].mean()), 0.0)
+
+
+def _garantir_previsoes_futuras_funil(
+    cal_reg: pd.DataFrame,
+    cal_med: pd.DataFrame,
+    idx_por_data: Dict[date, int],
+    dias_futuros: List[date],
+    treino: pd.DataFrame,
+    medias: Dict[str, Any],
+    coefs: Dict[str, np.ndarray],
+    incluir_mes: bool,
+    lags: Tuple[int, ...],
+) -> None:
+    """Evita projeção zerada no restante do mês (fallback: médias / histórico)."""
+    for d in dias_futuros:
+        i = idx_por_data.get(d)
+        if i is None:
+            continue
+        for etapa in FUNIL_ETAPAS:
+            v_reg = float(cal_reg.at[i, etapa])
+            if v_reg < 1e-6:
+                row_reg = cal_reg.loc[[i]]
+                v_reg = _prever_linha_reg_funil(coefs[etapa], row_reg, incluir_mes, lags, etapa)
+                if v_reg < 1e-6:
+                    v_med = _prever_linha_medias_funil(
+                        cal_med.iloc[i], d, etapa, medias, incluir_mes
+                    )
+                    v_reg = v_med if v_med > 1e-6 else _media_etapa_dia_semana(treino, etapa, d)
+                cal_reg.at[i, etapa] = v_reg
+            v_med = float(cal_med.at[i, etapa])
+            if v_med < 1e-6:
+                v_med = _prever_linha_medias_funil(
+                    cal_med.iloc[i], d, etapa, medias, incluir_mes
+                )
+                if v_med < 1e-6:
+                    v_med = _media_etapa_dia_semana(treino, etapa, d)
+                cal_med.at[i, etapa] = v_med
 
 
 def serie_diaria_contratos(
@@ -1526,6 +1546,14 @@ def projetar_vendas_mes_atual(
     pred_reg = pred_reg_mes[n_passados:] if len(pred_reg_mes) else np.array([])
     pred_med = pred_med_mes[n_passados:] if len(pred_med_mes) else np.array([])
 
+    mu_dia = max(float(treino["qtd"].mean()), 0.0)
+    if len(pred_reg) > 0 and float(np.sum(pred_reg)) < 1e-6 and mu_dia > 0:
+        pred_reg = np.full(len(pred_reg), mu_dia)
+        pred_reg_mes = np.concatenate([pred_reg_mes[:n_passados], pred_reg])
+    if len(pred_med) > 0 and float(np.sum(pred_med)) < 1e-6 and mu_dia > 0:
+        pred_med = np.full(len(pred_med), mu_dia)
+        pred_med_mes = np.concatenate([pred_med_mes[:n_passados], pred_med])
+
     # Comparativo dia a dia: projetado (modelo) × realizado (mês atual)
     comp_reg: List[Dict[str, Any]] = []
     comp_med: List[Dict[str, Any]] = []
@@ -1939,6 +1967,10 @@ def render_projecao_vendas(
         f"""
         <div class="vel-kpi-row">
             <div class="vel-kpi">
+                <div class="lbl">Realizado MTD</div>
+                <div class="val">{fmt_qtd(proj['qtd_mtd'])}</div>
+            </div>
+            <div class="vel-kpi">
                 <div class="lbl">Qtd. (regressão)</div>
                 <div class="val">{fmt_qtd(proj['qtd_projetada_mes'])}</div>
             </div>
@@ -2279,7 +2311,7 @@ def contar_eventos_por_coluna(df: pd.DataFrame, col: str) -> Dict[date, float]:
 def deduplicar_pastas_aprovadas_funil(df: pd.DataFrame) -> pd.DataFrame:
     """
     Uma linha por Nome da Avaliação de crédito, mantendo a Data Aprovação SAFI
-    mais recente (após filtros de aprovação).
+    mais recente.
     """
     col_safi = achar_coluna_aprovacao_safi(df)
     if not col_safi:
@@ -2374,13 +2406,13 @@ def montar_mapa_funil_diario(
       agendamentos ← Data de criação
       visitas ← Data da visita
       pastas ← Data Primeiro Envio Análise (relatório SF 00OU600000FEOoDMAX)
-      pastas_aprovadas ← Data Aprovação SAFI (Status Análise aprovada + filtros SAFI)
+      pastas_aprovadas ← Data Aprovação SAFI
       vendas ← Contrato gerado em, somente vendas comerciais
 
     Deduplicação antes da contagem:
       vendas → ID da Oportunidade (Contrato gerado em mais recente)
       pastas → Nome da Avaliação (Data Primeiro Envio Análise mais recente)
-      pastas aprovadas → Nome da Avaliação (Data Aprovação SAFI mais recente, após filtros)
+      pastas aprovadas → Nome da Avaliação (Data Aprovação SAFI mais recente)
       agendamentos → Código do agendamento (Data de criação mais recente)
     """
     df_ag = deduplicar_agendamentos_funil(
@@ -2388,9 +2420,7 @@ def montar_mapa_funil_diario(
     )
     df_pas_raw = df_pastas if df_pastas is not None else pd.DataFrame()
     df_pas = deduplicar_pastas_funil(df_pas_raw)
-    df_pas_aprov = deduplicar_pastas_aprovadas_funil(
-        filtrar_pastas_aprovadas_funil(df_pas_raw)
-    )
+    df_pas_aprov = deduplicar_pastas_aprovadas_funil(df_pas_raw)
 
     mapa_vendas: Dict[date, float] = {}
     if df_vendas is not None and not df_vendas.empty:
@@ -2896,7 +2926,8 @@ def _atualizar_lags_linha(cal: pd.DataFrame, i: int, lags: Tuple[int, ...]) -> N
 def _resumir_perfil_lag_vendas(df_p: pd.DataFrame, etapa: str) -> Dict[str, Any]:
     """
     Resume o perfil de lags 1..30 de uma etapa sobre vendas.
-    Pico e meia-vida usam apenas lags >= 1 (efeito retardado, não mesmo dia).
+    Pico = lag com maior efeito acumulado até aquele dia (cumsum dos coeficientes).
+    Meia-vida ≈ 50% do efeito acumulado total no horizonte 1..30d.
     """
     df_p = df_p[df_p["lag"] >= 1].copy()
     if df_p.empty:
@@ -2910,27 +2941,27 @@ def _resumir_perfil_lag_vendas(df_p: pd.DataFrame, etapa: str) -> Dict[str, Any]
             "efeito_acum": 0.0,
         }
 
-    pos = df_p[df_p["efeito"] > 0]
-    if not pos.empty:
-        i_peak = int(pos["efeito"].idxmax())
-    else:
-        i_peak = int(df_p["efeito"].abs().idxmax())
-    lag_pico = int(df_p.loc[i_peak, "lag"])
-    efeito_pico = float(df_p.loc[i_peak, "efeito"])
+    df_p = df_p.sort_values("lag").reset_index(drop=True)
+    df_p["acumulado"] = df_p["efeito"].cumsum()
 
-    acum_pos = float(df_p.loc[df_p["efeito"] > 0, "efeito"].sum()) if (df_p["efeito"] > 0).any() else 0.0
+    i_peak = int(df_p["acumulado"].idxmax())
+    lag_pico = int(df_p.loc[i_peak, "lag"])
+    efeito_pico = float(df_p.loc[i_peak, "acumulado"])
+
+    acum_final = float(df_p["acumulado"].iloc[-1])
     lag_meia = lag_pico
-    if acum_pos > 1e-9:
-        running = 0.0
+    if abs(acum_final) > 1e-9:
+        alvo = 0.5 * acum_final
         lag_meia = int(df_p["lag"].iloc[-1])
         for _, r in df_p.iterrows():
-            if float(r["efeito"]) > 0:
-                running += float(r["efeito"])
-                if running >= 0.5 * acum_pos:
-                    lag_meia = int(r["lag"])
-                    break
+            ac = float(r["acumulado"])
+            if acum_final > 0 and ac >= alvo:
+                lag_meia = int(r["lag"])
+                break
+            if acum_final < 0 and ac <= alvo:
+                lag_meia = int(r["lag"])
+                break
     else:
-        # sem efeito positivo: usa lag de maior |efeito|, mínimo 1
         lag_meia = max(1, lag_pico)
 
     efeito_lag1 = float(df_p.loc[df_p["lag"] == 1, "efeito"].iloc[0]) if (df_p["lag"] == 1).any() else 0.0
@@ -2941,7 +2972,7 @@ def _resumir_perfil_lag_vendas(df_p: pd.DataFrame, etapa: str) -> Dict[str, Any]
         "efeito_pico": efeito_pico,
         "lag_meia_vida": lag_meia,
         "efeito_lag1": efeito_lag1,
-        "efeito_acum": float(df_p["efeito"].sum()),
+        "efeito_acum": acum_final,
     }
 
 
@@ -3036,6 +3067,9 @@ def projetar_funil_mes_atual(
     fim_mes = date(ano, mes, ultimo_dia)
 
     cal = calendario_funil_diario(inicio_cal, fim_mes, mapas, lags=lags)
+    cal = cal.reset_index(drop=True)
+    cal["data"] = cal["data"].map(_as_date_funil)
+    cal = cal.dropna(subset=["data"]).reset_index(drop=True)
     if cal.empty or cal.loc[cal["data"].between(inicio, fim_treino), "vendas"].sum() <= 0:
         # ainda permite se houver outras etapas
         if cal.loc[cal["data"].between(inicio, fim_treino), list(FUNIL_ETAPAS)].sum().sum() <= 0:
@@ -3060,11 +3094,10 @@ def projetar_funil_mes_atual(
     cal_med = cal.copy()
 
     dias_mes = [date(ano, mes, d) for d in range(1, ultimo_dia + 1)]
-    idx_por_data = {r["data"]: i for i, r in cal_reg.iterrows()}
+    dias_futuros = [d for d in dias_mes if d > hoje]
+    idx_por_data = _indice_por_data_cal(cal_reg)
 
-    for d in dias_mes:
-        if d <= hoje:
-            continue
+    for d in dias_futuros:
         i = idx_por_data.get(d)
         if i is None:
             continue
@@ -3102,6 +3135,10 @@ def projetar_funil_mes_atual(
                 cal_reg.at[i, "vendas_lag0"] = pred_r
                 cal_med.at[i, "vendas_lag0"] = pred_m
 
+    _garantir_previsoes_futuras_funil(
+        cal_reg, cal_med, idx_por_data, dias_futuros, treino, medias, coefs, incluir_mes, lags
+    )
+
     # montar resultados por etapa
     resultados: Dict[str, Any] = {}
     for etapa in FUNIL_ETAPAS:
@@ -3114,21 +3151,25 @@ def projetar_funil_mes_atual(
             if i is None:
                 continue
             real = float((mapas.get(etapa) or {}).get(d, 0.0)) if d <= hoje else None
-            p_reg = float(cal_reg.at[i, etapa])
-            p_med = float(cal_med.at[i, etapa])
             if d <= hoje:
                 mtd += real or 0.0
-                # Projeção do mês começa amanhã: até hoje, "projetado" = realizado
-                p_reg = float(real or 0.0)
-                p_med = float(real or 0.0)
+                row_reg = cal_reg.loc[[i]]
+                pred_reg_dia = _prever_linha_reg_funil(
+                    coefs[etapa], row_reg, incluir_mes, lags, etapa
+                )
+                pred_med_dia = _prever_linha_medias_funil(
+                    cal_med.iloc[i], d, etapa, medias, incluir_mes
+                )
             else:
-                rest_reg += p_reg
-                rest_med += p_med
+                pred_reg_dia = float(cal_reg.at[i, etapa])
+                pred_med_dia = float(cal_med.at[i, etapa])
+                rest_reg += pred_reg_dia
+                rest_med += pred_med_dia
             diaria.append({
                 "dia": d.day,
                 "realizado": real,
-                "projetado_reg": p_reg,
-                "projetado_med": p_med,
+                "projetado_reg": pred_reg_dia,
+                "projetado_med": pred_med_dia,
             })
         resultados[etapa] = {
             "mtd": mtd,
@@ -3618,6 +3659,7 @@ def render_projecao_funil(proj: Dict[str, Any]) -> None:
             "val": fmt_qtd(float((etapas.get(etapa) or {}).get("mtd", 0))),
             "sub": (
                 f"Proj. reg {fmt_qtd(float((etapas.get(etapa) or {}).get('projetado_reg', 0)))}"
+                f" (+{fmt_qtd(max(0.0, float((etapas.get(etapa) or {}).get('projetado_reg', 0)) - float((etapas.get(etapa) or {}).get('mtd', 0))))})"
                 f" · méd {fmt_qtd(float((etapas.get(etapa) or {}).get('projetado_med', 0)))}"
             ),
         }
@@ -3629,8 +3671,8 @@ def render_projecao_funil(proj: Dict[str, Any]) -> None:
         st.markdown("##### Tempo até o efeito nas vendas")
         st.caption(
             f"R² médio: {float(efeitos.get('r2', 0)):.2f} · "
-            "lags 1–30d por etapa · pico = maior efeito positivo · "
-            "meia-vida ≈ 50% do efeito positivo acumulado"
+            "lags 1–30d por etapa · pico = maior efeito acumulado · "
+            "meia-vida ≈ 50% do efeito acumulado total"
         )
         resumo = efeitos.get("resumo") or []
         _render_kpi_cards([
@@ -3686,6 +3728,10 @@ def render_projecao_funil(proj: Dict[str, Any]) -> None:
 
     # Comparativo diário projetado × realizado (ambos os modelos)
     st.markdown("##### Projeção diária × realizado (modelos treinados sem o mês atual)")
+    st.caption(
+        "Linhas de projetado = previsão do modelo (reg / médias) em cada dia. "
+        "Realizado só até hoje. Total do mês = realizado MTD + previsão dos dias restantes."
+    )
     for etapa in FUNIL_ETAPAS:
         df = (etapas.get(etapa) or {}).get("diaria", pd.DataFrame())
         _plot_funil_etapa_comparativo(etapa, df, ultimo, dia_hoje)
@@ -3704,7 +3750,7 @@ def render_efeitos_lags_sobre_vendas(
     st.caption(
         f"R² médio: {float(efeitos.get('r2', 0)):.2f} · "
         "modelo por etapa (vendas ~ calendário + lags 1–30 da etapa) · "
-        "pico = lag de maior efeito positivo"
+        "pico = lag de maior efeito acumulado"
     )
 
     if mostrar_cards:
@@ -4371,7 +4417,7 @@ def main() -> None:
                                 df_pastas_funil[col_safi], dayfirst=True, errors="coerce"
                             ).notna().sum()
                         )
-                    n_aprov_filt = len(filtrar_pastas_aprovadas_funil(df_pastas_funil))
+                    n_aprov_filt = len(deduplicar_pastas_aprovadas_funil(df_pastas_funil))
                     df_pastas_funil = deduplicar_pastas_funil(df_pastas_funil)
                     st.caption(
                         f"Pastas: {origem_pastas} · "
@@ -4379,7 +4425,7 @@ def main() -> None:
                         f"(dedup Nome da Avaliação) · "
                         f"1º envio: '{col_envio or '?'}' ({n_com_envio:,}) · "
                         f"Aprov. SAFI: '{col_safi or '?'}' ({n_com_safi:,}) · "
-                        f"aprovadas filtradas: {n_aprov_filt:,}"
+                        f"aprovadas (dedup): {n_aprov_filt:,}"
                     )
                 except Exception as e_sf_p:
                     st.warning(
