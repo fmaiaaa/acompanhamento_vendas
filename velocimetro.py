@@ -1604,13 +1604,69 @@ def render_projecao_vendas(proj: Dict[str, Any]) -> None:
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
+def _plot_barra_efeitos(
+    titulo: str,
+    df: pd.DataFrame,
+    cor: str,
+    base_text: str = "base=1",
+) -> None:
+    """Barra simples do índice relativo (base=1) para efeitos sazonais."""
+    if df is None or df.empty:
+        return
+    if "categoria" not in df.columns:
+        return
+    y_col = "indice" if "indice" in df.columns else ("efeito" if "efeito" in df.columns else None)
+    if not y_col:
+        return
 
-    _plot_barra_efeitos(
-        "Efeito de mês",
-        efeitos.get("mes", pd.DataFrame()),
-        "#0f766e",
-        "janeiro",
+    d = df.copy()
+    d = d.dropna(subset=["categoria"])
+    if d.empty:
+        return
+
+    x = d["categoria"].astype(str).tolist()
+    y = d[y_col].astype(float).tolist()
+
+    fig = go.Figure(go.Bar(x=x, y=y, marker_color=cor))
+    fig.add_hline(
+        y=1.0,
+        line_width=1,
+        line_dash="dot",
+        line_color="#64748b",
+        annotation_text=base_text,
+        annotation_position="top left",
+        annotation_font=dict(color=COR_TEXTO_MUTED, size=10, family="Inter"),
     )
+    fig.update_layout(
+        title=dict(text=titulo, x=0.0, y=0.98, xanchor="left"),
+        margin=dict(l=20, r=20, t=60, b=20),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter", color=COR_TEXTO_LABEL),
+        height=320,
+        showlegend=False,
+    )
+    fig.update_yaxes(title_text="Índice", showgrid=True, gridcolor="rgba(226,232,240,0.5)")
+    fig.update_xaxes(tickfont=dict(color=COR_TEXTO_MUTED, family="Inter", size=11))
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def render_efeitos_sazonais(efeitos: Dict[str, Any]) -> None:
+    """Renderiza efeitos sazonais (mês) estimados por regressão."""
+    if not efeitos:
+        return
+    st.markdown("<br/>", unsafe_allow_html=True)
+    st.subheader("Efeitos sazonais (mês)")
+
+    r2 = efeitos.get("r2")
+    if r2 is not None:
+        try:
+            st.caption(f"R² treino: {float(r2):.2f}")
+        except Exception:
+            pass
+
+    df_mes = efeitos.get("mes") or pd.DataFrame()
+    _plot_barra_efeitos("Índice relativo por mês", df_mes, cor="#0f766e", base_text="jan=1")
 
 
 # -----------------------------------------------------------------------------
