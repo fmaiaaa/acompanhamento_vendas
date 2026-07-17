@@ -2388,6 +2388,32 @@ def _plot_funil_etapa_comparativo(etapa: str, df: pd.DataFrame, ultimo_dia: int,
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
+def _render_kpi_cards(items: List[Dict[str, str]]) -> None:
+    """
+    Cards KPI em colunas Streamlit (evita HTML indentado virar bloco de código no markdown).
+    items: [{"lbl": ..., "val": ..., "sub": ...}, ...]
+    """
+    if not items:
+        return
+    n = len(items)
+    cols = st.columns(n)
+    for col, it in zip(cols, items):
+        lbl = html.escape(str(it.get("lbl", "")))
+        val = html.escape(str(it.get("val", "")))
+        sub = html.escape(str(it.get("sub", "")))
+        with col:
+            st.markdown(
+                (
+                    f'<div class="vel-kpi" style="width:100%;box-sizing:border-box;">'
+                    f'<div class="lbl">{lbl}</div>'
+                    f'<div class="val">{val}</div>'
+                    f'<div class="lbl" style="margin-top:6px;opacity:0.75;">{sub}</div>'
+                    f"</div>"
+                ),
+                unsafe_allow_html=True,
+            )
+
+
 def render_projecao_funil(proj: Dict[str, Any]) -> None:
     """Seção Streamlit: projeção do funil com regressão e médias (+ lags)."""
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
@@ -2399,22 +2425,39 @@ def render_projecao_funil(proj: Dict[str, Any]) -> None:
     )
 
     etapas = proj.get("etapas") or {}
-    cards = []
-    for etapa in FUNIL_ETAPAS:
-        info = etapas.get(etapa) or {}
-        cards.append(
-            f"""
-            <div class="vel-kpi">
-                <div class="lbl">{FUNIL_LABELS.get(etapa, etapa)}</div>
-                <div class="val">{fmt_qtd(float(info.get('mtd', 0)))}</div>
-                <div class="lbl" style="margin-top:6px;opacity:0.75;">
-                    Proj. reg {fmt_qtd(float(info.get('projetado_reg', 0)))}
-                    · méd {fmt_qtd(float(info.get('projetado_med', 0)))}
-                </div>
-            </div>
-            """
+    _render_kpi_cards([
+        {
+            "lbl": FUNIL_LABELS.get(etapa, etapa),
+            "val": fmt_qtd(float((etapas.get(etapa) or {}).get("mtd", 0))),
+            "sub": (
+                f"Proj. reg {fmt_qtd(float((etapas.get(etapa) or {}).get('projetado_reg', 0)))}"
+                f" · méd {fmt_qtd(float((etapas.get(etapa) or {}).get('projetado_med', 0)))}"
+            ),
+        }
+        for etapa in FUNIL_ETAPAS
+    ])
+
+    # Cards de tempo até o efeito (lags) — no topo, junto ao funil
+    efeitos = proj.get("efeitos_lags_vendas")
+    if efeitos:
+        st.markdown("##### Tempo até o efeito nas vendas")
+        st.caption(
+            f"R²: {float(efeitos.get('r2', 0)):.2f} · "
+            "pico = lag de maior efeito · meia-vida ≈ 50% do efeito positivo acumulado"
         )
-    st.markdown(f'<div class="vel-kpi-row">{"".join(cards)}</div>', unsafe_allow_html=True)
+        resumo = efeitos.get("resumo") or []
+        _render_kpi_cards([
+            {
+                "lbl": str(r.get("label", "")),
+                "val": f"{int(r.get('lag_pico', 0))}d",
+                "sub": (
+                    f"Meia-vida {int(r.get('lag_meia_vida', 0))}d"
+                    f" · lag1 {float(r.get('efeito_lag0', 0)):.2f}"
+                    f" · acum {float(r.get('efeito_acum', 0)):.2f}"
+                ),
+            }
+            for r in resumo
+        ])
 
     # Funil MTD vs projetado (regressão)
     fig_f = go.Figure()
@@ -2462,37 +2505,36 @@ def render_projecao_funil(proj: Dict[str, Any]) -> None:
         df = (etapas.get(etapa) or {}).get("diaria", pd.DataFrame())
         _plot_funil_etapa_comparativo(etapa, df, ultimo, dia_hoje)
 
-    efeitos = proj.get("efeitos_lags_vendas")
     if efeitos:
-        render_efeitos_lags_sobre_vendas(efeitos)
+        render_efeitos_lags_sobre_vendas(efeitos, mostrar_cards=False)
 
 
-def render_efeitos_lags_sobre_vendas(efeitos: Dict[str, Any]) -> None:
-    """Perfil de lags (0–14d) das etapas do funil sobre vendas."""
+def render_efeitos_lags_sobre_vendas(
+    efeitos: Dict[str, Any],
+    mostrar_cards: bool = True,
+) -> None:
+    """Perfil de lags (1–30d) das etapas do funil sobre vendas."""
     st.markdown("<br/>", unsafe_allow_html=True)
-    st.subheader("Tempo até o efeito nas vendas (lags)")
+    st.subheader("Perfil de lags sobre vendas")
     st.caption(
         f"R²: {float(efeitos.get('r2', 0)):.2f} · "
         "efeito = Δ vendas por unidade da variável no lag (controlando calendário)"
     )
 
-    resumo = efeitos.get("resumo") or []
-    if resumo:
-        cards = []
-        for r in resumo:
-            cards.append(
-                f"""
-                <div class="vel-kpi">
-                    <div class="lbl">{r.get('label')}</div>
-                    <div class="val">{int(r.get('lag_pico', 0))}d</div>
-                    <div class="lbl" style="margin-top:6px;opacity:0.75;">
-                        Pico · meia-vida {int(r.get('lag_meia_vida', 0))}d
-                        · lag1 {float(r.get('efeito_lag0', 0)):.2f}
-                    </div>
-                </div>
-                """
-            )
-        st.markdown(f'<div class="vel-kpi-row">{"".join(cards)}</div>', unsafe_allow_html=True)
+    if mostrar_cards:
+        resumo = efeitos.get("resumo") or []
+        _render_kpi_cards([
+            {
+                "lbl": str(r.get("label", "")),
+                "val": f"{int(r.get('lag_pico', 0))}d",
+                "sub": (
+                    f"Meia-vida {int(r.get('lag_meia_vida', 0))}d"
+                    f" · lag1 {float(r.get('efeito_lag0', 0)):.2f}"
+                    f" · acum {float(r.get('efeito_acum', 0)):.2f}"
+                ),
+            }
+            for r in resumo
+        ])
 
     perfis = efeitos.get("perfis") or {}
     fig = go.Figure()
@@ -2505,13 +2547,10 @@ def render_efeitos_lags_sobre_vendas(efeitos: Dict[str, Any]) -> None:
             go.Scatter(
                 x=df["lag"],
                 y=df["efeito"],
-                mode="lines+markers+text",
+                mode="lines+markers",
                 name=FUNIL_LABELS.get(etapa, etapa),
-                text=[f"{float(v):.2f}" for v in df["efeito"]],
-                textposition="top center",
-                textfont=dict(size=9, color=cor, family="Inter"),
                 line=dict(color=cor, width=3),
-                marker=dict(size=8, color=cor),
+                marker=dict(size=7, color=cor),
             )
         )
     fig.add_hline(y=0, line_width=1, line_dash="dot", line_color="#64748b")
