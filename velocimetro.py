@@ -57,8 +57,16 @@ FUNIL_LABELS = {
     "pastas_aprovadas": "Pastas aprovadas",
     "vendas": "Vendas",
 }
+# Conversões etapa → etapa seguinte
+FUNIL_PARES_ETAPA = (
+    ("agendamentos", "visitas"),
+    ("visitas", "pastas"),
+    ("pastas", "pastas_aprovadas"),
+    ("pastas_aprovadas", "vendas"),
+)
 FUNIL_LAGS = tuple(range(1, 31))  # lags 1..30
 FUNIL_LAGS_PERFIL = tuple(range(1, 31))
+FUNIL_JANELA_CONV = 30  # janela móvel para conversão → vendas (sem vazamento do dia)
 FUNIL_CORES_DRIVER = {
     "agendamentos": "#04428f",
     "visitas": "#cb0935",
@@ -2171,7 +2179,7 @@ def calendario_funil_diario(
     mapas: Dict[str, Dict[date, float]],
     lags: Tuple[int, ...] = FUNIL_LAGS,
 ) -> pd.DataFrame:
-    """Calendário diário do funil com dummies calendário + lags das etapas."""
+    """Calendário diário do funil com dummies calendário + lags + conversões."""
     idx = pd.date_range(inicio, fim, freq="D")
     cal = pd.DataFrame({"data": [d.date() for d in idx]})
     for etapa in FUNIL_ETAPAS:
@@ -2183,7 +2191,125 @@ def calendario_funil_diario(
     for etapa in FUNIL_ETAPAS:
         for L in lags:
             cal[f"{etapa}_lag{L}"] = cal[etapa].shift(L).fillna(0.0)
-    return cal
+    return adicionar_conversoes_funil(cal)
+
+
+def _safe_ratio(num: pd.Series, den: pd.Series) -> pd.Series:
+    """Razão segura; 0 quando denominador ≤ 0. Clip para estabilidade do modelo."""
+    n = pd.to_numeric(num, errors="coerce").fillna(0.0).astype(float)
+    d = pd.to_numeric(den, errors="coerce").fillna(0.0).astype(float)
+    out = np.where(d > 0, n / d, 0.0)
+    return pd.Series(np.clip(out, 0.0, 5.0), index=num.index)
+
+
+def col_conv_etapa(origem: str, destino: str) -> str:
+    return f"conv_{origem}_{destino}"
+
+
+def col_conv_venda(origem: str) -> str:
+    return f"conv_{origem}_vendas"
+
+
+def cols_conversoes_funil() -> List[str]:
+    """Colunas de conversão usadas no modelo de vendas."""
+    cols = [col_conv_etapa(a, b) for a, b in FUNIL_PARES_ETAPA if b != "vendas"]
+    cols += [col_conv_venda(e) for e in FUNIL_DRIVERS]
+    return cols
+
+
+def adicionar_conversoes_funil(
+    cal: pd.DataFrame,
+    janela: int = FUNIL_JANELA_CONV,
+) -> pd.DataFrame:
+    """
+    Conversões diárias:
+      - etapa→seguinte: razão no mesmo dia (sem usar vendas)
+      - indicador→venda: razão móvel (janela) deslocada 1 dia (evita vazamento do y)
+    """
+    out = cal.copy()
+    for a, b in FUNIL_PARES_ETAPA:
+        if b == "vendas":
+            continue
+        if a in out.columns and b in out.columns:
+            out[col_conv_etapa(a, b)] = _safe_ratio(out[b], out[a])
+
+    for etapa in FUNIL_DRIVERS:
+        if etapa not in out.columns or "vendas" not in out.columns:
+            out[col_conv_venda(etapa)] = 0.0
+            continue
+        roll_v = out["vendas"].rolling(janela, min_periods=5).sum()
+        roll_e = out[etapa].rolling(janela, min_periods=5).sum()
+        out[col_conv_venda(etapa)] = _safe_ratio(roll_v, roll_e).shift(1).fillna(0.0)
+    return out
+
+
+def _atualizar_conversoes_linha(
+    cal: pd.DataFrame,
+    i: int,
+    janela: int = FUNIL_JANELA_CONV,
+) -> None:
+    """Recalcula conversões na linha i (após atualizar níveis do funil)."""
+    for a, b in FUNIL_PARES_ETAPA:
+        if b == "vendas":
+            continue
+        den = float(cal.at[i, a]) if a in cal.columns else 0.0
+        num = float(cal.at[i, b]) if b in cal.columns else 0.0
+        cal.at[i, col_conv_etapa(a, b)] = float(np.clip(num / den, 0.0, 5.0)) if den > 0 else 0.0
+
+    # Posição inteira no índice (RangeIndex 0..n-1)
+    try:
+        pos = int(cal.index.get_loc(i))
+    except Exception:
+        pos = int(i)
+    i0 = max(0, pos - janela)
+    hist = cal.iloc[i0:pos]
+    if hist.empty or "vendas" not in cal.columns:
+        for etapa in FUNIL_DRIVERS:
+            cal.at[i, col_conv_venda(etapa)] = 0.0
+        return
+    sum_v = float(hist["vendas"].sum())
+    for etapa in FUNIL_DRIVERS:
+        sum_e = float(hist[etapa].sum()) if etapa in hist.columns else 0.0
+        cal.at[i, col_conv_venda(etapa)] = (
+            float(np.clip(sum_v / sum_e, 0.0, 5.0)) if sum_e > 0 else 0.0
+        )
+
+
+def taxa_conversao(origem: float, destino: float) -> Optional[float]:
+    """Taxa percentual origem→destino; None se origem ≤ 0."""
+    if origem is None or destino is None:
+        return None
+    o = float(origem)
+    if o <= 0:
+        return None
+    return 100.0 * float(destino) / o
+
+
+def calcular_conversoes_totais(totais: Dict[str, float]) -> Dict[str, Any]:
+    """Conversões a partir de totais (MTD ou projetado do mês)."""
+    etapa_a_etapa: List[Dict[str, Any]] = []
+    for a, b in FUNIL_PARES_ETAPA:
+        taxa = taxa_conversao(totais.get(a, 0.0), totais.get(b, 0.0))
+        etapa_a_etapa.append({
+            "origem": a,
+            "destino": b,
+            "label": f"{FUNIL_LABELS.get(a, a)} → {FUNIL_LABELS.get(b, b)}",
+            "taxa": taxa,
+            "origem_qtd": float(totais.get(a, 0.0)),
+            "destino_qtd": float(totais.get(b, 0.0)),
+        })
+    para_venda: List[Dict[str, Any]] = []
+    for a in FUNIL_DRIVERS:
+        taxa = taxa_conversao(totais.get(a, 0.0), totais.get("vendas", 0.0))
+        para_venda.append({
+            "origem": a,
+            "destino": "vendas",
+            "label": f"{FUNIL_LABELS.get(a, a)} → Vendas",
+            "taxa": taxa,
+            "origem_qtd": float(totais.get(a, 0.0)),
+            "destino_qtd": float(totais.get("vendas", 0.0)),
+        })
+    return {"etapa_a_etapa": etapa_a_etapa, "para_venda": para_venda}
 
 
 def _cols_lag_funil(
@@ -2208,16 +2334,35 @@ def _matriz_funil_explicativas(
     lags: Tuple[int, ...] = FUNIL_LAGS,
     alvo: Optional[str] = None,
     etapas_lag: Optional[Tuple[str, ...]] = None,
+    modelo_vendas_completo: bool = False,
 ) -> Tuple[np.ndarray, List[str]]:
-    """Calendário + lags do funil + intercepto. Retorna (X, nomes das cols de lag)."""
+    """
+    Calendário + lags (+ níveis do funil + conversões no modelo de vendas).
+    Retorna (X, nomes extras além do calendário/intercepto).
+    """
     X_cal = _matriz_explicativas(df, incluir_mes=incluir_mes)
-    lag_cols = _cols_lag_funil(lags, alvo=alvo, etapas=etapas_lag)
-    X_lag = np.zeros((len(df), len(lag_cols)), dtype=float)
-    for j, c in enumerate(lag_cols):
+    lag_etapas = etapas_lag
+    if modelo_vendas_completo and lag_etapas is None:
+        # lags dos drivers + vendas passadas
+        lag_etapas = FUNIL_DRIVERS + ("vendas",)
+    lag_cols = _cols_lag_funil(lags, alvo=alvo, etapas=lag_etapas)
+
+    extra_cols: List[str] = list(lag_cols)
+    if modelo_vendas_completo:
+        # níveis contemporâneos do funil (sem vendas = y)
+        for e in FUNIL_DRIVERS:
+            if e in df.columns:
+                extra_cols.append(e)
+        for c in cols_conversoes_funil():
+            if c in df.columns:
+                extra_cols.append(c)
+
+    X_extra = np.zeros((len(df), len(extra_cols)), dtype=float)
+    for j, c in enumerate(extra_cols):
         if c in df.columns:
-            X_lag[:, j] = pd.to_numeric(df[c], errors="coerce").fillna(0.0).values
-    X = np.hstack([X_cal[:, :-1], X_lag, X_cal[:, -1:]])
-    return X, lag_cols
+            X_extra[:, j] = pd.to_numeric(df[c], errors="coerce").fillna(0.0).values
+    X = np.hstack([X_cal[:, :-1], X_extra, X_cal[:, -1:]])
+    return X, extra_cols
 
 
 def treinar_regressao_funil(
@@ -2226,7 +2371,14 @@ def treinar_regressao_funil(
     incluir_mes: bool = True,
     lags: Tuple[int, ...] = FUNIL_LAGS,
 ) -> np.ndarray:
-    X, _ = _matriz_funil_explicativas(treino, incluir_mes=incluir_mes, lags=lags, alvo=alvo)
+    completo = alvo == "vendas"
+    X, _ = _matriz_funil_explicativas(
+        treino,
+        incluir_mes=incluir_mes,
+        lags=lags,
+        alvo=alvo,
+        modelo_vendas_completo=completo,
+    )
     y = treino[alvo].astype(float).values
     coef, *_ = np.linalg.lstsq(X, y, rcond=None)
     return coef
@@ -2239,7 +2391,14 @@ def _r2_funil(
     incluir_mes: bool = True,
     lags: Tuple[int, ...] = FUNIL_LAGS,
 ) -> float:
-    X, _ = _matriz_funil_explicativas(treino, incluir_mes=incluir_mes, lags=lags, alvo=alvo)
+    completo = alvo == "vendas"
+    X, _ = _matriz_funil_explicativas(
+        treino,
+        incluir_mes=incluir_mes,
+        lags=lags,
+        alvo=alvo,
+        modelo_vendas_completo=completo,
+    )
     y = treino[alvo].astype(float).values
     y_hat = X @ coef
     ss_res = float(np.sum((y - y_hat) ** 2))
@@ -2319,7 +2478,14 @@ def _prever_linha_reg_funil(
     lags: Tuple[int, ...],
     alvo: str,
 ) -> float:
-    X, _ = _matriz_funil_explicativas(row_df, incluir_mes=incluir_mes, lags=lags, alvo=alvo)
+    completo = alvo == "vendas"
+    X, _ = _matriz_funil_explicativas(
+        row_df,
+        incluir_mes=incluir_mes,
+        lags=lags,
+        alvo=alvo,
+        modelo_vendas_completo=completo,
+    )
     return float(max((X @ coef)[0], 0.0))
 
 
@@ -2361,6 +2527,7 @@ def estimar_efeitos_lags_sobre_vendas(
         lags=lags,
         alvo="vendas",
         etapas_lag=FUNIL_DRIVERS,
+        modelo_vendas_completo=False,
     )
     y = cal["vendas"].astype(float).values
     coef, *_ = np.linalg.lstsq(X, y, rcond=None)
@@ -2424,6 +2591,7 @@ def estimar_efeitos_lags_sobre_vendas(
         "resumo": resumo,
     }
 
+
 def projetar_funil_mes_atual(
     mapas: Dict[str, Dict[date, float]],
     hoje: Optional[date] = None,
@@ -2431,16 +2599,16 @@ def projetar_funil_mes_atual(
     lags: Tuple[int, ...] = FUNIL_LAGS,
 ) -> Optional[Dict[str, Any]]:
     """
-    Projeta cada etapa do funil no mês corrente:
-      - regressão (calendário + lags)
-      - médias sazonais × intensidade dos lags
-    Previsão futura é recursiva (ordem do funil).
+    Projeta cada etapa do funil no mês corrente.
+    Modelo de vendas (final): dia do mês + dia da semana + mês
+      + níveis do funil + lags + conversões.
+    Demais etapas: calendário + lags.
     """
     hoje = hoje or date.today()
     inicio, fim_treino = janela_treino_meses_exatos(hoje)
     max_lag = max(lags) if lags else 0
     # buffer de lags antes do treino
-    inicio_cal = inicio - timedelta(days=max_lag)
+    inicio_cal = inicio - timedelta(days=max(max_lag, FUNIL_JANELA_CONV))
 
     ano, mes = hoje.year, hoje.month
     ultimo_dia = calendar.monthrange(ano, mes)[1]
@@ -2479,7 +2647,8 @@ def projetar_funil_mes_atual(
             continue
         _atualizar_lags_linha(cal_reg, i, lags)
         _atualizar_lags_linha(cal_med, i, lags)
-        for etapa in FUNIL_ETAPAS:
+        # Drivers primeiro; conversões; depois vendas (modelo completo)
+        for etapa in FUNIL_DRIVERS:
             row_reg = cal_reg.loc[[i]]
             row_med = cal_med.loc[[i]]
             pred_r = _prever_linha_reg_funil(coefs[etapa], row_reg, incluir_mes, lags, etapa)
@@ -2489,10 +2658,24 @@ def projetar_funil_mes_atual(
             pred_m = max(saz * intens, 0.0)
             cal_reg.at[i, etapa] = pred_r
             cal_med.at[i, etapa] = pred_m
-            # lag 0 disponível para etapas seguintes no mesmo dia
             if 0 in lags:
                 cal_reg.at[i, f"{etapa}_lag0"] = pred_r
                 cal_med.at[i, f"{etapa}_lag0"] = pred_m
+        _atualizar_conversoes_linha(cal_reg, i)
+        _atualizar_conversoes_linha(cal_med, i)
+        # Vendas com modelo completo
+        row_reg = cal_reg.loc[[i]]
+        row_med = cal_med.loc[[i]]
+        pred_r = _prever_linha_reg_funil(coefs["vendas"], row_reg, incluir_mes, lags, "vendas")
+        info = medias["etapas"]["vendas"]
+        saz = _pred_sazonal_etapa(d, info, incluir_mes)
+        intens = _intensidade_lags_linha(row_med.iloc[0], info)
+        pred_m = max(saz * intens, 0.0)
+        cal_reg.at[i, "vendas"] = pred_r
+        cal_med.at[i, "vendas"] = pred_m
+        if 0 in lags:
+            cal_reg.at[i, "vendas_lag0"] = pred_r
+            cal_med.at[i, "vendas_lag0"] = pred_m
 
     # montar resultados por etapa
     resultados: Dict[str, Any] = {}
@@ -2535,6 +2718,13 @@ def projetar_funil_mes_atual(
             "diaria": pd.DataFrame(diaria),
         }
 
+    totais_mtd = {e: float((resultados.get(e) or {}).get("mtd", 0)) for e in FUNIL_ETAPAS}
+    totais_proj = {e: float((resultados.get(e) or {}).get("projetado_reg", 0)) for e in FUNIL_ETAPAS}
+    conversoes = {
+        "realizado_mtd": calcular_conversoes_totais(totais_mtd),
+        "projetado_mes": calcular_conversoes_totais(totais_proj),
+    }
+
     # Perfil de lags 0..14 sobre vendas (tempo até o efeito)
     max_perfil = max(FUNIL_LAGS_PERFIL) if FUNIL_LAGS_PERFIL else 0
     cal_perfil = calendario_funil_diario(
@@ -2560,8 +2750,15 @@ def projetar_funil_mes_atual(
         "r2s": r2s,
         "medias": medias,
         "etapas": resultados,
+        "conversoes": conversoes,
         "efeitos_lags_vendas": efeitos_lags,
     }
+
+
+def _fmt_taxa_pct(taxa: Optional[float]) -> str:
+    if taxa is None:
+        return "—"
+    return f"{float(taxa):.1f}%"
 
 
 def _plot_funil_etapa_comparativo(etapa: str, df: pd.DataFrame, ultimo_dia: int, dia_hoje: int) -> None:
@@ -2668,13 +2865,121 @@ def _render_kpi_cards(items: List[Dict[str, str]]) -> None:
             )
 
 
+def _render_conversoes_funil(conversoes: Dict[str, Any]) -> None:
+    """Cards e gráfico: conversões etapa→etapa e indicador→venda (MTD × projetado)."""
+    if not conversoes:
+        return
+    real = conversoes.get("realizado_mtd") or {}
+    proj = conversoes.get("projetado_mes") or {}
+
+    st.markdown("##### Conversões etapa → etapa")
+    pares = real.get("etapa_a_etapa") or []
+    pares_p = {r["label"]: r for r in (proj.get("etapa_a_etapa") or [])}
+    _render_kpi_cards([
+        {
+            "lbl": str(r.get("label", "")),
+            "val": _fmt_taxa_pct(r.get("taxa")),
+            "sub": f"Proj. {_fmt_taxa_pct((pares_p.get(r.get('label')) or {}).get('taxa'))}",
+        }
+        for r in pares
+    ])
+
+    st.markdown("##### Conversões finais (indicador → venda)")
+    fins = real.get("para_venda") or []
+    fins_p = {r["label"]: r for r in (proj.get("para_venda") or [])}
+    _render_kpi_cards([
+        {
+            "lbl": str(r.get("label", "")),
+            "val": _fmt_taxa_pct(r.get("taxa")),
+            "sub": f"Proj. {_fmt_taxa_pct((fins_p.get(r.get('label')) or {}).get('taxa'))}",
+        }
+        for r in fins
+    ])
+
+    # Gráfico comparativo das taxas
+    labels_e = [str(r.get("label", "")) for r in pares]
+    y_real_e = [float(r["taxa"]) if r.get("taxa") is not None else 0.0 for r in pares]
+    y_proj_e = [
+        float((pares_p.get(lbl) or {}).get("taxa") or 0.0) for lbl in labels_e
+    ]
+    labels_f = [str(r.get("label", "")) for r in fins]
+    y_real_f = [float(r["taxa"]) if r.get("taxa") is not None else 0.0 for r in fins]
+    y_proj_f = [
+        float((fins_p.get(lbl) or {}).get("taxa") or 0.0) for lbl in labels_f
+    ]
+
+    fig = make_subplots(
+        rows=1, cols=2,
+        subplot_titles=("Etapa → etapa", "Indicador → venda"),
+        horizontal_spacing=0.08,
+    )
+    fig.add_trace(
+        go.Bar(
+            name="MTD", x=labels_e, y=y_real_e,
+            text=[_fmt_taxa_pct(v) for v in y_real_e], textposition="outside",
+            marker_color=COR_AZUL_ESC, textfont=dict(color=COR_TEXTO_PRETO, size=10),
+            legendgroup="mtd",
+        ),
+        row=1, col=1,
+    )
+    fig.add_trace(
+        go.Bar(
+            name="Projetado mês", x=labels_e, y=y_proj_e,
+            text=[_fmt_taxa_pct(v) for v in y_proj_e], textposition="outside",
+            marker_color=COR_VERMELHO, textfont=dict(color=COR_TEXTO_PRETO, size=10),
+            legendgroup="proj",
+        ),
+        row=1, col=1,
+    )
+    fig.add_trace(
+        go.Bar(
+            name="MTD", x=labels_f, y=y_real_f,
+            text=[_fmt_taxa_pct(v) for v in y_real_f], textposition="outside",
+            marker_color=COR_AZUL_ESC, textfont=dict(color=COR_TEXTO_PRETO, size=10),
+            legendgroup="mtd", showlegend=False,
+        ),
+        row=1, col=2,
+    )
+    fig.add_trace(
+        go.Bar(
+            name="Projetado mês", x=labels_f, y=y_proj_f,
+            text=[_fmt_taxa_pct(v) for v in y_proj_f], textposition="outside",
+            marker_color=COR_VERMELHO, textfont=dict(color=COR_TEXTO_PRETO, size=10),
+            legendgroup="proj", showlegend=False,
+        ),
+        row=1, col=2,
+    )
+    fig.update_layout(
+        barmode="group",
+        margin=dict(l=20, r=20, t=50, b=80),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter", color=COR_TEXTO_PRETO),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.12, xanchor="center", x=0.5,
+            font=dict(color=COR_TEXTO_PRETO, family="Inter", size=12),
+        ),
+        height=420,
+    )
+    fig.update_yaxes(
+        title_text="Taxa (%)",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        showgrid=True,
+        gridcolor="rgba(226,232,240,0.5)",
+    )
+    fig.update_xaxes(tickfont=dict(color=COR_TEXTO_PRETO, family="Inter", size=10), tickangle=-25)
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
 def render_projecao_funil(proj: Dict[str, Any]) -> None:
-    """Seção Streamlit: projeção do funil com regressão e médias (+ lags)."""
+    """Seção Streamlit: funil projetado × realizado, conversões e modelo completo de vendas."""
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
     st.subheader("Projeção do Funil Comercial")
     lags = proj.get("lags") or FUNIL_LAGS
     st.caption(
-        f"Lags: 1–{max(lags)}d · "
+        f"Modelo de vendas: dia do mês + dia da semana + mês + funil "
+        f"(níveis, lags 1–{max(lags)}d e conversões) · "
         f"R² vendas: {float((proj.get('r2s') or {}).get('vendas', 0)):.2f}"
     )
 
@@ -2719,7 +3024,7 @@ def render_projecao_funil(proj: Dict[str, Any]) -> None:
     mtd_vals = [float((etapas.get(e) or {}).get("mtd", 0)) for e in FUNIL_ETAPAS]
     proj_vals = [float((etapas.get(e) or {}).get("projetado_reg", 0)) for e in FUNIL_ETAPAS]
     fig_f.add_trace(go.Bar(
-        name="MTD", x=labels, y=mtd_vals,
+        name="Realizado (MTD)", x=labels, y=mtd_vals,
         text=[fmt_qtd(v) for v in mtd_vals], textposition="outside",
         marker_color=COR_AZUL_ESC,
         textfont=dict(color=COR_TEXTO_PRETO, family="Inter", size=11),
@@ -2750,8 +3055,10 @@ def render_projecao_funil(proj: Dict[str, Any]) -> None:
         gridcolor="rgba(226,232,240,0.5)",
     )
     fig_f.update_xaxes(tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"))
-    st.markdown("##### Funil: MTD × projetado (regressão)")
+    st.markdown("##### Funil projetado × realizado")
     st.plotly_chart(fig_f, use_container_width=True, config={"displayModeBar": False})
+
+    _render_conversoes_funil(proj.get("conversoes") or {})
 
     dia_hoje = proj["hoje"].day
     ultimo = int(proj["ultimo_dia"])
