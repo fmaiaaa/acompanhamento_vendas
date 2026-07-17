@@ -10,3 +10,4 @@ plotly>=5.18.0
 # Google Sheets (velocímetro)
 gspread>=6.0.0
 google-auth>=2.23.0
+simple-salesforce
