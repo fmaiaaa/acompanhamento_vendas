@@ -65,7 +65,7 @@ FUNIL_PARES_ETAPA = (
     ("pastas_aprovadas", "vendas"),
 )
 FUNIL_LAGS = tuple(range(1, 31))  # lags 1..30
-FUNIL_LAGS_PERFIL = tuple(range(0, 31))
+FUNIL_LAGS_PERFIL = tuple(range(1, 31))  # perfil de tempo até efeito: só lags 1..30
 FUNIL_JANELA_CONV = 30  # janela móvel para conversão → vendas (sem vazamento do dia)
 FUNIL_JANELA_FORCA = 7  # janela da força de trabalho (atividade cruzada)
 FUNIL_ITERS_CRUZADAS = 3  # iterações na projeção (efeitos contemporâneos cruzados)
@@ -75,6 +75,7 @@ FUNIL_CORES_DRIVER = {
     "pastas": "#0f766e",
     "pastas_aprovadas": "#b45309",
 }
+FUNIL_CORES_NIVEIS = ["#022654", "#04428f", "#1e60b3", "#cb0935", "#9e0828"]
 COLUNAS_PASTAS_ALIASES = [
     "Data da Análise", "Data da Analise", "Data Análise", "Data Analise",
 ]
@@ -836,6 +837,79 @@ def achar_coluna_aprovacao_safi(df: pd.DataFrame) -> Optional[str]:
     return candidatas[0] if candidatas else None
 
 
+def _celula_vazia(val: Any) -> bool:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return True
+    s = str(val).strip().lower()
+    return s in ("", "nan", "none", "null", "-", "n/a", "na")
+
+
+ALIASES_VENDA_COMERCIAL = [
+    "Venda Comercial?", "Venda Comercial", "Venda comercial?",
+    "Venda comercial", "Comercial?",
+]
+ALIASES_STATUS_PASTAS = [
+    "Status", "Status da Análise", "Status da Analise",
+    "Status Análise", "Status Analise",
+]
+ALIASES_SICAQ = ["SICAQ", "SiCAQ", "Sicaq"]
+ALIASES_MOTIVO_PENDENCIA_SAFI = [
+    "Motivo Pendência SAFI", "Motivo Pendencia SAFI",
+    "Motivo Pend. SAFI", "Motivo da Pendência SAFI",
+    "Motivo da Pendencia SAFI",
+]
+
+
+def filtrar_vendas_comerciais(df: pd.DataFrame) -> pd.DataFrame:
+    """Mantém apenas vendas comerciais (Venda Comercial? = 1 / SIM / TRUE)."""
+    if df is None or df.empty:
+        return df if df is not None else pd.DataFrame()
+    col = achar_coluna(df, ALIASES_VENDA_COMERCIAL)
+    if not col:
+        return df
+    mask = (
+        (pd.to_numeric(df[col], errors="coerce") == 1)
+        | (df[col].astype(str).str.strip().str.upper().isin(["SIM", "TRUE", "1", "1.0"]))
+    )
+    return df.loc[mask].copy()
+
+
+def filtrar_pastas_aprovadas_funil(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Pastas aprovadas no funil:
+      - Status = Análise aprovada
+      - SICAQ sem 'Reprovado'
+      - Motivo Pendência SAFI vazio
+      - Data Aprovação SAFI preenchida
+    """
+    if df is None or df.empty:
+        return df if df is not None else pd.DataFrame()
+    out = df.copy()
+
+    col_status = achar_coluna(out, ALIASES_STATUS_PASTAS)
+    if col_status:
+        alvo = _norm_txt_col("Análise aprovada")
+        out = out[out[col_status].map(_norm_txt_col) == alvo]
+    else:
+        return pd.DataFrame()
+
+    col_sicaq = achar_coluna(out, ALIASES_SICAQ)
+    if col_sicaq:
+        out = out[~out[col_sicaq].astype(str).str.lower().str.contains("reprovado", na=False)]
+
+    col_motivo = achar_coluna(out, ALIASES_MOTIVO_PENDENCIA_SAFI)
+    if col_motivo:
+        out = out[out[col_motivo].map(_celula_vazia)]
+
+    col_safi = achar_coluna_aprovacao_safi(out)
+    if col_safi:
+        out = out[pd.to_datetime(out[col_safi], dayfirst=True, errors="coerce").notna()]
+    else:
+        return pd.DataFrame()
+
+    return out
+
+
 def normalizar_colunas(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     df.columns = [str(c).strip() for c in df.columns]
@@ -903,6 +977,66 @@ def fmt_br_milhoes(v: float) -> str:
 def fmt_qtd(v: float) -> str:
     """Retorna int se .0, ou .1f se fracionado."""
     return f"{v:.1f}" if abs(v % 1) > 0.01 else str(int(v))
+
+
+def fmt_funil_valor(v: float) -> str:
+    """Valor exibido no funil: no máximo 2 casas decimais."""
+    v = float(v)
+    if abs(v - round(v)) < 0.005:
+        return str(int(round(v)))
+    return f"{v:.2f}"
+
+
+FUNIL_FONTE_TAMANHO = 18
+FUNIL_TEXTO_BRANCO = "#ffffff"
+
+
+def _criar_fig_funil(
+    labels: List[str],
+    valores: List[float],
+    titulo: str = "",
+    cores: Optional[List[str]] = None,
+    altura: int = 380,
+) -> go.Figure:
+    """
+    Funil Plotly com texto branco dentro do bloco, 2 casas decimais e
+    textposition=auto (fora do bloco quando não couber dentro).
+    """
+    vals = [max(0.0, float(v)) for v in valores]
+    textos = [fmt_funil_valor(v) for v in vals]
+    fig = go.Figure(go.Funnel(
+        y=labels,
+        x=vals,
+        text=textos,
+        textinfo="text",
+        textposition="auto",
+        insidetextfont=dict(
+            size=FUNIL_FONTE_TAMANHO,
+            color=FUNIL_TEXTO_BRANCO,
+            family="Inter",
+        ),
+        outsidetextfont=dict(
+            size=FUNIL_FONTE_TAMANHO,
+            color=COR_TEXTO_PRETO,
+            family="Inter",
+        ),
+        marker={"color": cores or FUNIL_CORES_NIVEIS},
+        connector={"fillcolor": "rgba(4, 66, 143, 0.15)"},
+    ))
+    layout: Dict[str, Any] = dict(
+        margin=dict(l=10, r=90, t=50, b=20),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=altura,
+        font=dict(family="Inter", color=COR_TEXTO_PRETO, size=16),
+    )
+    if titulo:
+        layout["title"] = dict(
+            text=titulo,
+            font=dict(family="Inter", color=COR_TEXTO_PRETO, size=16),
+        )
+    fig.update_layout(**layout)
+    return fig
 
 
 DIAS_SEMANA_PT = {
@@ -2122,7 +2256,7 @@ def contar_eventos_por_coluna(df: pd.DataFrame, col: str) -> Dict[date, float]:
 def deduplicar_pastas_aprovadas_funil(df: pd.DataFrame) -> pd.DataFrame:
     """
     Uma linha por Nome da Avaliação de crédito, mantendo a Data Aprovação SAFI
-    mais recente (independente da Data da Análise).
+    mais recente (após filtros de aprovação).
     """
     col_safi = achar_coluna_aprovacao_safi(df)
     if not col_safi:
@@ -2190,9 +2324,12 @@ def deduplicar_vendas_funil(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def deduplicar_pastas_funil(df: pd.DataFrame) -> pd.DataFrame:
-    """Uma linha por Nome da Avaliação de crédito (Data Criação Pasta mais recente)."""
+    """Uma linha por Nome da Avaliação de crédito (Data Aprovação SAFI mais recente)."""
+    col_safi = achar_coluna_aprovacao_safi(df)
+    if not col_safi:
+        return df if df is not None else pd.DataFrame()
     return deduplicar_por_chave_mais_recente(
-        df, ALIASES_NOME_AVALIACAO_CREDITO, COLUNAS_PASTAS_ALIASES
+        df, ALIASES_NOME_AVALIACAO_CREDITO, [col_safi]
     )
 
 
@@ -2213,14 +2350,14 @@ def montar_mapa_funil_diario(
     Séries diárias do funil:
       agendamentos ← Data de criação
       visitas ← Data da visita
-      pastas ← Data Criação Pasta (relatório SF 00OU600000FEOoDMAX)
-      pastas_aprovadas ← Data Aprovação SAFI
-      vendas ← Contrato gerado em (relatório SF ou série agregada)
+      pastas ← Data Aprovação SAFI (relatório SF 00OU600000FEOoDMAX)
+      pastas_aprovadas ← Data Aprovação SAFI (Status Análise aprovada + filtros SAFI)
+      vendas ← Contrato gerado em, somente vendas comerciais
 
     Deduplicação antes da contagem:
       vendas → ID da Oportunidade (Contrato gerado em mais recente)
-      pastas → Nome da Avaliação de crédito (Data Criação Pasta mais recente)
-      pastas aprovadas → Nome da Avaliação (Data Aprovação SAFI mais recente)
+      pastas → Nome da Avaliação de crédito (Data Aprovação SAFI mais recente)
+      pastas aprovadas → Nome da Avaliação (Data Aprovação SAFI mais recente, após filtros)
       agendamentos → Código do agendamento (Data de criação mais recente)
     """
     df_ag = deduplicar_agendamentos_funil(
@@ -2228,19 +2365,25 @@ def montar_mapa_funil_diario(
     )
     df_pas_raw = df_pastas if df_pastas is not None else pd.DataFrame()
     df_pas = deduplicar_pastas_funil(df_pas_raw)
-    df_pas_aprov = deduplicar_pastas_aprovadas_funil(df_pas_raw)
+    df_pas_aprov = deduplicar_pastas_aprovadas_funil(
+        filtrar_pastas_aprovadas_funil(df_pas_raw)
+    )
 
     mapa_vendas: Dict[date, float] = {}
     if df_vendas is not None and not df_vendas.empty:
-        df_ven = deduplicar_vendas_funil(df_vendas)
+        df_ven = deduplicar_vendas_funil(filtrar_vendas_comerciais(df_vendas))
         mapa_vendas = contar_eventos_por_dia(df_ven, ALIASES_CONTRATO_GERADO)
     elif serie_vendas is not None and not serie_vendas.empty:
         for _, r in serie_vendas.iterrows():
             mapa_vendas[r["data"]] = float(r["qtd"])
 
-    col_safi = achar_coluna_aprovacao_safi(df_pas_aprov)
+    col_safi_pas = achar_coluna_aprovacao_safi(df_pas)
+    col_safi_aprov = achar_coluna_aprovacao_safi(df_pas_aprov)
+    mapa_pastas = (
+        contar_eventos_por_coluna(df_pas, col_safi_pas) if col_safi_pas else {}
+    )
     mapa_aprov = (
-        contar_eventos_por_coluna(df_pas_aprov, col_safi) if col_safi else {}
+        contar_eventos_por_coluna(df_pas_aprov, col_safi_aprov) if col_safi_aprov else {}
     )
 
     return {
@@ -2253,7 +2396,7 @@ def montar_mapa_funil_diario(
                 "Data Agendamento", "Start Date Time", "Data/Hora",
             ],
         ),
-        "pastas": contar_eventos_por_dia(df_pas, COLUNAS_PASTAS_ALIASES),
+        "pastas": mapa_pastas,
         "pastas_aprovadas": mapa_aprov,
         "vendas": mapa_vendas,
     }
@@ -2727,95 +2870,119 @@ def _atualizar_lags_linha(cal: pd.DataFrame, i: int, lags: Tuple[int, ...]) -> N
                 cal.at[i, f"{etapa}_lag{L}"] = float(cal.at[j, etapa]) if j >= 0 else 0.0
 
 
+def _resumir_perfil_lag_vendas(df_p: pd.DataFrame, etapa: str) -> Dict[str, Any]:
+    """
+    Resume o perfil de lags 1..30 de uma etapa sobre vendas.
+    Pico e meia-vida usam apenas lags >= 1 (efeito retardado, não mesmo dia).
+    """
+    df_p = df_p[df_p["lag"] >= 1].copy()
+    if df_p.empty:
+        return {
+            "etapa": etapa,
+            "label": FUNIL_LABELS.get(etapa, etapa),
+            "lag_pico": 1,
+            "efeito_pico": 0.0,
+            "lag_meia_vida": 1,
+            "efeito_lag1": 0.0,
+            "efeito_acum": 0.0,
+        }
+
+    pos = df_p[df_p["efeito"] > 0]
+    if not pos.empty:
+        i_peak = int(pos["efeito"].idxmax())
+    else:
+        i_peak = int(df_p["efeito"].abs().idxmax())
+    lag_pico = int(df_p.loc[i_peak, "lag"])
+    efeito_pico = float(df_p.loc[i_peak, "efeito"])
+
+    acum_pos = float(df_p.loc[df_p["efeito"] > 0, "efeito"].sum()) if (df_p["efeito"] > 0).any() else 0.0
+    lag_meia = lag_pico
+    if acum_pos > 1e-9:
+        running = 0.0
+        lag_meia = int(df_p["lag"].iloc[-1])
+        for _, r in df_p.iterrows():
+            if float(r["efeito"]) > 0:
+                running += float(r["efeito"])
+                if running >= 0.5 * acum_pos:
+                    lag_meia = int(r["lag"])
+                    break
+    else:
+        # sem efeito positivo: usa lag de maior |efeito|, mínimo 1
+        lag_meia = max(1, lag_pico)
+
+    efeito_lag1 = float(df_p.loc[df_p["lag"] == 1, "efeito"].iloc[0]) if (df_p["lag"] == 1).any() else 0.0
+    return {
+        "etapa": etapa,
+        "label": FUNIL_LABELS.get(etapa, etapa),
+        "lag_pico": lag_pico,
+        "efeito_pico": efeito_pico,
+        "lag_meia_vida": lag_meia,
+        "efeito_lag1": efeito_lag1,
+        "efeito_acum": float(df_p["efeito"].sum()),
+    }
+
+
 def estimar_efeitos_lags_sobre_vendas(
     treino: pd.DataFrame,
     lags: Tuple[int, ...] = FUNIL_LAGS_PERFIL,
     incluir_mes: bool = True,
 ) -> Optional[Dict[str, Any]]:
     """
-    OLS: vendas ~ calendário + lags 1..30 de agendamentos/visitas/pastas/pastas_aprovadas.
-    Mostra quanto tempo cada variável demora para afetar vendas.
+    Perfil de tempo até efeito nas vendas (lags 1..30).
+
+    Um modelo OLS por etapa: vendas ~ calendário + lags 1..30 da etapa.
+    Evita que lag 0 / multicolinearidade entre etapas zere o tempo de efeito.
     """
     if treino.empty or float(treino["vendas"].sum()) <= 0 or len(treino) < 40:
         return None
 
-    # Garante colunas de lag do perfil
+    lags_uso = tuple(L for L in lags if L >= 1)
+    if not lags_uso:
+        lags_uso = FUNIL_LAGS_PERFIL
+
     cal = treino.copy()
     for etapa in FUNIL_DRIVERS:
         if etapa not in cal.columns:
             return None
-        for L in lags:
+        for L in lags_uso:
             col = f"{etapa}_lag{L}"
             if col not in cal.columns:
                 cal[col] = cal[etapa].shift(L).fillna(0.0)
 
-    X, lag_cols = _matriz_funil_explicativas(
-        cal,
-        incluir_mes=incluir_mes,
-        lags=lags,
-        alvo="vendas",
-        etapas_lag=FUNIL_DRIVERS,
-        modelo_vendas_completo=False,
-        efeitos_cruzados=False,
-    )
     y = cal["vendas"].astype(float).values
-    coef, *_ = np.linalg.lstsq(X, y, rcond=None)
-
-    n_cal = X.shape[1] - len(lag_cols) - 1
-    coef_lags = coef[n_cal:n_cal + len(lag_cols)]
-
     perfis: Dict[str, pd.DataFrame] = {}
     resumo: List[Dict[str, Any]] = []
+    r2s_etapa: List[float] = []
+
     for etapa in FUNIL_DRIVERS:
-        efeitos = []
-        for L in lags:
-            col = f"{etapa}_lag{L}"
-            if col in lag_cols:
-                efeitos.append(float(coef_lags[lag_cols.index(col)]))
-            else:
-                efeitos.append(0.0)
-        df_p = pd.DataFrame({"lag": list(lags), "efeito": efeitos})
+        lag_cols = [f"{etapa}_lag{L}" for L in lags_uso]
+        X_cal = _matriz_explicativas(cal, incluir_mes=incluir_mes)
+        X_lag = np.zeros((len(cal), len(lag_cols)), dtype=float)
+        for j, c in enumerate(lag_cols):
+            X_lag[:, j] = pd.to_numeric(cal[c], errors="coerce").fillna(0.0).values
+        X = np.hstack([X_cal[:, :-1], X_lag, X_cal[:, -1:]])
+
+        coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+        n_cal = X_cal.shape[1] - 1
+        coef_lags = coef[n_cal:n_cal + len(lag_cols)]
+
+        efeitos = [float(coef_lags[j]) for j in range(len(lag_cols))]
+        df_p = pd.DataFrame({"lag": list(lags_uso), "efeito": efeitos})
         df_p["acumulado"] = df_p["efeito"].cumsum()
         perfis[etapa] = df_p
+        resumo.append(_resumir_perfil_lag_vendas(df_p, etapa))
 
-        # Lag de pico (maior |efeito|); preferir efeito positivo se houver
-        pos = df_p[df_p["efeito"] > 0]
-        if not pos.empty:
-            i_peak = int(pos["efeito"].idxmax())
-        else:
-            i_peak = int(df_p["efeito"].abs().idxmax())
-        lag_pico = int(df_p.loc[i_peak, "lag"])
-        efeito_pico = float(df_p.loc[i_peak, "efeito"])
-        acum_pos = float(df_p.loc[df_p["efeito"] > 0, "efeito"].sum()) if (df_p["efeito"] > 0).any() else 0.0
-        # dias até ~50% do efeito positivo acumulado
-        lag_meia = lag_pico
-        if acum_pos > 1e-9:
-            running = 0.0
-            lag_meia = int(df_p["lag"].iloc[-1])
-            for _, r in df_p.iterrows():
-                if float(r["efeito"]) > 0:
-                    running += float(r["efeito"])
-                    if running >= 0.5 * acum_pos:
-                        lag_meia = int(r["lag"])
-                        break
-        resumo.append({
-            "etapa": etapa,
-            "label": FUNIL_LABELS.get(etapa, etapa),
-            "lag_pico": lag_pico,
-            "efeito_pico": efeito_pico,
-            "lag_meia_vida": lag_meia,
-            "efeito_lag0": float(df_p.loc[df_p["lag"] == 0, "efeito"].iloc[0]) if (df_p["lag"] == 0).any() else 0.0,
-            "efeito_acum": float(df_p["efeito"].sum()),
-        })
+        y_hat = X @ coef
+        ss_res = float(np.sum((y - y_hat) ** 2))
+        ss_tot = float(np.sum((y - y.mean()) ** 2))
+        r2s_etapa.append((1.0 - ss_res / ss_tot) if ss_tot > 0 else 0.0)
 
-    y_hat = X @ coef
-    ss_res = float(np.sum((y - y_hat) ** 2))
-    ss_tot = float(np.sum((y - y.mean()) ** 2))
-    r2 = (1.0 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+    r2 = float(np.mean(r2s_etapa)) if r2s_etapa else 0.0
 
     return {
         "r2": r2,
-        "lags": lags,
+        "r2s_etapa": {e: r2s_etapa[i] for i, e in enumerate(FUNIL_DRIVERS)},
+        "lags": lags_uso,
         "perfis": perfis,
         "resumo": resumo,
     }
@@ -3300,30 +3467,11 @@ def _render_conversoes_funil(conversoes: Dict[str, Any]) -> None:
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
-FUNIL_CORES_NIVEIS = ["#022654", "#04428f", "#1e60b3", "#cb0935", "#9e0828"]
-
-
 def _plot_funil_go(titulo: str, totais: Dict[str, float], altura: int = 350) -> None:
     """Funil estilo marketing (go.Funnel), não barras."""
     labels = [FUNIL_LABELS[e] for e in FUNIL_ETAPAS]
-    vals = [max(0.0, float(totais.get(e, 0.0))) for e in FUNIL_ETAPAS]
-    fig = go.Figure(go.Funnel(
-        y=labels,
-        x=vals,
-        textinfo="value",
-        textposition="inside",
-        textfont=dict(size=20, color=COR_TEXTO_PRETO, family="Inter"),
-        marker={"color": FUNIL_CORES_NIVEIS},
-        connector={"fillcolor": "rgba(4, 66, 143, 0.15)"},
-    ))
-    fig.update_layout(
-        title=dict(text=titulo, font=dict(family="Inter", color=COR_TEXTO_PRETO, size=16)),
-        margin=dict(l=20, r=20, t=50, b=20),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        height=altura,
-        font=dict(family="Inter", color=COR_TEXTO_PRETO, size=16),
-    )
+    vals = [float(totais.get(e, 0.0)) for e in FUNIL_ETAPAS]
+    fig = _criar_fig_funil(labels, vals, titulo=titulo, altura=altura)
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
@@ -3457,8 +3605,9 @@ def render_projecao_funil(proj: Dict[str, Any]) -> None:
     if efeitos:
         st.markdown("##### Tempo até o efeito nas vendas")
         st.caption(
-            f"R²: {float(efeitos.get('r2', 0)):.2f} · "
-            "pico = lag de maior efeito · meia-vida ≈ 50% do efeito positivo acumulado"
+            f"R² médio: {float(efeitos.get('r2', 0)):.2f} · "
+            "lags 1–30d por etapa · pico = maior efeito positivo · "
+            "meia-vida ≈ 50% do efeito positivo acumulado"
         )
         resumo = efeitos.get("resumo") or []
         _render_kpi_cards([
@@ -3467,7 +3616,7 @@ def render_projecao_funil(proj: Dict[str, Any]) -> None:
                 "val": f"{int(r.get('lag_pico', 0))}d",
                 "sub": (
                     f"Meia-vida {int(r.get('lag_meia_vida', 0))}d"
-                    f" · lag0 {float(r.get('efeito_lag0', 0)):.2f}"
+                    f" · lag1 {float(r.get('efeito_lag1', 0)):.2f}"
                     f" · acum {float(r.get('efeito_acum', 0)):.2f}"
                 ),
             }
@@ -3530,8 +3679,9 @@ def render_efeitos_lags_sobre_vendas(
     st.markdown("<br/>", unsafe_allow_html=True)
     st.subheader("Perfil de lags sobre vendas")
     st.caption(
-        f"R²: {float(efeitos.get('r2', 0)):.2f} · "
-        "efeito = Δ vendas por unidade da variável no lag (controlando calendário)"
+        f"R² médio: {float(efeitos.get('r2', 0)):.2f} · "
+        "modelo por etapa (vendas ~ calendário + lags 1–30 da etapa) · "
+        "pico = lag de maior efeito positivo"
     )
 
     if mostrar_cards:
@@ -3542,7 +3692,7 @@ def render_efeitos_lags_sobre_vendas(
                 "val": f"{int(r.get('lag_pico', 0))}d",
                 "sub": (
                     f"Meia-vida {int(r.get('lag_meia_vida', 0))}d"
-                    f" · lag1 {float(r.get('efeito_lag0', 0)):.2f}"
+                    f" · lag1 {float(r.get('efeito_lag1', 0)):.2f}"
                     f" · acum {float(r.get('efeito_acum', 0)):.2f}"
                 ),
             }
@@ -3592,7 +3742,7 @@ def render_efeitos_lags_sobre_vendas(
         showgrid=True,
         gridcolor="rgba(226,232,240,0.5)",
     )
-    st.markdown("##### Efeito por lag (0–30 dias)")
+    st.markdown("##### Efeito por lag (1–30 dias)")
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
     fig_c = go.Figure()
@@ -3785,7 +3935,7 @@ def main() -> None:
     col_canal = achar_coluna(df_vendas, ["Canal"])
     col_valor = achar_coluna(df_vendas, ["Valor Real de Venda", "Valor Real", "Valor"])
     col_emp = achar_coluna(df_vendas, ["Empreendimento", "Obra", "Nome do Empreendimento"])
-    col_venda_comercial = achar_coluna(df_vendas, ["Venda Comercial?", "Venda Comercial"])
+    col_venda_comercial = achar_coluna(df_vendas, ALIASES_VENDA_COMERCIAL)
     col_venda_facilitada = achar_coluna(df_vendas, ["Venda facilitada", "Venda Facilitada", "Venda Facilitada?"])
     col_proprietario = achar_coluna(df_vendas, ["Proprietário da oportunidade", "Proprietario da oportunidade", "Nome da conta", "Proprietario", "Corretor"])
     col_ranking = achar_coluna(df_vendas, ["Ranking"])
@@ -3804,12 +3954,7 @@ def main() -> None:
         df_vendas = df_vendas[~df_vendas[col_emp].astype(str).str.strip().str.lower().isin(["total", "geral", "nan", "none", "null", ""])]
 
     if col_venda_comercial:
-        mask_venda = (
-            (pd.to_numeric(df_vendas[col_venda_comercial], errors='coerce') == 1) |
-            (df_vendas[col_venda_comercial].astype(str).str.strip().str.upper() == 'SIM') |
-            (df_vendas[col_venda_comercial].astype(str).str.strip().str.upper() == 'TRUE')
-        )
-        df_vendas = df_vendas[mask_venda]
+        df_vendas = filtrar_vendas_comerciais(df_vendas)
     else:
         st.warning("Coluna 'Venda Comercial?' não encontrada na base.")
 
@@ -4046,19 +4191,11 @@ def main() -> None:
 
     col_f_meta_espaco, col_f_meta, col_f_meta_espaco2 = st.columns([1, 2, 1])
     with col_f_meta:
-        fig_ideal = go.Figure(go.Funnel(
-            y=['Agendamentos', 'Visitas', 'Pastas', 'Past. Aprov.', 'Vendas (Meta)'],
-            x=[a_ideal, vi_ideal, p_ideal, pa_ideal, v_meta],
-            textinfo="value",
-            marker={"color": ["#022654", "#04428f", "#1e60b3", "#cb0935", "#9e0828"]},
-            connector={"fillcolor": "rgba(4, 66, 143, 0.15)"}
-        ))
-        fig_ideal.update_layout(
-            margin=dict(l=20, r=20, t=30, b=20),
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            height=350,
-            font=dict(family="Inter", color=COR_TEXTO_PRETO),
+        fig_ideal = _criar_fig_funil(
+            ['Agendamentos', 'Visitas', 'Pastas', 'Past. Aprov.', 'Vendas (Meta)'],
+            [a_ideal, vi_ideal, p_ideal, pa_ideal, v_meta],
+            cores=["#022654", "#04428f", "#1e60b3", "#cb0935", "#9e0828"],
+            altura=350,
         )
         st.plotly_chart(fig_ideal, use_container_width=True, config={"displayModeBar": False})
 
@@ -4067,19 +4204,11 @@ def main() -> None:
     
     col_mkt_espaco, col_mkt_grafico, col_mkt_espaco2 = st.columns([1, 2, 1])
     with col_mkt_grafico:
-        fig_mkt = go.Figure(go.Funnel(
-            y=['Leads Digitais', 'Oport. Digitais', 'Vendas Dig. (40% DV RJ)'],
-            x=[ld_ideal, od_ideal, vd_ideal],
-            textinfo="value",
-            marker={"color": ["#022654", "#1e60b3", "#cb0935"]},
-            connector={"fillcolor": "rgba(4, 66, 143, 0.15)"}
-        ))
-        fig_mkt.update_layout(
-            margin=dict(l=20, r=20, t=30, b=20),
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-            height=300,
-            font=dict(family="Inter", color=COR_TEXTO_PRETO),
+        fig_mkt = _criar_fig_funil(
+            ['Leads Digitais', 'Oport. Digitais', 'Vendas Dig. (40% DV RJ)'],
+            [ld_ideal, od_ideal, vd_ideal],
+            cores=["#022654", "#1e60b3", "#cb0935"],
+            altura=300,
         )
         st.plotly_chart(fig_mkt, use_container_width=True, config={"displayModeBar": False})
 
@@ -4203,29 +4332,22 @@ def main() -> None:
                         SF_REPORT_PASTAS_ID, rotulo="pastas"
                     )
                     n_pas_bruto = len(df_pastas_funil)
-                    col_criacao = achar_coluna(df_pastas_funil, COLUNAS_PASTAS_ALIASES)
                     col_safi = achar_coluna_aprovacao_safi(df_pastas_funil)
-                    n_com_criacao = 0
                     n_com_safi = 0
-                    if col_criacao:
-                        n_com_criacao = int(
-                            pd.to_datetime(
-                                df_pastas_funil[col_criacao], dayfirst=True, errors="coerce"
-                            ).notna().sum()
-                        )
                     if col_safi:
                         n_com_safi = int(
                             pd.to_datetime(
                                 df_pastas_funil[col_safi], dayfirst=True, errors="coerce"
                             ).notna().sum()
                         )
+                    n_aprov_filt = len(filtrar_pastas_aprovadas_funil(df_pastas_funil))
                     df_pastas_funil = deduplicar_pastas_funil(df_pastas_funil)
                     st.caption(
                         f"Pastas: {origem_pastas} · "
                         f"{n_pas_bruto:,} → {len(df_pastas_funil):,} linhas "
-                        f"(dedup Nome da Avaliação) · "
-                        f"Criação: '{col_criacao or '?'}' ({n_com_criacao:,}) · "
-                        f"Aprov. SAFI: '{col_safi or '?'}' ({n_com_safi:,})"
+                        f"(dedup Nome da Avaliação · data: Aprovação SAFI) · "
+                        f"'{col_safi or '?'}' ({n_com_safi:,}) · "
+                        f"aprovadas filtradas: {n_aprov_filt:,}"
                     )
                 except Exception as e_sf_p:
                     st.warning(
@@ -4249,10 +4371,13 @@ def main() -> None:
                         SF_REPORT_VENDAS_ID, rotulo="vendas"
                     )
                     n_ven_bruto = len(df_vendas_funil)
+                    df_vendas_funil = filtrar_vendas_comerciais(df_vendas_funil)
+                    n_ven_comercial = len(df_vendas_funil)
                     df_vendas_funil = deduplicar_vendas_funil(df_vendas_funil)
                     st.caption(
                         f"Vendas: {origem_vendas} · "
-                        f"{n_ven_bruto:,} → {len(df_vendas_funil):,} linhas "
+                        f"{n_ven_bruto:,} → {n_ven_comercial:,} comerciais → "
+                        f"{len(df_vendas_funil):,} linhas "
                         f"(dedup ID da Oportunidade)"
                     )
                 except Exception as e_sf_v:
