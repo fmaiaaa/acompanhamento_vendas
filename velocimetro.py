@@ -31,10 +31,19 @@ SPREADSHEET_ID = "1wpuNQvksot9CLhGgQRe7JlyDeRISEh_sc3-6VRDyQYk"
 WS_VENDAS = "BD Vendas Completa"
 WS_METAS = "Metas"
 
-# Funil comercial (mesma planilha: agendamentos/visitas + pastas)
+# Funil comercial
 SPREADSHEET_FUNIL_ID = "1ckdfpUr7qhr9YHnlfJ_rYrs6c6ZFugqYG0zrZDI9bck"
+# Pastas / pastas aprovadas (aba BASE)
+SPREADSHEET_PASTAS_ID: Optional[str] = "1wnJgJyrVM2k9SfQ8PCxFRr9odh75DEOg0tjtkPfyroc"
 ABA_AGENDAMENTOS_VISITAS = "Dados Únicos"
-ABA_PASTAS = "BASE"
+ABA_PASTAS_CANDIDATAS = (
+    "BASE",
+    "Base",
+    "Pastas",
+    "Pastas e Pastas Aprovadas",
+    "Pastas Aprovadas",
+    "BD Pastas",
+)
 FUNIL_ETAPAS = ("agendamentos", "visitas", "pastas", "pastas_aprovadas", "vendas")
 FUNIL_DRIVERS = ("agendamentos", "visitas", "pastas", "pastas_aprovadas")
 FUNIL_LABELS = {
@@ -44,14 +53,21 @@ FUNIL_LABELS = {
     "pastas_aprovadas": "Pastas aprovadas",
     "vendas": "Vendas",
 }
-FUNIL_LAGS = (0, 1, 3, 7, 14)  # inclui efeito contemporâneo (lag 0)
-FUNIL_LAGS_PERFIL = tuple(range(0, 15))  # perfil dia a dia: quanto tempo até afetar vendas
+FUNIL_LAGS = tuple(range(1, 31))  # lags 1..30
+FUNIL_LAGS_PERFIL = tuple(range(1, 31))
 FUNIL_CORES_DRIVER = {
     "agendamentos": "#04428f",
     "visitas": "#cb0935",
     "pastas": "#0f766e",
     "pastas_aprovadas": "#b45309",
 }
+COLUNAS_PASTAS_ALIASES = [
+    "Data da Análise", "Data da Analise", "Data Análise", "Data Analise",
+]
+COLUNAS_PASTAS_APROV_ALIASES = [
+    "Data Aprovação SAFI", "Data Aprovacao SAFI",
+    "Data de Aprovação SAFI", "Data de Aprovacao SAFI",
+]
 
 _DIR_APP = Path(__file__).resolve().parent
 LOGO_TOPO_ARQUIVO = "502.57_LOGO DIRECIONAL_V2F-01.png"
@@ -602,6 +618,102 @@ def ler_planilha_aba_df(spreadsheet_id: str, worksheet: str, _cred_fp: str) -> p
     info = montar_service_account_info(raw)
     if not info: raise ValueError("Credenciais [connections.gsheets] ausentes ou incompleta.")
     return ler_aba_gsheets(info, spreadsheet_id, worksheet)
+
+
+def _cabecalho_tem_coluna(header: List[str], aliases: List[str]) -> bool:
+    lows = [str(h).strip().lower() for h in header]
+    for a in aliases:
+        al = a.strip().lower()
+        if any(h == al or al in h for h in lows):
+            return True
+    return False
+
+
+def _df_parece_pastas(df: pd.DataFrame) -> bool:
+    if df is None or df.empty:
+        return False
+    return bool(
+        achar_coluna(df, COLUNAS_PASTAS_ALIASES)
+        or achar_coluna(df, COLUNAS_PASTAS_APROV_ALIASES)
+    )
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def carregar_df_pastas_funil(
+    spreadsheet_funil_id: str,
+    spreadsheet_principal_id: str,
+    spreadsheet_pastas_id: str,
+    _cred_fp: str,
+) -> Tuple[pd.DataFrame, str]:
+    """
+    Localiza a base de pastas:
+      1) abas candidatas (BASE, Pastas, ...)
+      2) varredura de abas com colunas Data da Análise / Data Aprovação SAFI
+    Procura na planilha de pastas (se informada), na de agendamentos e na principal.
+    Retorna (df, origem descritiva).
+    """
+    import gspread
+    from google.oauth2.service_account import Credentials
+
+    raw = _secrets_connections_gsheets()
+    info = montar_service_account_info(raw)
+    if not info:
+        raise ValueError("Credenciais [connections.gsheets] ausentes ou incompleta.")
+
+    scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+    creds = Credentials.from_service_account_info(info, scopes=scopes)
+    gc = gspread.authorize(creds)
+
+    ids: List[str] = []
+    for sid in (spreadsheet_pastas_id, spreadsheet_funil_id, spreadsheet_principal_id):
+        s = (sid or "").strip()
+        if s and s not in ids:
+            ids.append(s)
+
+    # 1) candidatos por nome
+    for sid in ids:
+        try:
+            sh = gc.open_by_key(sid)
+        except Exception:
+            continue
+        titulos = {w.title.strip().lower(): w.title for w in sh.worksheets()}
+        for cand in ABA_PASTAS_CANDIDATAS:
+            real = titulos.get(cand.strip().lower())
+            if not real:
+                continue
+            try:
+                df = valores_para_dataframe(sh.worksheet(real).get_all_values())
+                df = normalizar_colunas(df)
+                if _df_parece_pastas(df):
+                    return df, f"{real} ({sid[:8]}…)"
+            except Exception:
+                continue
+
+    # 2) varredura por colunas no cabeçalho
+    for sid in ids:
+        try:
+            sh = gc.open_by_key(sid)
+        except Exception:
+            continue
+        for w in sh.worksheets():
+            try:
+                header = [str(c) for c in (w.row_values(1) or [])]
+            except Exception:
+                continue
+            if not (
+                _cabecalho_tem_coluna(header, COLUNAS_PASTAS_ALIASES)
+                or _cabecalho_tem_coluna(header, COLUNAS_PASTAS_APROV_ALIASES)
+            ):
+                continue
+            try:
+                df = valores_para_dataframe(w.get_all_values())
+                df = normalizar_colunas(df)
+                if _df_parece_pastas(df):
+                    return df, f"{w.title} ({sid[:8]}…)"
+            except Exception:
+                continue
+
+    return pd.DataFrame(), ""
 
 
 def parse_valor_br(val: Any) -> float:
@@ -1793,18 +1905,8 @@ def montar_mapa_funil_diario(
         "visitas": contar_eventos_por_dia(
             df_ag_vis, ["Data da visita", "Data da Visita", "Data visita"]
         ),
-        "pastas": contar_eventos_por_dia(
-            df_pastas, ["Data da Análise", "Data da Analise", "Data Análise", "Data Analise"]
-        ),
-        "pastas_aprovadas": contar_eventos_por_dia(
-            df_pastas,
-            [
-                "Data Aprovação SAFI",
-                "Data Aprovacao SAFI",
-                "Data de Aprovação SAFI",
-                "Data de Aprovacao SAFI",
-            ],
-        ),
+        "pastas": contar_eventos_por_dia(df_pastas, COLUNAS_PASTAS_ALIASES),
+        "pastas_aprovadas": contar_eventos_por_dia(df_pastas, COLUNAS_PASTAS_APROV_ALIASES),
         "vendas": mapa_vendas,
     }
 
@@ -1983,7 +2085,7 @@ def estimar_efeitos_lags_sobre_vendas(
     incluir_mes: bool = True,
 ) -> Optional[Dict[str, Any]]:
     """
-    OLS: vendas ~ calendário + lags 0..N de agendamentos/visitas/pastas/pastas_aprovadas.
+    OLS: vendas ~ calendário + lags 1..30 de agendamentos/visitas/pastas/pastas_aprovadas.
     Mostra quanto tempo cada variável demora para afetar vendas.
     """
     if treino.empty or float(treino["vendas"].sum()) <= 0 or len(treino) < 40:
@@ -2052,7 +2154,7 @@ def estimar_efeitos_lags_sobre_vendas(
             "lag_pico": lag_pico,
             "efeito_pico": efeito_pico,
             "lag_meia_vida": lag_meia,
-            "efeito_lag0": float(df_p.loc[df_p["lag"] == 0, "efeito"].iloc[0]) if (df_p["lag"] == 0).any() else 0.0,
+            "efeito_lag0": float(df_p.loc[df_p["lag"] == 1, "efeito"].iloc[0]) if (df_p["lag"] == 1).any() else 0.0,
             "efeito_acum": float(df_p["efeito"].sum()),
         })
 
@@ -2292,7 +2394,7 @@ def render_projecao_funil(proj: Dict[str, Any]) -> None:
     st.subheader("Projeção do Funil Comercial")
     lags = proj.get("lags") or FUNIL_LAGS
     st.caption(
-        f"Lags: {', '.join(str(L) + 'd' for L in lags)} · "
+        f"Lags: 1–{max(lags)}d · "
         f"R² vendas: {float((proj.get('r2s') or {}).get('vendas', 0)):.2f}"
     )
 
@@ -2385,7 +2487,7 @@ def render_efeitos_lags_sobre_vendas(efeitos: Dict[str, Any]) -> None:
                     <div class="val">{int(r.get('lag_pico', 0))}d</div>
                     <div class="lbl" style="margin-top:6px;opacity:0.75;">
                         Pico · meia-vida {int(r.get('lag_meia_vida', 0))}d
-                        · lag0 {float(r.get('efeito_lag0', 0)):.2f}
+                        · lag1 {float(r.get('efeito_lag0', 0)):.2f}
                     </div>
                 </div>
                 """
@@ -2438,7 +2540,7 @@ def render_efeitos_lags_sobre_vendas(efeitos: Dict[str, Any]) -> None:
         showgrid=True,
         gridcolor="rgba(226,232,240,0.5)",
     )
-    st.markdown("##### Efeito por lag (0 = mesmo dia)")
+    st.markdown("##### Efeito por lag (1–30 dias)")
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
     fig_c = go.Figure()
@@ -3023,9 +3125,36 @@ def main() -> None:
                 df_ag_vis = normalizar_colunas(
                     ler_planilha_aba_df(SPREADSHEET_FUNIL_ID, ABA_AGENDAMENTOS_VISITAS, cred_fp)
                 )
-                df_pastas_funil = normalizar_colunas(
-                    ler_planilha_aba_df(SPREADSHEET_FUNIL_ID, ABA_PASTAS, cred_fp)
+                sid_pastas = (SPREADSHEET_PASTAS_ID or "").strip()
+                try:
+                    if hasattr(st, "secrets") and st.secrets.get("connections"):
+                        gcfg = st.secrets["connections"].get("gsheets") or {}
+                        sid_pastas = sid_pastas or str(
+                            gcfg.get("spreadsheet_pastas_id")
+                            or gcfg.get("SPREADSHEET_PASTAS_ID")
+                            or ""
+                        ).strip()
+                except Exception:
+                    pass
+
+                df_pastas_funil, origem_pastas = carregar_df_pastas_funil(
+                    SPREADSHEET_FUNIL_ID,
+                    sid,
+                    sid_pastas,
+                    cred_fp,
                 )
+                if df_pastas_funil.empty:
+                    st.warning(
+                        "Aba de pastas não encontrada (esperava colunas "
+                        "'Data da Análise' / 'Data Aprovação SAFI'). "
+                        "O funil seguirá só com agendamentos, visitas e vendas. "
+                        "Se a base estiver em outra planilha, informe o ID em "
+                        "`SPREADSHEET_PASTAS_ID` ou em secrets "
+                        "`connections.gsheets.spreadsheet_pastas_id`."
+                    )
+                else:
+                    st.caption(f"Pastas carregadas de: {origem_pastas}")
+
                 serie_vendas_funil = serie_diaria_contratos(base_proj, col_contrato_gerado)
                 mapas_funil = montar_mapa_funil_diario(
                     df_ag_vis, df_pastas_funil, serie_vendas_funil
