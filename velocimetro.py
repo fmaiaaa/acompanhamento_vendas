@@ -37,7 +37,7 @@ SPREADSHEET_FUNIL_ID = "1ckdfpUr7qhr9YHnlfJ_rYrs6c6ZFugqYG0zrZDI9bck"
 SPREADSHEET_PASTAS_ID: Optional[str] = "1wnJgJyrVM2k9SfQ8PCxFRr9odh75DEOg0tjtkPfyroc"
 # Agendamentos/visitas, pastas e vendas: relatórios Salesforce (evita limite do Sheets)
 SF_REPORT_AGENDAMENTOS_ID = "00OU600000AcFGPMA3"
-SF_REPORT_PASTAS_ID = "00OTT000005ywmD2AQ"
+SF_REPORT_PASTAS_ID = "00OU600000FEOoDMAX"
 SF_REPORT_VENDAS_ID = "00O3Z000005ZsPmUAK"
 ABA_AGENDAMENTOS_VISITAS = "Dados Únicos"  # fallback Sheets se SF falhar
 ABA_PASTAS_CANDIDATAS = (
@@ -2044,6 +2044,77 @@ def contar_eventos_por_dia(df: pd.DataFrame, aliases: List[str]) -> Dict[date, f
     return {pd.Timestamp(k).date(): float(v) for k, v in vc.items()}
 
 
+def deduplicar_por_chave_mais_recente(
+    df: pd.DataFrame,
+    aliases_chave: List[str],
+    aliases_data: List[str],
+) -> pd.DataFrame:
+    """
+    Remove duplicatas pela chave, mantendo a linha com a data mais recente.
+    Se chave ou data não existirem, devolve o DataFrame original.
+    """
+    if df is None or df.empty:
+        return df if df is not None else pd.DataFrame()
+    col_chave = achar_coluna(df, aliases_chave)
+    col_data = achar_coluna(df, aliases_data)
+    if not col_chave or not col_data:
+        return df
+    out = df.copy()
+    out["_dedup_dt"] = pd.to_datetime(out[col_data], dayfirst=True, errors="coerce")
+    out["_dedup_key"] = out[col_chave].astype(str).str.strip()
+    # Chaves vazias/NaN não entram na deduplicação entre si
+    mask_ok = out["_dedup_key"].ne("") & out["_dedup_key"].str.lower().ne("nan")
+    ok = out.loc[mask_ok].sort_values("_dedup_dt", ascending=False, na_position="last")
+    ok = ok.drop_duplicates(subset=["_dedup_key"], keep="first")
+    resto = out.loc[~mask_ok]
+    out = pd.concat([ok, resto], ignore_index=True)
+    return out.drop(columns=["_dedup_dt", "_dedup_key"], errors="ignore")
+
+
+ALIASES_ID_OPORTUNIDADE = [
+    "ID da Oportunidade", "Id da Oportunidade", "Opportunity ID", "Opportunity Id",
+    "ID Oportunidade", "Id Oportunidade",
+]
+ALIASES_CONTRATO_GERADO = [
+    "Contrato gerado em", "Contrato Gerado em", "Contrato gerado",
+    "Data do Contrato", "Data Contrato", "Close Date", "Data da venda",
+    "Data Venda",
+]
+ALIASES_NOME_AVALIACAO_CREDITO = [
+    "Nome da Avaliação de crédito", "Nome da Avaliacao de credito",
+    "Nome da Avaliação de Crédito", "Nome da Avaliacao de Credito",
+    "Nome Avaliação de crédito", "Nome Avaliacao de credito",
+]
+ALIASES_CODIGO_AGENDAMENTO = [
+    "Código do agendamento", "Codigo do agendamento",
+    "Código do Agendamento", "Codigo do Agendamento",
+    "Código Agendamento", "Codigo Agendamento",
+]
+ALIASES_DATA_CRIACAO = [
+    "Data de criação", "Data de criacao", "Data Criação", "Data Criacao",
+    "Created Date", "Data de Criação", "Criado em", "Data criação",
+]
+
+
+def deduplicar_vendas_funil(df: pd.DataFrame) -> pd.DataFrame:
+    """Uma linha por ID da Oportunidade (Contrato gerado em mais recente)."""
+    return deduplicar_por_chave_mais_recente(df, ALIASES_ID_OPORTUNIDADE, ALIASES_CONTRATO_GERADO)
+
+
+def deduplicar_pastas_funil(df: pd.DataFrame) -> pd.DataFrame:
+    """Uma linha por Nome da Avaliação de crédito (Data da Análise mais recente)."""
+    return deduplicar_por_chave_mais_recente(
+        df, ALIASES_NOME_AVALIACAO_CREDITO, COLUNAS_PASTAS_ALIASES
+    )
+
+
+def deduplicar_agendamentos_funil(df: pd.DataFrame) -> pd.DataFrame:
+    """Uma linha por Código do agendamento (Data de criação mais recente)."""
+    return deduplicar_por_chave_mais_recente(
+        df, ALIASES_CODIGO_AGENDAMENTO, ALIASES_DATA_CRIACAO
+    )
+
+
 def montar_mapa_funil_diario(
     df_ag_vis: pd.DataFrame,
     df_pastas: pd.DataFrame,
@@ -2057,39 +2128,39 @@ def montar_mapa_funil_diario(
       pastas ← Data da Análise
       pastas_aprovadas ← Data Aprovação SAFI
       vendas ← Contrato gerado em (relatório SF ou série agregada)
+
+    Deduplicação antes da contagem:
+      vendas → ID da Oportunidade (Contrato gerado em mais recente)
+      pastas → Nome da Avaliação de crédito (Data da Análise mais recente)
+      agendamentos → Código do agendamento (Data de criação mais recente)
     """
+    df_ag = deduplicar_agendamentos_funil(
+        df_ag_vis if df_ag_vis is not None else pd.DataFrame()
+    )
+    df_pas = deduplicar_pastas_funil(
+        df_pastas if df_pastas is not None else pd.DataFrame()
+    )
+
     mapa_vendas: Dict[date, float] = {}
     if df_vendas is not None and not df_vendas.empty:
-        mapa_vendas = contar_eventos_por_dia(
-            df_vendas,
-            [
-                "Contrato gerado em", "Contrato Gerado em", "Contrato gerado",
-                "Data do Contrato", "Data Contrato", "Close Date", "Data da venda",
-                "Data Venda", "Created Date",
-            ],
-        )
+        df_ven = deduplicar_vendas_funil(df_vendas)
+        mapa_vendas = contar_eventos_por_dia(df_ven, ALIASES_CONTRATO_GERADO)
     elif serie_vendas is not None and not serie_vendas.empty:
         for _, r in serie_vendas.iterrows():
             mapa_vendas[r["data"]] = float(r["qtd"])
 
     return {
-        "agendamentos": contar_eventos_por_dia(
-            df_ag_vis,
-            [
-                "Data de criação", "Data de criacao", "Data Criação", "Data Criacao",
-                "Created Date", "Data de Criação", "Criado em", "Data criação",
-            ],
-        ),
+        "agendamentos": contar_eventos_por_dia(df_ag, ALIASES_DATA_CRIACAO),
         "visitas": contar_eventos_por_dia(
-            df_ag_vis,
+            df_ag,
             [
                 "Data da visita", "Data da Visita", "Data visita", "Data Visita",
                 "Activity Date", "Data da Atividade", "Data do agendamento",
                 "Data Agendamento", "Start Date Time", "Data/Hora",
             ],
         ),
-        "pastas": contar_eventos_por_dia(df_pastas, COLUNAS_PASTAS_ALIASES),
-        "pastas_aprovadas": contar_eventos_por_dia(df_pastas, COLUNAS_PASTAS_APROV_ALIASES),
+        "pastas": contar_eventos_por_dia(df_pas, COLUNAS_PASTAS_ALIASES),
+        "pastas_aprovadas": contar_eventos_por_dia(df_pas, COLUNAS_PASTAS_APROV_ALIASES),
         "vendas": mapa_vendas,
     }
 
@@ -3349,7 +3420,13 @@ def main() -> None:
                     df_ag_vis, origem_ag = carregar_relatorio_salesforce(
                         SF_REPORT_AGENDAMENTOS_ID, rotulo="agendamentos/visitas"
                     )
-                    st.caption(f"Agendamentos/visitas: {origem_ag} · {len(df_ag_vis):,} linhas")
+                    n_ag_bruto = len(df_ag_vis)
+                    df_ag_vis = deduplicar_agendamentos_funil(df_ag_vis)
+                    st.caption(
+                        f"Agendamentos/visitas: {origem_ag} · "
+                        f"{n_ag_bruto:,} → {len(df_ag_vis):,} linhas "
+                        f"(dedup Código do agendamento)"
+                    )
                 except Exception as e_sf:
                     st.warning(
                         f"SF agendamentos indisponível ({e_sf}). Fallback Sheets 'Dados Únicos'."
@@ -3359,13 +3436,20 @@ def main() -> None:
                             SPREADSHEET_FUNIL_ID, ABA_AGENDAMENTOS_VISITAS, cred_fp
                         )
                     )
+                    df_ag_vis = deduplicar_agendamentos_funil(df_ag_vis)
 
                 # 2) Pastas / pastas aprovadas
                 try:
                     df_pastas_funil, origem_pastas = carregar_relatorio_salesforce(
                         SF_REPORT_PASTAS_ID, rotulo="pastas"
                     )
-                    st.caption(f"Pastas: {origem_pastas} · {len(df_pastas_funil):,} linhas")
+                    n_pas_bruto = len(df_pastas_funil)
+                    df_pastas_funil = deduplicar_pastas_funil(df_pastas_funil)
+                    st.caption(
+                        f"Pastas: {origem_pastas} · "
+                        f"{n_pas_bruto:,} → {len(df_pastas_funil):,} linhas "
+                        f"(dedup Nome da Avaliação de crédito)"
+                    )
                 except Exception as e_sf_p:
                     st.warning(
                         f"SF pastas indisponível ({e_sf_p}). Tentando planilha Sheets…"
@@ -3377,6 +3461,7 @@ def main() -> None:
                     if df_pastas_funil.empty:
                         st.warning("Pastas não carregadas — funil sem essa etapa.")
                     else:
+                        df_pastas_funil = deduplicar_pastas_funil(df_pastas_funil)
                         st.caption(f"Pastas (Sheets): {origem_pastas}")
 
                 # 3) Vendas (Contrato gerado em)
@@ -3386,7 +3471,13 @@ def main() -> None:
                     df_vendas_funil, origem_vendas = carregar_relatorio_salesforce(
                         SF_REPORT_VENDAS_ID, rotulo="vendas"
                     )
-                    st.caption(f"Vendas: {origem_vendas} · {len(df_vendas_funil):,} linhas")
+                    n_ven_bruto = len(df_vendas_funil)
+                    df_vendas_funil = deduplicar_vendas_funil(df_vendas_funil)
+                    st.caption(
+                        f"Vendas: {origem_vendas} · "
+                        f"{n_ven_bruto:,} → {len(df_vendas_funil):,} linhas "
+                        f"(dedup ID da Oportunidade)"
+                    )
                 except Exception as e_sf_v:
                     st.warning(
                         f"SF vendas indisponível ({e_sf_v}). "
