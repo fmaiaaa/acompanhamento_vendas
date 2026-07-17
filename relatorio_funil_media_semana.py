@@ -1169,6 +1169,41 @@ def _estilo_tabela(df: pd.DataFrame):
     return df_fmt.style.apply(highlight_pct, axis=1)
 
 
+def nomes_ativos_30d(
+    eventos: pd.DataFrame,
+    dimensao: str,
+    ref: Optional[date] = None,
+    min_agendamentos: int = 4,
+    min_vendas: int = 1,
+    janela_dias: int = 30,
+) -> set:
+    """
+    Pessoas com agendamentos ≥ min_agendamentos OU vendas ≥ min_vendas
+    nos últimos `janela_dias` dias (em relação a `ref`, padrão = hoje).
+    """
+    if eventos is None or eventos.empty or dimensao not in eventos.columns:
+        return set()
+    fim = ref or date.today()
+    ini = fim - timedelta(days=janela_dias - 1)
+    ev = filtrar_periodo(eventos, ini, fim)
+    if ev.empty:
+        return set()
+
+    nomes: set = set()
+    for etapa, minimo in (("agendamentos", min_agendamentos), ("vendas", min_vendas)):
+        sub = ev[ev["etapa"] == etapa]
+        if sub.empty:
+            continue
+        counts = (
+            sub.assign(_n=sub[dimensao].map(limpar_nome))
+            .loc[lambda d: d["_n"].ne("")]
+            .groupby("_n")
+            .size()
+        )
+        nomes.update(counts[counts >= minimo].index.tolist())
+    return nomes
+
+
 def _render_aba_dimensao(
     eventos: pd.DataFrame,
     dimensao: str,
@@ -1186,6 +1221,15 @@ def _render_aba_dimensao(
 
     mask_pos = real[list(FUNIL_ETAPAS)].sum(axis=1) > 0
     real = real.loc[mask_pos].copy()
+    if real.empty:
+        return
+
+    # Só quem agendou 4x+ ou vendeu 1x+ nos últimos 30 dias
+    elegiveis = nomes_ativos_30d(eventos, dimensao)
+    if not elegiveis:
+        return
+    real["_nome"] = real[dimensao].map(limpar_nome)
+    real = real.loc[real["_nome"].isin(elegiveis)].drop(columns=["_nome"])
     if real.empty:
         return
 
