@@ -268,7 +268,7 @@ def _cabecalho_pagina(titulo: str) -> None:
 
 
 def aplicar_estilo() -> None:
-    """Mesmo visual do velocímetro (fundo, glass card, tipografia, sidebar)."""
+    """Mesmo visual do velocímetro (fundo, glass card, tipografia) — sem sidebar."""
     bg_url = _css_url_fundo_cadastro()
     st.markdown(
         f"""
@@ -340,17 +340,15 @@ def aplicar_estilo() -> None:
                 inset 0 1px 0 rgba(255, 255, 255, 0.55) !important;
             animation: fichaFadeIn 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
         }}
-        /* Sidebar no mesmo idioma visual */
-        [data-testid="stSidebar"] {{
-            background: rgba(255, 255, 255, 0.88) !important;
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
-            border-right: 1px solid rgba(255, 255, 255, 0.5) !important;
+        /* Sem sidebar nestes relatórios */
+        [data-testid="stSidebar"],
+        [data-testid="stSidebarNav"],
+        section[data-testid="stSidebar"],
+        button[kind="header"] {{
+            display: none !important;
         }}
-        [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2,
-        [data-testid="stSidebar"] h3, [data-testid="stSidebar"] h4 {{
-            color: {COR_AZUL_ESC} !important;
-            font-family: 'Montserrat', sans-serif !important;
+        [data-testid="stAppViewContainer"] > .main {{
+            margin-left: 0 !important;
         }}
         h1, h2, h3, h4,
         h1 *, h2 *, h3 *, h4 *,
@@ -969,6 +967,7 @@ def main() -> None:
         page_title="Funil · Filtro por critérios | Direcional",
         layout="wide",
         page_icon=str(fav) if fav else None,
+        initial_sidebar_state="collapsed",
     )
     aplicar_estilo()
     _cabecalho_pagina("Funil por critérios de quantidade")
@@ -981,28 +980,44 @@ def main() -> None:
     hoje = date.today()
     sem_ini, sem_fim = semana_iso_atual(hoje)
 
-    with st.sidebar:
-        st.header("Período de análise")
-        ini = st.date_input("Início", value=sem_ini, key="crit_ini")
-        fim = st.date_input("Fim", value=sem_fim, key="crit_fim")
-        if st.button("Usar semana atual (seg–dom)"):
-            st.session_state["crit_ini"] = sem_ini
-            st.session_state["crit_fim"] = sem_fim
-            st.rerun()
+    if "crit_ini" not in st.session_state:
+        st.session_state["crit_ini"] = sem_ini
+    if "crit_fim" not in st.session_state:
+        st.session_state["crit_fim"] = sem_fim
 
-        st.header("Dimensão")
+    def _btn_semana_atual_crit() -> None:
+        st.session_state["crit_ini"] = sem_ini
+        st.session_state["crit_fim"] = sem_fim
+
+    st.markdown("##### Período e dimensão")
+    p1, p2, p3, p4 = st.columns([1.1, 1.1, 1.4, 1.6])
+    with p1:
+        ini = st.date_input("Início", key="crit_ini")
+    with p2:
+        fim = st.date_input("Fim", key="crit_fim")
+    with p3:
+        st.write("")
+        st.button(
+            "Usar semana atual (seg–dom)",
+            on_click=_btn_semana_atual_crit,
+            use_container_width=True,
+        )
+    with p4:
         dim = st.radio(
             "Analisar por",
             options=list(DIMENSOES),
             format_func=lambda x: DIM_LABELS[x],
             index=0,
+            horizontal=True,
         )
 
-        st.header("Critérios (mínimos)")
-        st.caption("Deixe em 0 para não filtrar aquele indicador.")
-        criterios: Dict[str, Optional[float]] = {}
-        ativos: List[str] = []
-        for etapa in FUNIL_ETAPAS:
+    st.markdown("##### Critérios (mínimos)")
+    st.caption("Deixe em 0 para não filtrar aquele indicador.")
+    criterios: Dict[str, Optional[float]] = {}
+    ativos: List[str] = []
+    cols_crit = st.columns(len(FUNIL_ETAPAS))
+    for col, etapa in zip(cols_crit, FUNIL_ETAPAS):
+        with col:
             v = st.number_input(
                 FUNIL_LABELS[etapa],
                 min_value=0,
@@ -1022,7 +1037,7 @@ def main() -> None:
 
     if not ativos:
         st.info(
-            "Defina pelo menos um critério > 0 na barra lateral "
+            "Defina pelo menos um critério > 0 "
             "(ex.: Vendas ≥ 3, Pastas ≥ 10)."
         )
 
