@@ -1,14 +1,17 @@
 # -*- coding: utf-8 -*-
 """
-Relatório 1 — Funil: médias (1a / 6m / 3m / 1m) × semana fixa
-por Regional, Gerente de vendas e Corretor.
+Relatório 2 — Funil filtrado por critérios de quantidade
+(Regional / Gerente de vendas / Corretor).
+
+Retorna apenas pessoas que atingem os mínimos escolhidos
+em um ou mais indicadores do funil, no período informado.
 
 Hospedagem Streamlit Cloud (mesma pasta / secrets do velocímetro).
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
-from typing import Dict, List, Optional, Tuple
+from datetime import date
+from typing import Dict, List, Optional
 
 import pandas as pd
 import streamlit as st
@@ -357,7 +360,6 @@ def aplicar_estilo() -> None:
         [data-baseweb="base-input"],
         [data-baseweb="input"],
         [data-baseweb="select"] > div,
-        [data-baseweb="popover"],
         .stSelectbox div[data-baseweb="select"] > div,
         .stMultiSelect div[data-baseweb="select"] > div,
         .stDateInput > div > div,
@@ -986,257 +988,162 @@ def fmt_pct(v: Optional[float]) -> str:
 # Fim do módulo embutido
 # =============================================================================
 
-# Janelas históricas (sempre terminam no dia anterior à semana escolhida)
-JANELAS_MEDIA: Tuple[Tuple[str, str, int], ...] = (
-    ("1_ano", "Média 1 ano", 365),
-    ("6_meses", "Média 6 meses", 182),
-    ("3_meses", "Média 3 meses", 91),
-    ("1_mes", "Média 1 mês", 30),
-)
-
-OPCOES_SEMANA = {
-    "atual": "Semana atual",
-    "passada": "Semana passada",
-    "retrasada": "Semana retrasada",
-}
-
-
-def semana_por_offset(hoje: date, semanas_atras: int) -> Tuple[date, date]:
-    """Semana ISO (seg→dom) deslocada: 0=atual, 1=passada, 2=retrasada."""
-    ini_atual = segunda_da_semana(hoje)
-    ini = ini_atual - timedelta(days=7 * int(semanas_atras))
-    return ini, domingo_da_semana(ini)
-
-
-def filtrar_regionais(eventos: pd.DataFrame, regionais: List[str]) -> pd.DataFrame:
-    if eventos is None or eventos.empty:
-        return eventos if eventos is not None else pd.DataFrame()
-    if not regionais:
-        return eventos.iloc[0:0].copy()
-    regs = {limpar_nome(r) for r in regionais if limpar_nome(r)}
-    mask = eventos["regional"].map(limpar_nome).isin(regs)
-    return eventos.loc[mask].copy()
-
-
-def media_escalada_pessoa_etapa(
-    datas: List[date],
-    fim_base: date,
-    dias_janela: int,
-    dias_alvo: int,
-) -> float:
-    """
-    Média diária no período disponível da pessoa × dias_alvo.
-    Início efetivo = max(fim_base - janela + 1, menor data do indicador).
-    """
-    if not datas or dias_janela <= 0 or dias_alvo <= 0:
-        return 0.0
-    datas_ok = [d for d in datas if d is not None and d <= fim_base]
-    if not datas_ok:
-        return 0.0
-    min_ind = min(datas_ok)
-    ini_ideal = fim_base - timedelta(days=dias_janela - 1)
-    ini_eff = max(ini_ideal, min_ind)
-    if ini_eff > fim_base:
-        return 0.0
-    dias_disp = (fim_base - ini_eff).days + 1
-    if dias_disp <= 0:
-        return 0.0
-    qtd = sum(1 for d in datas_ok if ini_eff <= d <= fim_base)
-    return (float(qtd) / float(dias_disp)) * float(dias_alvo)
-
-
-def medias_historicas_pessoa(
-    eventos_pessoa: pd.DataFrame,
-    fim_base: date,
-    dias_alvo: int,
-) -> Dict[str, Dict[str, float]]:
-    """Para cada janela e etapa, média escalada ao período-alvo (ex.: 7 dias)."""
-    por_etapa: Dict[str, List[date]] = {e: [] for e in FUNIL_ETAPAS}
-    if eventos_pessoa is not None and not eventos_pessoa.empty:
-        for _, r in eventos_pessoa.iterrows():
-            e = str(r.get("etapa", ""))
-            d = r.get("data")
-            if e in por_etapa and d is not None:
-                por_etapa[e].append(d if isinstance(d, date) else pd.to_datetime(d).date())
-
-    out: Dict[str, Dict[str, float]] = {}
-    for chave, _rotulo, dias_janela in JANELAS_MEDIA:
-        out[chave] = {
-            e: media_escalada_pessoa_etapa(por_etapa[e], fim_base, dias_janela, dias_alvo)
-            for e in FUNIL_ETAPAS
-        }
-    return out
-
-
-def _montar_tabela_pessoa(
-    realizado: Dict[str, float],
-    medias: Dict[str, Dict[str, float]],
+def _aplicar_criterios(
+    df: pd.DataFrame,
+    criterios: Dict[str, Optional[float]],
 ) -> pd.DataFrame:
-    rows = []
-    for chave, rotulo, _ in JANELAS_MEDIA:
-        row = {"Linha": rotulo}
-        fonte = medias.get(chave, {})
-        for e in FUNIL_ETAPAS:
-            row[FUNIL_LABELS[e]] = float(fonte.get(e, 0.0))
-        rows.append(row)
-
-    row_real = {"Linha": "Realizado da semana"}
-    for e in FUNIL_ETAPAS:
-        row_real[FUNIL_LABELS[e]] = float(realizado.get(e, 0.0))
-    rows.append(row_real)
-
-    for chave, rotulo, _ in JANELAS_MEDIA:
-        row_pct = {"Linha": f"% vs {rotulo.replace('Média ', '')}"}
-        fonte = medias.get(chave, {})
-        for e in FUNIL_ETAPAS:
-            m = float(fonte.get(e, 0.0))
-            r = float(realizado.get(e, 0.0))
-            row_pct[FUNIL_LABELS[e]] = (100.0 * r / m) if m > 1e-9 else None
-        rows.append(row_pct)
-    return pd.DataFrame(rows)
+    """Mantém linhas que satisfazem todos os mínimos informados (> None)."""
+    if df is None or df.empty:
+        return df if df is not None else pd.DataFrame()
+    out = df.copy()
+    for etapa, minimo in criterios.items():
+        if minimo is None:
+            continue
+        if etapa not in out.columns:
+            out[etapa] = 0.0
+        out = out[out[etapa].astype(float) >= float(minimo)]
+    return out.reset_index(drop=True)
 
 
-def _estilo_tabela(df: pd.DataFrame):
-    df_fmt = df.copy()
-    for i, row in df.iterrows():
-        linha = str(row.get("Linha", ""))
-        for c in df.columns:
-            if c == "Linha":
-                continue
-            val = row[c]
-            if val is None or (isinstance(val, float) and pd.isna(val)):
-                df_fmt.at[i, c] = "—"
-            elif linha.startswith("%"):
-                df_fmt.at[i, c] = fmt_pct(float(val))
-            else:
-                df_fmt.at[i, c] = fmt_num(float(val), 1)
-
-    def highlight_pct(row):
-        if not str(row.get("Linha", "")).startswith("%"):
-            return [""] * len(df.columns)
-        cores = []
-        orig = df.loc[row.name]
-        for c in df.columns:
-            if c == "Linha":
-                cores.append(
-                    f"background-color: #f8fafc; font-weight: 600; color: {COR_TEXTO_PRETO};"
-                )
-                continue
-            v = orig.get(c)
-            if v is None or (isinstance(v, float) and pd.isna(v)):
-                cores.append("")
-            elif float(v) >= 100:
-                cores.append("background-color: #ecfdf5; color: #065f46; font-weight: 600;")
-            elif float(v) >= 80:
-                cores.append("background-color: #fffbeb; color: #92400e; font-weight: 600;")
-            else:
-                cores.append(f"background-color: #fef2f2; color: {COR_VERMELHO}; font-weight: 600;")
-        return cores
-
-    return df_fmt.style.apply(highlight_pct, axis=1)
-
-
-def _render_aba_dimensao(
+def _render_aba_criterios(
     eventos: pd.DataFrame,
     dimensao: str,
-    ini_semana: date,
-    fim_semana: date,
-    fim_base: date,
+    ini: date,
+    fim: date,
+    criterios: Dict[str, Optional[float]],
+    ativos: List[str],
 ) -> None:
     label_dim = DIM_LABELS.get(dimensao, dimensao)
-    dias_alvo = n_dias_periodo(ini_semana, fim_semana)
+    ev = filtrar_periodo(eventos, ini, fim)
+    agg = agregar_funil_por_dimensao(ev, dimensao)
 
-    ev_semana = filtrar_periodo(eventos, ini_semana, fim_semana)
-    real = agregar_funil_por_dimensao(ev_semana, dimensao)
-
-    if real.empty:
-        st.info(f"Nenhum {label_dim.lower()} com indicadores na semana selecionada.")
+    if agg.empty:
+        st.info(f"Nenhum {label_dim.lower()} com indicadores no período.")
         return
 
-    mask_pos = real[list(FUNIL_ETAPAS)].sum(axis=1) > 0
-    real = real.loc[mask_pos].copy()
-    if real.empty:
-        st.info(f"Nenhum {label_dim.lower()} com indicador positivo na semana.")
+    # Critérios todos 0 → mostra todos com ≥1 indicador positivo
+    mask_pos = agg[list(FUNIL_ETAPAS)].sum(axis=1) > 0
+    agg = agg.loc[mask_pos].copy()
+    if agg.empty:
+        st.info(f"Nenhum {label_dim.lower()} com indicador positivo no período.")
         return
 
-    real = real.sort_values("vendas", ascending=False)
-    ev_hist = eventos[eventos["data"] <= fim_base] if not eventos.empty else eventos
+    filtrado = _aplicar_criterios(agg, criterios) if ativos else agg
 
-    st.caption(
-        f"{len(real)} {label_dim.lower()}(is) · "
-        f"médias 1 ano / 6 m / 3 m / 1 m escaladas para {dias_alvo} dias · "
-        f"base histórica até {fim_base.strftime('%d/%m/%Y')} "
-        f"(exclui a semana escolhida e semanas posteriores)."
-    )
+    if filtrado.empty:
+        st.warning("Nenhuma pessoa atende aos critérios no período.")
+        return
 
-    for _, row in real.iterrows():
+    ordem = [e for e in FUNIL_ETAPAS if criterios.get(e) is not None]
+    if "vendas" not in ordem:
+        ordem.append("vendas")
+    filtrado = filtrado.sort_values(ordem, ascending=[False] * len(ordem))
+
+    st.success(f"{len(filtrado)} resultado(s) encontrados.")
+
+    cols_show = [dimensao] + list(FUNIL_ETAPAS)
+    df_show = filtrado[cols_show].copy()
+    df_show = df_show.rename(columns={dimensao: label_dim, **FUNIL_LABELS})
+    for c in FUNIL_LABELS.values():
+        if c in df_show.columns:
+            df_show[c] = df_show[c].map(lambda x: fmt_num(float(x), 0))
+    st.dataframe(df_show, use_container_width=True, hide_index=True)
+
+    st.markdown("##### Detalhamento")
+    for _, row in filtrado.iterrows():
         nome = limpar_nome(row[dimensao])
         if not nome:
             continue
-        realizado = {e: float(row.get(e, 0.0)) for e in FUNIL_ETAPAS}
-        ev_p = ev_hist[ev_hist[dimensao].map(limpar_nome) == nome] if not ev_hist.empty else ev_hist
-        medias = medias_historicas_pessoa(ev_p, fim_base, dias_alvo)
-        df_t = _montar_tabela_pessoa(realizado, medias)
+        partes = [
+            f"{FUNIL_LABELS[e]}: {fmt_num(float(row.get(e, 0.0)), 0)}" for e in FUNIL_ETAPAS
+        ]
         st.markdown(
-            f'<div class="bloco-pessoa"><div class="nome">{nome}</div></div>',
+            f'<div class="bloco-pessoa">'
+            f'<div class="nome">{nome}</div>'
+            f'<div style="color:{COR_TEXTO_PRETO};font-size:0.95rem;">'
+            + " &nbsp;·&nbsp; ".join(partes)
+            + "</div></div>",
             unsafe_allow_html=True,
         )
-        st.dataframe(_estilo_tabela(df_t), use_container_width=True, hide_index=True)
+
+    csv = filtrado.rename(columns={dimensao: label_dim, **FUNIL_LABELS}).to_csv(
+        index=False, sep=";", decimal=","
+    )
+    st.download_button(
+        "Baixar CSV",
+        data=csv.encode("utf-8-sig"),
+        file_name=f"funil_criterios_{dimensao}_{ini}_{fim}.csv",
+        mime="text/csv",
+        use_container_width=True,
+    )
 
 
 def main() -> None:
     fav = _resolver_png_raiz(FAVICON_ARQUIVO)
     st.set_page_config(
-        page_title="Funil · Média × Semana | Direcional",
+        page_title="Funil · Filtro por critérios | Direcional",
         layout="wide",
         page_icon=str(fav) if fav else None,
         initial_sidebar_state="collapsed",
     )
     aplicar_estilo()
-    _cabecalho_pagina("Funil por pessoa — média × semana")
+    _cabecalho_pagina("Funil por critérios de quantidade")
     st.caption(
-        "Compara a semana escolhida com as médias equivalentes de 1 ano, 6 meses, "
-        "3 meses e 1 mês (sempre sem a semana corrente e posteriores). "
-        "A média de cada pessoa usa o período disponível desde a 1ª data do indicador."
+        "Defina o período (padrão: semana atual) e mínimos opcionais. "
+        "Com todos os critérios em 0, lista quem teve pelo menos 1 indicador. "
+        "Abas: Regional, Gerente de vendas e Corretor."
     )
 
     hoje = date.today()
-    if "sem_escolha" not in st.session_state:
-        st.session_state["sem_escolha"] = "atual"
+    sem_ini, sem_fim = semana_iso_atual(hoje)
 
-    def _set_semana(chave: str):
-        def _cb():
-            st.session_state["sem_escolha"] = chave
-        return _cb
+    if "crit_ini" not in st.session_state:
+        st.session_state["crit_ini"] = sem_ini
+    if "crit_fim" not in st.session_state:
+        st.session_state["crit_fim"] = sem_fim
 
-    st.markdown("##### Semana de análise")
-    b1, b2, b3 = st.columns(3)
-    with b1:
+    def _btn_semana_atual_crit() -> None:
+        st.session_state["crit_ini"] = sem_ini
+        st.session_state["crit_fim"] = sem_fim
+
+    st.markdown("##### Período de análise")
+    p1, p2 = st.columns(2)
+    with p1:
+        ini = st.date_input("Início", key="crit_ini")
+    with p2:
+        fim = st.date_input("Fim", key="crit_fim")
+
+    b_full = st.columns(1)[0]
+    with b_full:
         st.button(
-            "Semana atual",
-            on_click=_set_semana("atual"),
-            type="primary" if st.session_state["sem_escolha"] == "atual" else "secondary",
-            use_container_width=True,
-        )
-    with b2:
-        st.button(
-            "Semana passada",
-            on_click=_set_semana("passada"),
-            type="primary" if st.session_state["sem_escolha"] == "passada" else "secondary",
-            use_container_width=True,
-        )
-    with b3:
-        st.button(
-            "Semana retrasada",
-            on_click=_set_semana("retrasada"),
-            type="primary" if st.session_state["sem_escolha"] == "retrasada" else "secondary",
+            "Usar semana atual (seg–dom)",
+            on_click=_btn_semana_atual_crit,
             use_container_width=True,
         )
 
-    offset = {"atual": 0, "passada": 1, "retrasada": 2}[st.session_state["sem_escolha"]]
-    ini_semana, fim_semana = semana_por_offset(hoje, offset)
-    # Histórico sempre corta no dia anterior à semana escolhida (sem semanas “correntes”)
-    fim_base = ini_semana - timedelta(days=1)
+    st.markdown("##### Critérios (mínimos)")
+    st.caption("Deixe em 0 para não filtrar aquele indicador. Todos em 0 = listar todos com atividade.")
+    criterios: Dict[str, Optional[float]] = {}
+    ativos: List[str] = []
+    cols_crit = st.columns(len(FUNIL_ETAPAS))
+    for col, etapa in zip(cols_crit, FUNIL_ETAPAS):
+        with col:
+            v = st.number_input(
+                FUNIL_LABELS[etapa],
+                min_value=0,
+                value=0,
+                step=1,
+                key=f"min_{etapa}",
+            )
+            if v > 0:
+                criterios[etapa] = float(v)
+                ativos.append(f"{FUNIL_LABELS[etapa]} ≥ {int(v)}")
+            else:
+                criterios[etapa] = None
+
+    if fim < ini:
+        st.error("O fim do período deve ser ≥ início.")
+        return
 
     try:
         eventos, origens = carregar_eventos_funil_pessoas()
@@ -1244,41 +1151,21 @@ def main() -> None:
         st.error(f"Falha ao carregar bases Salesforce: {e}")
         return
 
-    regionais_disp = sorted(
-        {limpar_nome(r) for r in eventos["regional"].tolist() if limpar_nome(r)}
-    ) if eventos is not None and not eventos.empty else []
-
-    st.markdown("##### Regionais")
-    regionais_sel = st.multiselect(
-        "Exibir regionais",
-        options=regionais_disp,
-        default=regionais_disp,
-        key="regionais_filtro",
-        label_visibility="collapsed",
-    )
-    if not regionais_sel:
-        st.warning("Selecione ao menos um regional.")
-        return
-
-    eventos = filtrar_regionais(eventos, regionais_sel)
-
     with st.expander("Origem dos dados", expanded=False):
         for k, v in origens.items():
             st.caption(f"**{k}:** {v}")
-        st.caption(f"Eventos após filtro: {len(eventos):,}".replace(",", "."))
+        st.caption(f"Eventos carregados: {len(eventos):,}".replace(",", "."))
 
     st.markdown(
-        f"**{OPCOES_SEMANA[st.session_state['sem_escolha']]}:** "
-        f"{ini_semana.strftime('%d/%m/%Y')} → {fim_semana.strftime('%d/%m/%Y')} "
-        f"({n_dias_periodo(ini_semana, fim_semana)} dias) · "
-        f"**Histórico até:** {fim_base.strftime('%d/%m/%Y')} · "
-        f"**Regionais:** {len(regionais_sel)}"
+        f"**Período:** {ini.strftime('%d/%m/%Y')} → {fim.strftime('%d/%m/%Y')} "
+        f"({n_dias_periodo(ini, fim)} dias)"
+        + (f" · **Critérios:** {' · '.join(ativos)}" if ativos else " · **Sem filtro de mínimos**")
     )
 
     tabs = st.tabs([DIM_LABELS[d] for d in DIMENSOES])
     for tab, dim in zip(tabs, DIMENSOES):
         with tab:
-            _render_aba_dimensao(eventos, dim, ini_semana, fim_semana, fim_base)
+            _render_aba_criterios(eventos, dim, ini, fim, criterios, ativos)
 
     st.markdown(
         '<div class="footer">Direcional Engenharia · Vendas — Relatório de funil</div>',
