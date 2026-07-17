@@ -396,6 +396,23 @@ def aplicar_estilo() -> None:
         .stCaption, [data-testid="stCaptionContainer"] {{
             text-align: center !important;
         }}
+        .stTabs [data-baseweb="tab-list"] {{
+            justify-content: center !important;
+            gap: 0.35rem !important;
+        }}
+        .stTabs [data-baseweb="tab"] {{
+            color: {COR_AZUL_ESC} !important;
+            font-family: 'Montserrat', sans-serif !important;
+            font-weight: 700 !important;
+        }}
+        .stTabs [aria-selected="true"] {{
+            color: {COR_AZUL_ESC} !important;
+            border-bottom-color: {COR_VERMELHO} !important;
+        }}
+        .bloco-pessoa .nome,
+        .ficha-hero .ficha-title {{
+            color: {COR_AZUL_ESC} !important;
+        }}
         h1, h2, h3, h4,
         h1 *, h2 *, h3 *, h4 *,
         [data-testid="stMarkdownContainer"] h1,
@@ -1008,14 +1025,30 @@ def semana_por_offset(hoje: date, semanas_atras: int) -> Tuple[date, date]:
     return ini, domingo_da_semana(ini)
 
 
-def filtrar_regionais(eventos: pd.DataFrame, regionais: List[str]) -> pd.DataFrame:
+def filtrar_hierarquia(
+    eventos: pd.DataFrame,
+    regionais: Optional[List[str]] = None,
+    gerentes: Optional[List[str]] = None,
+    corretores: Optional[List[str]] = None,
+) -> pd.DataFrame:
+    """Filtros opcionais: lista vazia/None = não filtra aquela dimensão."""
     if eventos is None or eventos.empty:
         return eventos if eventos is not None else pd.DataFrame()
-    if not regionais:
-        return eventos.iloc[0:0].copy()
-    regs = {limpar_nome(r) for r in regionais if limpar_nome(r)}
-    mask = eventos["regional"].map(limpar_nome).isin(regs)
-    return eventos.loc[mask].copy()
+    out = eventos
+    if regionais:
+        regs = {limpar_nome(r) for r in regionais if limpar_nome(r)}
+        out = out.loc[out["regional"].map(limpar_nome).isin(regs)]
+    if gerentes:
+        gers = {limpar_nome(g) for g in gerentes if limpar_nome(g)}
+        out = out.loc[out["gerente"].map(limpar_nome).isin(gers)]
+    if corretores:
+        cors = {limpar_nome(c) for c in corretores if limpar_nome(c)}
+        out = out.loc[out["corretor"].map(limpar_nome).isin(cors)]
+    return out.copy()
+
+
+def filtrar_regionais(eventos: pd.DataFrame, regionais: List[str]) -> pd.DataFrame:
+    return filtrar_hierarquia(eventos, regionais=regionais)
 
 
 def media_escalada_pessoa_etapa(
@@ -1143,31 +1176,21 @@ def _render_aba_dimensao(
     fim_semana: date,
     fim_base: date,
 ) -> None:
-    label_dim = DIM_LABELS.get(dimensao, dimensao)
     dias_alvo = n_dias_periodo(ini_semana, fim_semana)
 
     ev_semana = filtrar_periodo(eventos, ini_semana, fim_semana)
     real = agregar_funil_por_dimensao(ev_semana, dimensao)
 
     if real.empty:
-        st.info(f"Nenhum {label_dim.lower()} com indicadores na semana selecionada.")
         return
 
     mask_pos = real[list(FUNIL_ETAPAS)].sum(axis=1) > 0
     real = real.loc[mask_pos].copy()
     if real.empty:
-        st.info(f"Nenhum {label_dim.lower()} com indicador positivo na semana.")
         return
 
     real = real.sort_values("vendas", ascending=False)
     ev_hist = eventos[eventos["data"] <= fim_base] if not eventos.empty else eventos
-
-    st.caption(
-        f"{len(real)} {label_dim.lower()}(is) · "
-        f"médias 1 ano / 6 m / 3 m / 1 m escaladas para {dias_alvo} dias · "
-        f"base histórica até {fim_base.strftime('%d/%m/%Y')} "
-        f"(exclui a semana escolhida e semanas posteriores)."
-    )
 
     for _, row in real.iterrows():
         nome = limpar_nome(row[dimensao])
@@ -1194,11 +1217,6 @@ def main() -> None:
     )
     aplicar_estilo()
     _cabecalho_pagina("Funil por pessoa — média × semana")
-    st.caption(
-        "Compara a semana escolhida com as médias equivalentes de 1 ano, 6 meses, "
-        "3 meses e 1 mês (sempre sem a semana corrente e posteriores). "
-        "A média de cada pessoa usa o período disponível desde a 1ª data do indicador."
-    )
 
     hoje = date.today()
     if "sem_escolha" not in st.session_state:
@@ -1209,7 +1227,6 @@ def main() -> None:
             st.session_state["sem_escolha"] = chave
         return _cb
 
-    st.markdown("##### Semana de análise")
     b1, b2, b3 = st.columns(3)
     with b1:
         st.button(
@@ -1235,55 +1252,57 @@ def main() -> None:
 
     offset = {"atual": 0, "passada": 1, "retrasada": 2}[st.session_state["sem_escolha"]]
     ini_semana, fim_semana = semana_por_offset(hoje, offset)
-    # Histórico sempre corta no dia anterior à semana escolhida (sem semanas “correntes”)
     fim_base = ini_semana - timedelta(days=1)
 
     try:
-        eventos, origens = carregar_eventos_funil_pessoas()
+        eventos, _origens = carregar_eventos_funil_pessoas()
     except Exception as e:
         st.error(f"Falha ao carregar bases Salesforce: {e}")
         return
 
-    regionais_disp = sorted(
-        {limpar_nome(r) for r in eventos["regional"].tolist() if limpar_nome(r)}
-    ) if eventos is not None and not eventos.empty else []
-
-    st.markdown("##### Regionais")
-    regionais_sel = st.multiselect(
-        "Exibir regionais",
-        options=regionais_disp,
-        default=regionais_disp,
-        key="regionais_filtro",
-        label_visibility="collapsed",
-    )
-    if not regionais_sel:
-        st.warning("Selecione ao menos um regional.")
+    if eventos is None or eventos.empty:
         return
 
-    eventos = filtrar_regionais(eventos, regionais_sel)
+    regionais_disp = sorted({limpar_nome(r) for r in eventos["regional"].tolist() if limpar_nome(r)})
+    regionais_sel = st.multiselect(
+        "Regionais",
+        options=regionais_disp,
+        default=[],
+        key="regionais_filtro",
+        placeholder="Regionais",
+    )
 
-    with st.expander("Origem dos dados", expanded=False):
-        for k, v in origens.items():
-            st.caption(f"**{k}:** {v}")
-        st.caption(f"Eventos após filtro: {len(eventos):,}".replace(",", "."))
+    ev_pos_reg = filtrar_hierarquia(eventos, regionais=regionais_sel or None)
+    gerentes_disp = sorted({limpar_nome(g) for g in ev_pos_reg["gerente"].tolist() if limpar_nome(g)})
+    gerentes_sel = st.multiselect(
+        "Gerentes de vendas",
+        options=gerentes_disp,
+        default=[],
+        key="gerentes_filtro",
+        placeholder="Gerentes de vendas",
+    )
 
-    st.markdown(
-        f"**{OPCOES_SEMANA[st.session_state['sem_escolha']]}:** "
-        f"{ini_semana.strftime('%d/%m/%Y')} → {fim_semana.strftime('%d/%m/%Y')} "
-        f"({n_dias_periodo(ini_semana, fim_semana)} dias) · "
-        f"**Histórico até:** {fim_base.strftime('%d/%m/%Y')} · "
-        f"**Regionais:** {len(regionais_sel)}"
+    ev_pos_ger = filtrar_hierarquia(ev_pos_reg, gerentes=gerentes_sel or None)
+    corretores_disp = sorted({limpar_nome(c) for c in ev_pos_ger["corretor"].tolist() if limpar_nome(c)})
+    corretores_sel = st.multiselect(
+        "Corretores",
+        options=corretores_disp,
+        default=[],
+        key="corretores_filtro",
+        placeholder="Corretores",
+    )
+
+    eventos = filtrar_hierarquia(
+        eventos,
+        regionais=regionais_sel or None,
+        gerentes=gerentes_sel or None,
+        corretores=corretores_sel or None,
     )
 
     tabs = st.tabs([DIM_LABELS[d] for d in DIMENSOES])
     for tab, dim in zip(tabs, DIMENSOES):
         with tab:
             _render_aba_dimensao(eventos, dim, ini_semana, fim_semana, fim_base)
-
-    st.markdown(
-        '<div class="footer">Direcional Engenharia · Vendas — Relatório de funil</div>',
-        unsafe_allow_html=True,
-    )
 
 
 if __name__ == "__main__":
