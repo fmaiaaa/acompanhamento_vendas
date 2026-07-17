@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-Relatório 1 — Funil: média histórica × período selecionado
+Relatório 1 — Funil: médias (1a / 6m / 3m / 1m) × semana fixa
 por Regional, Gerente de vendas e Corretor.
 
 Hospedagem Streamlit Cloud (mesma pasta / secrets do velocímetro).
@@ -8,7 +8,7 @@ Hospedagem Streamlit Cloud (mesma pasta / secrets do velocímetro).
 from __future__ import annotations
 
 from datetime import date, timedelta
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 import streamlit as st
@@ -326,7 +326,7 @@ def aplicar_estilo() -> None:
             margin-left: auto !important;
             margin-right: auto !important;
             padding: 1.45rem 2.25rem 1.55rem 2.25rem !important;
-            background: rgba(255, 255, 255, 0.78) !important;
+            background: rgba(255, 255, 255, 0.96) !important;
             backdrop-filter: blur(18px) saturate(1.15);
             -webkit-backdrop-filter: blur(18px) saturate(1.15);
             border-radius: 24px !important;
@@ -337,7 +337,7 @@ def aplicar_estilo() -> None:
                 inset 0 1px 0 rgba(255, 255, 255, 0.55) !important;
             animation: fichaFadeIn 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
         }}
-        /* Sem sidebar nestes relatórios */
+        /* Sem sidebar + forçar tema claro */
         [data-testid="stSidebar"],
         [data-testid="stSidebarNav"],
         section[data-testid="stSidebar"],
@@ -346,6 +346,55 @@ def aplicar_estilo() -> None:
         }}
         [data-testid="stAppViewContainer"] > .main {{
             margin-left: 0 !important;
+        }}
+        [data-testid="stApp"],
+        [data-testid="stAppViewContainer"],
+        [data-testid="stMain"],
+        .main,
+        .block-container,
+        [data-testid="stMarkdownContainer"],
+        [data-testid="stVerticalBlock"],
+        [data-baseweb="base-input"],
+        [data-baseweb="input"],
+        [data-baseweb="select"] > div,
+        [data-baseweb="popover"],
+        .stSelectbox div[data-baseweb="select"] > div,
+        .stMultiSelect div[data-baseweb="select"] > div,
+        .stDateInput > div > div,
+        .stNumberInput > div > div,
+        .stRadio,
+        .stTabs [data-baseweb="tab-list"],
+        .stDataFrame,
+        [data-testid="stDataFrame"] {{
+            color-scheme: light !important;
+        }}
+        .stButton > button {{
+            width: 100% !important;
+            background: linear-gradient(135deg, {COR_AZUL_ESC} 0%, #0a5bb8 100%) !important;
+            color: #ffffff !important;
+            border: none !important;
+            border-radius: 10px !important;
+            font-family: 'Montserrat', sans-serif !important;
+            font-weight: 700 !important;
+            box-shadow: 0 4px 12px rgba({RGB_AZUL_CSS}, 0.22) !important;
+        }}
+        .stButton > button:hover {{
+            background: linear-gradient(135deg, {COR_VERMELHO} 0%, #e11d48 100%) !important;
+            color: #ffffff !important;
+        }}
+        .stButton > button[kind="secondary"],
+        .stButton > button[data-testid="baseButton-secondary"] {{
+            background: #ffffff !important;
+            color: {COR_AZUL_ESC} !important;
+            border: 1.5px solid {COR_AZUL_ESC} !important;
+        }}
+        div[data-baseweb="select"] > div,
+        .stMultiSelect [data-baseweb="tag"] {{
+            background-color: #ffffff !important;
+            color: {COR_TEXTO_PRETO} !important;
+        }}
+        .stCaption, [data-testid="stCaptionContainer"] {{
+            text-align: center !important;
         }}
         h1, h2, h3, h4,
         h1 *, h2 *, h3 *, h4 *,
@@ -937,36 +986,113 @@ def fmt_pct(v: Optional[float]) -> str:
 # Fim do módulo embutido
 # =============================================================================
 
-def _default_base_periodo(semana_ini: date, semana_fim: date) -> Tuple[date, date]:
-    """Base padrão: 12 semanas anteriores à semana selecionada (sem incluí-la)."""
-    fim_base = semana_ini - timedelta(days=1)
-    ini_base = segunda_da_semana(fim_base - timedelta(days=7 * 11))
-    if ini_base > fim_base:
-        ini_base = fim_base - timedelta(days=83)
-    return ini_base, fim_base
+# Janelas históricas (sempre terminam no dia anterior à semana escolhida)
+JANELAS_MEDIA: Tuple[Tuple[str, str, int], ...] = (
+    ("1_ano", "Média 1 ano", 365),
+    ("6_meses", "Média 6 meses", 182),
+    ("3_meses", "Média 3 meses", 91),
+    ("1_mes", "Média 1 mês", 30),
+)
+
+OPCOES_SEMANA = {
+    "atual": "Semana atual",
+    "passada": "Semana passada",
+    "retrasada": "Semana retrasada",
+}
+
+
+def semana_por_offset(hoje: date, semanas_atras: int) -> Tuple[date, date]:
+    """Semana ISO (seg→dom) deslocada: 0=atual, 1=passada, 2=retrasada."""
+    ini_atual = segunda_da_semana(hoje)
+    ini = ini_atual - timedelta(days=7 * int(semanas_atras))
+    return ini, domingo_da_semana(ini)
+
+
+def filtrar_regionais(eventos: pd.DataFrame, regionais: List[str]) -> pd.DataFrame:
+    if eventos is None or eventos.empty:
+        return eventos if eventos is not None else pd.DataFrame()
+    if not regionais:
+        return eventos.iloc[0:0].copy()
+    regs = {limpar_nome(r) for r in regionais if limpar_nome(r)}
+    mask = eventos["regional"].map(limpar_nome).isin(regs)
+    return eventos.loc[mask].copy()
+
+
+def media_escalada_pessoa_etapa(
+    datas: List[date],
+    fim_base: date,
+    dias_janela: int,
+    dias_alvo: int,
+) -> float:
+    """
+    Média diária no período disponível da pessoa × dias_alvo.
+    Início efetivo = max(fim_base - janela + 1, menor data do indicador).
+    """
+    if not datas or dias_janela <= 0 or dias_alvo <= 0:
+        return 0.0
+    datas_ok = [d for d in datas if d is not None and d <= fim_base]
+    if not datas_ok:
+        return 0.0
+    min_ind = min(datas_ok)
+    ini_ideal = fim_base - timedelta(days=dias_janela - 1)
+    ini_eff = max(ini_ideal, min_ind)
+    if ini_eff > fim_base:
+        return 0.0
+    dias_disp = (fim_base - ini_eff).days + 1
+    if dias_disp <= 0:
+        return 0.0
+    qtd = sum(1 for d in datas_ok if ini_eff <= d <= fim_base)
+    return (float(qtd) / float(dias_disp)) * float(dias_alvo)
+
+
+def medias_historicas_pessoa(
+    eventos_pessoa: pd.DataFrame,
+    fim_base: date,
+    dias_alvo: int,
+) -> Dict[str, Dict[str, float]]:
+    """Para cada janela e etapa, média escalada ao período-alvo (ex.: 7 dias)."""
+    por_etapa: Dict[str, List[date]] = {e: [] for e in FUNIL_ETAPAS}
+    if eventos_pessoa is not None and not eventos_pessoa.empty:
+        for _, r in eventos_pessoa.iterrows():
+            e = str(r.get("etapa", ""))
+            d = r.get("data")
+            if e in por_etapa and d is not None:
+                por_etapa[e].append(d if isinstance(d, date) else pd.to_datetime(d).date())
+
+    out: Dict[str, Dict[str, float]] = {}
+    for chave, _rotulo, dias_janela in JANELAS_MEDIA:
+        out[chave] = {
+            e: media_escalada_pessoa_etapa(por_etapa[e], fim_base, dias_janela, dias_alvo)
+            for e in FUNIL_ETAPAS
+        }
+    return out
 
 
 def _montar_tabela_pessoa(
-    nome: str,
-    media: Dict[str, float],
     realizado: Dict[str, float],
+    medias: Dict[str, Dict[str, float]],
 ) -> pd.DataFrame:
     rows = []
-    for rotulo, fonte in (
-        ("Média (equivalente ao período)", media),
-        ("Realizado do período", realizado),
-    ):
+    for chave, rotulo, _ in JANELAS_MEDIA:
         row = {"Linha": rotulo}
+        fonte = medias.get(chave, {})
         for e in FUNIL_ETAPAS:
             row[FUNIL_LABELS[e]] = float(fonte.get(e, 0.0))
         rows.append(row)
 
-    row_pct = {"Linha": "% Realizado / Média"}
+    row_real = {"Linha": "Realizado da semana"}
     for e in FUNIL_ETAPAS:
-        m = float(media.get(e, 0.0))
-        r = float(realizado.get(e, 0.0))
-        row_pct[FUNIL_LABELS[e]] = (100.0 * r / m) if m > 1e-9 else None
-    rows.append(row_pct)
+        row_real[FUNIL_LABELS[e]] = float(realizado.get(e, 0.0))
+    rows.append(row_real)
+
+    for chave, rotulo, _ in JANELAS_MEDIA:
+        row_pct = {"Linha": f"% vs {rotulo.replace('Média ', '')}"}
+        fonte = medias.get(chave, {})
+        for e in FUNIL_ETAPAS:
+            m = float(fonte.get(e, 0.0))
+            r = float(realizado.get(e, 0.0))
+            row_pct[FUNIL_LABELS[e]] = (100.0 * r / m) if m > 1e-9 else None
+        rows.append(row_pct)
     return pd.DataFrame(rows)
 
 
@@ -1013,39 +1139,34 @@ def _estilo_tabela(df: pd.DataFrame):
 def _render_aba_dimensao(
     eventos: pd.DataFrame,
     dimensao: str,
-    ini_periodo: date,
-    fim_periodo: date,
-    ini_base: date,
+    ini_semana: date,
+    fim_semana: date,
     fim_base: date,
 ) -> None:
     label_dim = DIM_LABELS.get(dimensao, dimensao)
-    dias_periodo = n_dias_periodo(ini_periodo, fim_periodo)
-    dias_base = n_dias_periodo(ini_base, fim_base)
+    dias_alvo = n_dias_periodo(ini_semana, fim_semana)
 
-    ev_periodo = filtrar_periodo(eventos, ini_periodo, fim_periodo)
-    ev_base = filtrar_periodo(eventos, ini_base, fim_base)
+    ev_semana = filtrar_periodo(eventos, ini_semana, fim_semana)
+    real = agregar_funil_por_dimensao(ev_semana, dimensao)
 
-    real = agregar_funil_por_dimensao(ev_periodo, dimensao)
-    base = agregar_funil_por_dimensao(ev_base, dimensao)
-    media = escalar_media_para_periodo(base, dias_base, dias_periodo, dimensao)
-
-    # Somente quem tem ≥1 indicador positivo no período escolhido
     if real.empty:
-        st.info(f"Nenhum {label_dim.lower()} com indicadores no período selecionado.")
+        st.info(f"Nenhum {label_dim.lower()} com indicadores na semana selecionada.")
         return
 
     mask_pos = real[list(FUNIL_ETAPAS)].sum(axis=1) > 0
     real = real.loc[mask_pos].copy()
     if real.empty:
-        st.info(f"Nenhum {label_dim.lower()} com indicador positivo no período.")
+        st.info(f"Nenhum {label_dim.lower()} com indicador positivo na semana.")
         return
 
-    media_idx = media.set_index(dimensao) if not media.empty else pd.DataFrame()
     real = real.sort_values("vendas", ascending=False)
+    ev_hist = eventos[eventos["data"] <= fim_base] if not eventos.empty else eventos
 
     st.caption(
-        f"{len(real)} {label_dim.lower()}(is) com pelo menos 1 indicador no período · "
-        f"média = (total da base ÷ {dias_base} dias) × {dias_periodo} dias do período."
+        f"{len(real)} {label_dim.lower()}(is) · "
+        f"médias 1 ano / 6 m / 3 m / 1 m escaladas para {dias_alvo} dias · "
+        f"base histórica até {fim_base.strftime('%d/%m/%Y')} "
+        f"(exclui a semana escolhida e semanas posteriores)."
     )
 
     for _, row in real.iterrows():
@@ -1053,105 +1174,69 @@ def _render_aba_dimensao(
         if not nome:
             continue
         realizado = {e: float(row.get(e, 0.0)) for e in FUNIL_ETAPAS}
-        if nome in media_idx.index:
-            media_row = media_idx.loc[nome]
-            media_vals = {e: float(media_row.get(e, 0.0)) for e in FUNIL_ETAPAS}
-        else:
-            media_vals = {e: 0.0 for e in FUNIL_ETAPAS}
-
-        df_t = _montar_tabela_pessoa(nome, media_vals, realizado)
-        # Exibe % já como número; formatação trata a linha
+        ev_p = ev_hist[ev_hist[dimensao].map(limpar_nome) == nome] if not ev_hist.empty else ev_hist
+        medias = medias_historicas_pessoa(ev_p, fim_base, dias_alvo)
+        df_t = _montar_tabela_pessoa(realizado, medias)
         st.markdown(
             f'<div class="bloco-pessoa"><div class="nome">{nome}</div></div>',
             unsafe_allow_html=True,
         )
-        # Converte linha de % para exibição amigável numa cópia formatada
-        df_show = df_t.copy()
-        # Mantém numérico; o styler formata
-        st.dataframe(_estilo_tabela(df_show), use_container_width=True, hide_index=True)
+        st.dataframe(_estilo_tabela(df_t), use_container_width=True, hide_index=True)
 
 
 def main() -> None:
     fav = _resolver_png_raiz(FAVICON_ARQUIVO)
     st.set_page_config(
-        page_title="Funil · Média × Período | Direcional",
+        page_title="Funil · Média × Semana | Direcional",
         layout="wide",
         page_icon=str(fav) if fav else None,
         initial_sidebar_state="collapsed",
     )
     aplicar_estilo()
-    _cabecalho_pagina("Funil por pessoa — média × período")
+    _cabecalho_pagina("Funil por pessoa — média × semana")
     st.caption(
-        "Compara o funil Agendamentos → Visitas → Pastas → Pastas aprovadas → Vendas "
-        "da média histórica (escalada pelos dias) com o período escolhido. "
-        "Abas: Regional, Gerente de vendas e Corretor."
+        "Compara a semana escolhida com as médias equivalentes de 1 ano, 6 meses, "
+        "3 meses e 1 mês (sempre sem a semana corrente e posteriores). "
+        "A média de cada pessoa usa o período disponível desde a 1ª data do indicador."
     )
 
     hoje = date.today()
-    sem_ini_padrao, sem_fim_padrao = semana_iso_atual(hoje)
+    if "sem_escolha" not in st.session_state:
+        st.session_state["sem_escolha"] = "atual"
 
-    # Defaults no session_state ANTES dos widgets (evita StreamlitAPIException)
-    if "ini_per" not in st.session_state:
-        st.session_state["ini_per"] = sem_ini_padrao
-    if "fim_per" not in st.session_state:
-        st.session_state["fim_per"] = sem_fim_padrao
+    def _set_semana(chave: str):
+        def _cb():
+            st.session_state["sem_escolha"] = chave
+        return _cb
 
-    def _btn_semana_atual() -> None:
-        st.session_state["ini_per"] = sem_ini_padrao
-        st.session_state["fim_per"] = sem_fim_padrao
-
-    def _btn_ajustar_seg_dom() -> None:
-        d0 = segunda_da_semana(st.session_state.get("ini_per", sem_ini_padrao))
-        st.session_state["ini_per"] = d0
-        st.session_state["fim_per"] = domingo_da_semana(d0)
-
-    st.markdown("##### Período de análise")
-    st.caption("Padrão: semana atual (segunda → domingo).")
-    c1, c2, c3, c4 = st.columns([1.2, 1.2, 1.3, 1.5])
-    with c1:
-        ini_periodo = st.date_input("Início do período", key="ini_per")
-    with c2:
-        fim_periodo = st.date_input("Fim do período", key="fim_per")
-    with c3:
-        st.write("")
-        st.button("Usar semana atual (seg–dom)", on_click=_btn_semana_atual, use_container_width=True)
-    with c4:
-        st.write("")
+    st.markdown("##### Semana de análise")
+    b1, b2, b3 = st.columns(3)
+    with b1:
         st.button(
-            "Ajustar para seg–dom da data início",
-            on_click=_btn_ajustar_seg_dom,
+            "Semana atual",
+            on_click=_set_semana("atual"),
+            type="primary" if st.session_state["sem_escolha"] == "atual" else "secondary",
+            use_container_width=True,
+        )
+    with b2:
+        st.button(
+            "Semana passada",
+            on_click=_set_semana("passada"),
+            type="primary" if st.session_state["sem_escolha"] == "passada" else "secondary",
+            use_container_width=True,
+        )
+    with b3:
+        st.button(
+            "Semana retrasada",
+            on_click=_set_semana("retrasada"),
+            type="primary" if st.session_state["sem_escolha"] == "retrasada" else "secondary",
             use_container_width=True,
         )
 
-    st.markdown("##### Base da média")
-    st.caption(
-        "Período usado para calcular a média diária "
-        "(padrão: 12 semanas anteriores, sem o período selecionado)."
-    )
-    ini_b_pad, fim_b_pad = _default_base_periodo(ini_periodo, fim_periodo)
-    if "ini_base" not in st.session_state:
-        st.session_state["ini_base"] = ini_b_pad
-    if "fim_base" not in st.session_state:
-        st.session_state["fim_base"] = fim_b_pad
-    b1, b2, _ = st.columns([1.2, 1.2, 2.8])
-    with b1:
-        ini_base = st.date_input("Início da base", key="ini_base")
-    with b2:
-        fim_base = st.date_input("Fim da base", key="fim_base")
-
-    if fim_periodo < ini_periodo:
-        st.error("O fim do período deve ser ≥ início.")
-        return
-    if fim_base < ini_base:
-        st.error("O fim da base deve ser ≥ início.")
-        return
-
-    # Evita vazamento: remove interseção período ∩ base
-    if not (fim_base < ini_periodo or ini_base > fim_periodo):
-        st.warning(
-            "A base da média intersecta o período selecionado. "
-            "A média ficará enviesada — ajuste os filtros se quiser excluir o período."
-        )
+    offset = {"atual": 0, "passada": 1, "retrasada": 2}[st.session_state["sem_escolha"]]
+    ini_semana, fim_semana = semana_por_offset(hoje, offset)
+    # Histórico sempre corta no dia anterior à semana escolhida (sem semanas “correntes”)
+    fim_base = ini_semana - timedelta(days=1)
 
     try:
         eventos, origens = carregar_eventos_funil_pessoas()
@@ -1159,24 +1244,41 @@ def main() -> None:
         st.error(f"Falha ao carregar bases Salesforce: {e}")
         return
 
+    regionais_disp = sorted(
+        {limpar_nome(r) for r in eventos["regional"].tolist() if limpar_nome(r)}
+    ) if eventos is not None and not eventos.empty else []
+
+    st.markdown("##### Regionais")
+    regionais_sel = st.multiselect(
+        "Exibir regionais",
+        options=regionais_disp,
+        default=regionais_disp,
+        key="regionais_filtro",
+        label_visibility="collapsed",
+    )
+    if not regionais_sel:
+        st.warning("Selecione ao menos um regional.")
+        return
+
+    eventos = filtrar_regionais(eventos, regionais_sel)
+
     with st.expander("Origem dos dados", expanded=False):
         for k, v in origens.items():
             st.caption(f"**{k}:** {v}")
-        st.caption(f"Eventos carregados: {len(eventos):,}".replace(",", "."))
+        st.caption(f"Eventos após filtro: {len(eventos):,}".replace(",", "."))
 
     st.markdown(
-        f"**Período:** {ini_periodo.strftime('%d/%m/%Y')} → {fim_periodo.strftime('%d/%m/%Y')} "
-        f"({n_dias_periodo(ini_periodo, fim_periodo)} dias) · "
-        f"**Base da média:** {ini_base.strftime('%d/%m/%Y')} → {fim_base.strftime('%d/%m/%Y')} "
-        f"({n_dias_periodo(ini_base, fim_base)} dias)"
+        f"**{OPCOES_SEMANA[st.session_state['sem_escolha']]}:** "
+        f"{ini_semana.strftime('%d/%m/%Y')} → {fim_semana.strftime('%d/%m/%Y')} "
+        f"({n_dias_periodo(ini_semana, fim_semana)} dias) · "
+        f"**Histórico até:** {fim_base.strftime('%d/%m/%Y')} · "
+        f"**Regionais:** {len(regionais_sel)}"
     )
 
     tabs = st.tabs([DIM_LABELS[d] for d in DIMENSOES])
     for tab, dim in zip(tabs, DIMENSOES):
         with tab:
-            _render_aba_dimensao(
-                eventos, dim, ini_periodo, fim_periodo, ini_base, fim_base
-            )
+            _render_aba_dimensao(eventos, dim, ini_semana, fim_semana, fim_base)
 
     st.markdown(
         '<div class="footer">Direcional Engenharia · Vendas — Relatório de funil</div>',
