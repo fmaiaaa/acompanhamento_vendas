@@ -265,7 +265,7 @@ def _cabecalho_pagina(titulo: str) -> None:
 
 
 def aplicar_estilo() -> None:
-    """Mesmo visual do velocímetro (fundo, glass card, tipografia, sidebar)."""
+    """Mesmo visual do velocímetro (fundo, glass card, tipografia) — sem sidebar."""
     bg_url = _css_url_fundo_cadastro()
     st.markdown(
         f"""
@@ -337,17 +337,15 @@ def aplicar_estilo() -> None:
                 inset 0 1px 0 rgba(255, 255, 255, 0.55) !important;
             animation: fichaFadeIn 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
         }}
-        /* Sidebar no mesmo idioma visual */
-        [data-testid="stSidebar"] {{
-            background: rgba(255, 255, 255, 0.88) !important;
-            backdrop-filter: blur(16px);
-            -webkit-backdrop-filter: blur(16px);
-            border-right: 1px solid rgba(255, 255, 255, 0.5) !important;
+        /* Sem sidebar nestes relatórios */
+        [data-testid="stSidebar"],
+        [data-testid="stSidebarNav"],
+        section[data-testid="stSidebar"],
+        button[kind="header"] {{
+            display: none !important;
         }}
-        [data-testid="stSidebar"] h1, [data-testid="stSidebar"] h2,
-        [data-testid="stSidebar"] h3, [data-testid="stSidebar"] h4 {{
-            color: {COR_AZUL_ESC} !important;
-            font-family: 'Montserrat', sans-serif !important;
+        [data-testid="stAppViewContainer"] > .main {{
+            margin-left: 0 !important;
         }}
         h1, h2, h3, h4,
         h1 *, h2 *, h3 *, h4 *,
@@ -1079,6 +1077,7 @@ def main() -> None:
         page_title="Funil · Média × Período | Direcional",
         layout="wide",
         page_icon=str(fav) if fav else None,
+        initial_sidebar_state="collapsed",
     )
     aplicar_estilo()
     _cabecalho_pagina("Funil por pessoa — média × período")
@@ -1091,29 +1090,54 @@ def main() -> None:
     hoje = date.today()
     sem_ini_padrao, sem_fim_padrao = semana_iso_atual(hoje)
 
-    with st.sidebar:
-        st.header("Período de análise")
-        st.caption("Padrão: semana atual (segunda → domingo).")
-        ini_periodo = st.date_input("Início do período", value=sem_ini_padrao, key="ini_per")
-        fim_periodo = st.date_input("Fim do período", value=sem_fim_padrao, key="fim_per")
-        if st.button("Usar semana atual (seg–dom)"):
-            st.session_state["ini_per"] = sem_ini_padrao
-            st.session_state["fim_per"] = sem_fim_padrao
-            st.rerun()
-        if st.button("Ajustar para seg–dom da data início"):
-            d0 = segunda_da_semana(ini_periodo)
-            st.session_state["ini_per"] = d0
-            st.session_state["fim_per"] = domingo_da_semana(d0)
-            st.rerun()
+    # Defaults no session_state ANTES dos widgets (evita StreamlitAPIException)
+    if "ini_per" not in st.session_state:
+        st.session_state["ini_per"] = sem_ini_padrao
+    if "fim_per" not in st.session_state:
+        st.session_state["fim_per"] = sem_fim_padrao
 
-        st.header("Base da média")
-        st.caption(
-            "Período usado para calcular a média diária "
-            "(padrão: 12 semanas anteriores, sem o período selecionado)."
+    def _btn_semana_atual() -> None:
+        st.session_state["ini_per"] = sem_ini_padrao
+        st.session_state["fim_per"] = sem_fim_padrao
+
+    def _btn_ajustar_seg_dom() -> None:
+        d0 = segunda_da_semana(st.session_state.get("ini_per", sem_ini_padrao))
+        st.session_state["ini_per"] = d0
+        st.session_state["fim_per"] = domingo_da_semana(d0)
+
+    st.markdown("##### Período de análise")
+    st.caption("Padrão: semana atual (segunda → domingo).")
+    c1, c2, c3, c4 = st.columns([1.2, 1.2, 1.3, 1.5])
+    with c1:
+        ini_periodo = st.date_input("Início do período", key="ini_per")
+    with c2:
+        fim_periodo = st.date_input("Fim do período", key="fim_per")
+    with c3:
+        st.write("")
+        st.button("Usar semana atual (seg–dom)", on_click=_btn_semana_atual, use_container_width=True)
+    with c4:
+        st.write("")
+        st.button(
+            "Ajustar para seg–dom da data início",
+            on_click=_btn_ajustar_seg_dom,
+            use_container_width=True,
         )
-        ini_b_pad, fim_b_pad = _default_base_periodo(ini_periodo, fim_periodo)
-        ini_base = st.date_input("Início da base", value=ini_b_pad, key="ini_base")
-        fim_base = st.date_input("Fim da base", value=fim_b_pad, key="fim_base")
+
+    st.markdown("##### Base da média")
+    st.caption(
+        "Período usado para calcular a média diária "
+        "(padrão: 12 semanas anteriores, sem o período selecionado)."
+    )
+    ini_b_pad, fim_b_pad = _default_base_periodo(ini_periodo, fim_periodo)
+    if "ini_base" not in st.session_state:
+        st.session_state["ini_base"] = ini_b_pad
+    if "fim_base" not in st.session_state:
+        st.session_state["fim_base"] = fim_b_pad
+    b1, b2, _ = st.columns([1.2, 1.2, 2.8])
+    with b1:
+        ini_base = st.date_input("Início da base", key="ini_base")
+    with b2:
+        fim_base = st.date_input("Fim da base", key="fim_base")
 
     if fim_periodo < ini_periodo:
         st.error("O fim do período deve ser ≥ início.")
