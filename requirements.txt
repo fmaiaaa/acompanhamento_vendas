@@ -1,13 +1,10 @@
-# Scraping Google Maps
-playwright>=1.40.0
-
-# Velocímetro / Streamlit
+requests>=2.28.0
+simple-salesforce>=1.12.0
 streamlit>=1.28.0
+st-gsheets-connection
 pandas>=2.0.0
 numpy>=1.24.0
 plotly>=5.18.0
-
-# Google Sheets (velocímetro)
+openpyxl
 gspread>=6.0.0
 google-auth>=2.23.0
-simple-salesforce
