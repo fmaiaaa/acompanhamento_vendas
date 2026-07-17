@@ -76,7 +76,10 @@ FUNIL_CORES_DRIVER = {
     "pastas_aprovadas": "#b45309",
 }
 COLUNAS_PASTAS_ALIASES = [
-    "Data da Análise", "Data da Analise", "Data Análise", "Data Analise",
+    "Data Criação Pasta", "Data Criacao Pasta",
+    "Data de Criação Pasta", "Data de Criacao Pasta",
+    "Data Criação da Pasta", "Data Criacao da Pasta",
+    "Criação Pasta", "Criacao Pasta",
 ]
 COLUNAS_PASTAS_APROV_ALIASES = [
     "Data Aprovação SAFI", "Data Aprovacao SAFI",
@@ -461,11 +464,12 @@ def aplicar_estilo() -> None:
         .vel-kpi-row {{
             display: flex;
             flex-wrap: wrap;
-            gap: 12px;
-            margin-bottom: 1.25rem;
+            gap: 20px;
+            margin-bottom: 1.75rem;
         }}
         .vel-kpi {{
             flex: 1 1 20%;
+            min-width: 140px;
             background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,251,252,0.9) 100%);
             border: 1px solid rgba(226, 232, 240, 0.9);
             border-radius: 14px;
@@ -473,6 +477,8 @@ def aplicar_estilo() -> None:
             text-align: center;
             box-shadow: 0 2px 8px rgba({RGB_AZUL_CSS}, 0.06);
             transition: transform 0.3s ease, box-shadow 0.3s ease;
+            margin: 0;
+            box-sizing: border-box;
         }}
         .vel-kpi:hover {{
             transform: translateY(-4px);
@@ -495,6 +501,16 @@ def aplicar_estilo() -> None:
             margin-top: 6px;
         }}
         .vel-kpi .val--red {{ color: {COR_VERMELHO} !important; }}
+        /* Espaço entre colunas de cards (st.columns) */
+        div[data-testid="stHorizontalBlock"] {{
+            gap: 1.25rem !important;
+            margin-bottom: 1rem !important;
+            align-items: stretch !important;
+        }}
+        div[data-testid="column"] {{
+            padding-left: 0.5rem !important;
+            padding-right: 0.5rem !important;
+        }}
         div[data-testid="stMetric"] {{
             background: rgba(255,255,256,0.6);
             padding: 12px;
@@ -666,7 +682,7 @@ def carregar_df_pastas_funil(
     """
     Localiza a base de pastas:
       1) abas candidatas (BASE, Pastas, ...)
-      2) varredura de abas com colunas Data da Análise / Data Aprovação SAFI
+      2) varredura de abas com colunas Data Criação Pasta / Data Aprovação SAFI
     Procura na planilha de pastas (se informada), na de agendamentos e na principal.
     Retorna (df, origem descritiva).
     """
@@ -1322,18 +1338,13 @@ def projetar_vendas_mes_atual(
     meta_vgv_mes: float,
     meta_qtd_mes: float = 0.0,
     hoje: Optional[date] = None,
-    incluir_mes: bool = True,
 ) -> Optional[Dict[str, Any]]:
     """
-    Projeção do mês corrente com duas lógicas (mesma janela de meses exatos):
-      1) Regressão OLS (dia_mês + dia_semana [+ mês])
-      2) Médias sazonais combinadas (multiplicativo)
-    Com incluir_mes=False, remove o efeito/beta de mês (só dia do mês e dia da semana).
-    Treino: do mês atual − 1 ano até o fim do mês anterior
-    (ex.: jul/2026 → 01/07/2025 a 30/06/2026).
+    Regressão de qtd/dia ~ dia_mês + dia_semana + mês, janela de 52 semanas,
+    e projeção do restante do mês corrente (somente vendas comerciais na base).
     """
     hoje = hoje or date.today()
-    inicio, fim_treino = janela_treino_meses_exatos(hoje)
+    inicio, fim_treino = janela_treino_52_semanas(hoje)
     serie = serie_diaria_contratos(df_vendas, col_contrato)
     if serie.empty:
         return None
@@ -1342,8 +1353,7 @@ def projetar_vendas_mes_atual(
     if treino["qtd"].sum() <= 0 or len(treino) < 30:
         return None
 
-    modelo = treinar_regressao_vendas_diarias(treino, incluir_mes=incluir_mes)
-    medias = calcular_medias_sazonais(treino, incluir_mes=incluir_mes)
+    modelo = treinar_regressao_vendas_diarias(treino)
 
     ano, mes = hoje.year, hoje.month
     ultimo_dia = calendar.monthrange(ano, mes)[1]
@@ -1354,160 +1364,188 @@ def projetar_vendas_mes_atual(
     mapa_real = {r["data"]: float(r["qtd"]) for _, r in serie.iterrows()}
     mapa_vgv = {r["data"]: float(r["vgv"]) for _, r in serie.iterrows()}
 
-    qtd_mtd = float(sum(mapa_real.get(d, 0.0) for d in dias_passados))
-    vgv_mtd = float(sum(mapa_vgv.get(d, 0.0) for d in dias_passados))
+    qtd_atingida_por_dia = [mapa_real.get(d, 0.0) for d in dias_passados]
+    vgv_mtd = sum(mapa_vgv.get(d, 0.0) for d in dias_passados)
+    qtd_mtd = float(sum(qtd_atingida_por_dia))
 
-    pred_reg_mes = prever_qtd_dias(modelo, dias_mes, incluir_mes=incluir_mes)
-    pred_med_mes = prever_qtd_medias(dias_mes, medias, incluir_mes=incluir_mes)
+    pred_futuro = prever_qtd_dias(modelo, dias_futuros)
+    qtd_projetada_restante = float(pred_futuro.sum()) if len(pred_futuro) else 0.0
+    qtd_projetada_mes = qtd_mtd + qtd_projetada_restante
 
-    # Reforço explícito de fim de mês: sazonalidade em 15, 10 e 5 dias
-    intensidades_fim = calcular_intensidades_fim_mes(treino, janelas=JANELAS_FIM_MES)
-    pred_reg_mes = aplicar_sazonalidade_fim_mes(pred_reg_mes, dias_mes, ultimo_dia, intensidades_fim)
-    pred_med_mes = aplicar_sazonalidade_fim_mes(pred_med_mes, dias_mes, ultimo_dia, intensidades_fim)
-
-    n_passados = len(dias_passados)
-    pred_reg = pred_reg_mes[n_passados:] if len(pred_reg_mes) else np.array([])
-    pred_med = pred_med_mes[n_passados:] if len(pred_med_mes) else np.array([])
-
-    # Comparativo dia a dia: projetado (modelo) × realizado (mês atual)
-    comp_reg: List[Dict[str, Any]] = []
-    comp_med: List[Dict[str, Any]] = []
-    for i, d in enumerate(dias_mes):
-        real = float(mapa_real.get(d, 0.0)) if d <= hoje else None
-        p_reg = float(pred_reg_mes[i]) if i < len(pred_reg_mes) else 0.0
-        p_med = float(pred_med_mes[i]) if i < len(pred_med_mes) else 0.0
-        comp_reg.append({"dia": d.day, "realizado": real, "projetado": p_reg})
-        comp_med.append({"dia": d.day, "realizado": real, "projetado": p_med})
-
-    qtd_proj_reg = qtd_mtd + float(pred_reg.sum() if len(pred_reg) else 0.0)
-    qtd_proj_med = qtd_mtd + float(pred_med.sum() if len(pred_med) else 0.0)
-
-    # Ticket médio dos 30 dias anteriores à projeção (estoque muda constantemente)
-    fim_ticket = hoje - timedelta(days=1)
-    inicio_ticket = hoje - timedelta(days=30)
-    qtd_30 = float(sum(mapa_real.get(inicio_ticket + timedelta(days=i), 0.0) for i in range(30)))
-    vgv_30 = float(sum(mapa_vgv.get(inicio_ticket + timedelta(days=i), 0.0) for i in range(30)))
-    ticket_medio = (vgv_30 / qtd_30) if qtd_30 > 0 else 0.0
+    ticket_medio = (vgv_mtd / qtd_mtd) if qtd_mtd > 0 else 0.0
     if ticket_medio <= 0:
         q_tr = float(treino["qtd"].sum())
         v_tr = float(treino["vgv"].sum())
         ticket_medio = (v_tr / q_tr) if q_tr > 0 else 0.0
 
-    rest_reg = qtd_proj_reg - qtd_mtd
-    rest_med = qtd_proj_med - qtd_mtd
-    vgv_proj_reg = vgv_mtd + rest_reg * ticket_medio
-    vgv_proj_med = vgv_mtd + rest_med * ticket_medio
-    pct_vgv_reg = (vgv_proj_reg / meta_vgv_mes * 100.0) if meta_vgv_mes and meta_vgv_mes > 0 else 0.0
-    pct_vgv_med = (vgv_proj_med / meta_vgv_mes * 100.0) if meta_vgv_mes and meta_vgv_mes > 0 else 0.0
+    vgv_projetado = vgv_mtd + (qtd_projetada_restante * ticket_medio)
+    pct_vgv = (vgv_projetado / meta_vgv_mes * 100.0) if meta_vgv_mes and meta_vgv_mes > 0 else 0.0
 
+    # Ritmo necessário para bater a meta de QTD: distribui o gap restante
+    # pelos dias futuros com pesos da regressão (dia do mês / semana / mês).
     meta_qtd = float(meta_qtd_mes or 0.0)
     gap_qtd = max(0.0, meta_qtd - qtd_mtd)
+    ritmo_diario: List[Dict[str, Any]] = []
+    ritmo_acum: List[Dict[str, Any]] = []
 
-    ritmo_reg_d, ritmo_reg_a = _distribuir_gap_por_pesos(
-        gap_qtd, pred_reg, dias_futuros, qtd_mtd, hoje.day, arredondar_cima=True
-    )
-    ritmo_med_d, ritmo_med_a = _distribuir_gap_por_pesos(
-        gap_qtd, pred_med, dias_futuros, qtd_mtd, hoje.day, arredondar_cima=True
-    )
+    if dias_futuros:
+        pesos = np.asarray(pred_futuro, dtype=float)
+        pesos = np.maximum(pesos, 0.0)
+        soma_pesos = float(pesos.sum())
+        if soma_pesos <= 1e-9:
+            pesos = np.ones(len(dias_futuros), dtype=float)
+            soma_pesos = float(len(dias_futuros))
+        frac = pesos / soma_pesos
+        necessario_dia = gap_qtd * frac
+    else:
+        necessario_dia = np.array([])
 
-    diaria_reg, acum_reg = _series_atingido_projetado(
-        dias_passados, dias_futuros, mapa_real, pred_reg
-    )
-    diaria_med, acum_med = _series_atingido_projetado(
-        dias_passados, dias_futuros, mapa_real, pred_med
-    )
+    # Acumulado necessário: parte do MTD atual e sobe até a meta
+    ritmo_acum.append({"dia": hoje.day, "acum": qtd_mtd})
+    running_meta = qtd_mtd
+    for i, d in enumerate(dias_futuros):
+        nec = float(necessario_dia[i]) if i < len(necessario_dia) else 0.0
+        ritmo_diario.append({"dia": d.day, "qtd": nec})
+        running_meta += nec
+        ritmo_acum.append({"dia": d.day, "acum": running_meta})
 
-    intensidade_resumo = float(np.mean(list(intensidades_fim.values()))) if intensidades_fim else 1.0
+    qtd_diaria_plot = []
+    for d in dias_passados:
+        qtd_diaria_plot.append({"dia": d.day, "qtd": mapa_real.get(d, 0.0), "tipo": "Atingida"})
+    for i, d in enumerate(dias_futuros):
+        qtd_diaria_plot.append({"dia": d.day, "qtd": float(pred_futuro[i]), "tipo": "Projetada"})
+
+    acum = []
+    running = 0.0
+    for d in dias_passados:
+        running += mapa_real.get(d, 0.0)
+        acum.append({"dia": d.day, "acum": running, "tipo": "Atingida"})
+    for i, d in enumerate(dias_futuros):
+        running += float(pred_futuro[i])
+        acum.append({"dia": d.day, "acum": running, "tipo": "Projetada"})
+
+    X_tr_r2 = _r2_treino(treino, modelo)
 
     return {
         "hoje": hoje,
         "inicio_treino": inicio,
         "fim_treino": fim_treino,
-        "incluir_mes": incluir_mes,
         "qtd_mtd": qtd_mtd,
         "vgv_mtd": vgv_mtd,
-        "ticket_medio": ticket_medio,
-        "inicio_ticket_30d": inicio_ticket,
-        "fim_ticket_30d": fim_ticket,
-        "ultimo_dia": ultimo_dia,
+        "qtd_projetada_mes": qtd_projetada_mes,
+        "vgv_projetado": vgv_projetado,
+        "pct_vgv_meta": pct_vgv,
         "meta_vgv_mes": meta_vgv_mes,
         "meta_qtd_mes": meta_qtd,
         "gap_qtd_meta": gap_qtd,
-        "r2_treino": _r2_treino(treino, modelo, incluir_mes=incluir_mes),
-        "medias": medias,
-        "intensidades_fim_mes": intensidades_fim,
-        "intensidade_fim_mes": intensidade_resumo,
-        "qtd_projetada_mes": qtd_proj_reg,
-        "vgv_projetado": vgv_proj_reg,
-        "pct_vgv_meta": pct_vgv_reg,
-        "diaria": diaria_reg,
-        "acumulado": acum_reg,
-        "ritmo_meta_diario": ritmo_reg_d,
-        "ritmo_meta_acum": ritmo_reg_a,
-        "qtd_projetada_medias": qtd_proj_med,
-        "vgv_projetado_medias": vgv_proj_med,
-        "pct_vgv_medias": pct_vgv_med,
-        "diaria_medias": diaria_med,
-        "acumulado_medias": acum_med,
-        "ritmo_meta_diario_medias": ritmo_med_d,
-        "ritmo_meta_acum_medias": ritmo_med_a,
-        "comparativo_diario_reg": pd.DataFrame(comp_reg),
-        "comparativo_diario_medias": pd.DataFrame(comp_med),
+        "ticket_medio": ticket_medio,
+        "ultimo_dia": ultimo_dia,
+        "diaria": pd.DataFrame(qtd_diaria_plot),
+        "acumulado": pd.DataFrame(acum),
+        "ritmo_meta_diario": pd.DataFrame(ritmo_diario),
+        "ritmo_meta_acum": pd.DataFrame(ritmo_acum),
+        "r2_treino": X_tr_r2,
     }
 
 
-def _plot_projecao_mes(
-    titulo: str,
-    caption: str,
-    proj: Dict[str, Any],
-    diaria: pd.DataFrame,
-    acumulado: pd.DataFrame,
-) -> None:
-    """Gráfico de projeção: realizado até hoje + projetado a partir de amanhã (sem meta)."""
-    st.markdown(f"##### {titulo}")
-    if caption:
-        st.caption(caption)
+def render_projecao_vendas(proj: Dict[str, Any]) -> None:
+    """Seção Streamlit: cartões + gráfico atingido vs projetado."""
+    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
+    st.subheader("Projeção de Vendas")
+    st.caption(
+        f"R² {proj['r2_treino']:.2f} · "
+        f"MTD {fmt_qtd(proj['qtd_mtd'])} · "
+        f"meta {fmt_qtd(proj.get('meta_qtd_mes', 0))} · "
+        f"faltam {fmt_qtd(proj.get('gap_qtd_meta', 0))}"
+    )
 
+    st.markdown(
+        f"""
+        <div class="vel-kpi-row">
+            <div class="vel-kpi">
+                <div class="lbl">Qtd. vendas (projetada)</div>
+                <div class="val">{fmt_qtd(proj['qtd_projetada_mes'])}</div>
+            </div>
+            <div class="vel-kpi">
+                <div class="lbl">VGV vendas (projetado)</div>
+                <div class="val val--red">{fmt_br_milhoes(proj['vgv_projetado'])}</div>
+            </div>
+            <div class="vel-kpi">
+                <div class="lbl">% VGV atingido (proj. vs meta)</div>
+                <div class="val">{proj['pct_vgv_meta']:.1f}%</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    df_d = proj["diaria"]
+    df_a = proj["acumulado"]
     dia_hoje = proj["hoje"].day
-    ating_d = diaria[diaria["tipo"] == "Atingida"] if not diaria.empty else diaria
-    proj_d = diaria[diaria["tipo"] == "Projetada"] if not diaria.empty else diaria
-    ating_a = acumulado[acumulado["tipo"] == "Atingida"] if not acumulado.empty else acumulado
-    proj_a = acumulado[acumulado["tipo"] == "Projetada"] if not acumulado.empty else acumulado
+    df_ritmo = proj.get("ritmo_meta_diario", pd.DataFrame())
+    df_ritmo_acum = proj.get("ritmo_meta_acum", pd.DataFrame())
+
+    ating_d = df_d[df_d["tipo"] == "Atingida"]
+    proj_d = df_d[df_d["tipo"] == "Projetada"]
+    ating_a = df_a[df_a["tipo"] == "Atingida"]
+    proj_a = df_a[df_a["tipo"] == "Projetada"]
 
     fig = make_subplots(specs=[[{"secondary_y": True}]])
 
-    if not ating_d.empty:
-        fig.add_trace(
-            go.Bar(
-                x=ating_d["dia"], y=ating_d["qtd"], name="Realizado (dia)",
-                marker_color=COR_AZUL_ESC, opacity=0.85,
-            ),
-            secondary_y=False,
-        )
+    fig.add_trace(
+        go.Bar(
+            x=ating_d["dia"],
+            y=ating_d["qtd"],
+            name="Atingida (dia)",
+            marker_color=COR_AZUL_ESC,
+            opacity=0.85,
+        ),
+        secondary_y=False,
+    )
     if not proj_d.empty:
         fig.add_trace(
             go.Bar(
-                x=proj_d["dia"], y=proj_d["qtd"], name="Projetado (dia)",
+                x=proj_d["dia"],
+                y=proj_d["qtd"],
+                name="Projetada (dia)",
                 marker_color="rgba(203, 9, 53, 0.45)",
             ),
             secondary_y=False,
         )
 
-    if not ating_a.empty:
+    # Ritmo diário necessário para bater a meta de quantidade (pesos sazonais)
+    if df_ritmo is not None and not df_ritmo.empty:
         fig.add_trace(
             go.Scatter(
-                x=ating_a["dia"], y=ating_a["acum"], mode="lines+markers",
-                name="Acumulado realizado",
-                line=dict(color=COR_AZUL_ESC, width=3), marker=dict(size=7),
+                x=df_ritmo["dia"],
+                y=df_ritmo["qtd"],
+                mode="lines+markers",
+                name="Ritmo meta",
+                line=dict(color="#0f766e", width=3),
+                marker=dict(size=7, symbol="diamond", color="#0f766e"),
             ),
-            secondary_y=True,
+            secondary_y=False,
         )
+
+    fig.add_trace(
+        go.Scatter(
+            x=ating_a["dia"],
+            y=ating_a["acum"],
+            mode="lines+markers",
+            name="Acumulado atingido",
+            line=dict(color=COR_AZUL_ESC, width=3),
+            marker=dict(size=7),
+        ),
+        secondary_y=True,
+    )
     if not proj_a.empty:
         x_proj = [dia_hoje] + proj_a["dia"].tolist()
         y_proj = [float(ating_a["acum"].iloc[-1]) if not ating_a.empty else 0.0] + proj_a["acum"].tolist()
         fig.add_trace(
             go.Scatter(
-                x=x_proj, y=y_proj, mode="lines+markers",
+                x=x_proj,
+                y=y_proj,
+                mode="lines+markers",
                 name="Acumulado projetado",
                 line=dict(color=COR_VERMELHO, width=3, dash="dash"),
                 marker=dict(size=7, color=COR_VERMELHO),
@@ -1515,405 +1553,58 @@ def _plot_projecao_mes(
             secondary_y=True,
         )
 
-    fig.add_vline(
-        x=dia_hoje, line_width=1, line_dash="dot", line_color="#64748b",
-        annotation_text="Hoje", annotation_position="top",
-        annotation_font=dict(color=COR_TEXTO_PRETO, size=11, family="Inter"),
-    )
-    fig.update_layout(
-        barmode="group",
-        margin=dict(l=20, r=20, t=40, b=20),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="Inter", color=COR_TEXTO_PRETO),
-        legend=dict(
-            orientation="h", yanchor="bottom", y=1.08, xanchor="center", x=0.5,
-            font=dict(color=COR_TEXTO_PRETO, family="Inter", size=12),
-        ),
-        hovermode="x unified",
-        height=420,
-    )
-    fig.update_xaxes(
-        title_text="Dia do mês",
-        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
-        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
-        dtick=1,
-        range=[0.5, proj["ultimo_dia"] + 0.5],
-    )
-    fig.update_yaxes(
-        title_text="Qtd. no dia",
-        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
-        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
-        secondary_y=False,
-        showgrid=False,
-    )
-    fig.update_yaxes(
-        title_text="Qtd. acumulada",
-        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
-        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
-        secondary_y=True,
-        showgrid=True,
-        gridcolor="rgba(226,232,240,0.5)",
-    )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-
-def _plot_meta_diaria_integrada(proj: Dict[str, Any]) -> None:
-    """
-    Um único gráfico com 3 linhas (somente diário, sem acumulado):
-      1) Realizado até hoje
-      2) Meta diária (regressão) a partir de amanhã
-      3) Meta diária (médias) a partir de amanhã
-    """
-    ints = proj.get("intensidades_fim_mes") or {}
-    st.caption(
-        " · ".join(f"Sazonalidade {j}d: {float(ints.get(j, 1)):.2f}x" for j in JANELAS_FIM_MES)
-    )
-
-    dia_hoje = proj["hoje"].day
-    diaria = proj.get("diaria", pd.DataFrame())
-    ating_d = (
-        diaria[diaria["tipo"] == "Atingida"]
-        if (not diaria.empty and "tipo" in diaria.columns)
-        else pd.DataFrame()
-    )
-    ritmo_reg = proj.get("ritmo_meta_diario", pd.DataFrame())
-    ritmo_med = proj.get("ritmo_meta_diario_medias", pd.DataFrame())
-
-    fig = go.Figure()
-
-    if not ating_d.empty:
-        textos_real = [fmt_qtd(float(v)) for v in ating_d["qtd"]]
+    if df_ritmo_acum is not None and not df_ritmo_acum.empty:
         fig.add_trace(
             go.Scatter(
-                x=ating_d["dia"],
-                y=ating_d["qtd"],
-                mode="lines+markers+text",
-                name="Realizado até hoje",
-                text=textos_real,
-                textposition="top center",
-                textfont=dict(size=10, color=COR_AZUL_ESC, family="Inter"),
-                line=dict(color=COR_AZUL_ESC, width=3),
-                marker=dict(size=8, color=COR_AZUL_ESC),
-            )
-        )
-
-    if ritmo_reg is not None and not ritmo_reg.empty:
-        textos_reg = [fmt_qtd(float(v)) for v in ritmo_reg["qtd"]]
-        fig.add_trace(
-            go.Scatter(
-                x=ritmo_reg["dia"],
-                y=ritmo_reg["qtd"],
-                mode="lines+markers+text",
-                name="Meta diária (regressão)",
-                text=textos_reg,
-                textposition="top center",
-                textfont=dict(size=10, color=COR_VERMELHO, family="Inter"),
-                line=dict(color=COR_VERMELHO, width=3),
-                marker=dict(size=8, color=COR_VERMELHO),
-            )
-        )
-
-    if ritmo_med is not None and not ritmo_med.empty:
-        textos_med = [fmt_qtd(float(v)) for v in ritmo_med["qtd"]]
-        fig.add_trace(
-            go.Scatter(
-                x=ritmo_med["dia"],
-                y=ritmo_med["qtd"],
-                mode="lines+markers+text",
-                name="Meta diária (médias)",
-                text=textos_med,
-                textposition="bottom center",
-                textfont=dict(size=10, color="#0f766e", family="Inter"),
-                line=dict(color="#0f766e", width=3, dash="dash"),
-                marker=dict(size=8, symbol="diamond", color="#0f766e"),
-            )
-        )
-
-    fig.add_vline(
-        x=dia_hoje, line_width=1, line_dash="dot", line_color="#64748b",
-        annotation_text="Hoje", annotation_position="top",
-        annotation_font=dict(color=COR_TEXTO_PRETO, size=11, family="Inter"),
-    )
-    fig.update_layout(
-        margin=dict(l=20, r=20, t=50, b=20),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="Inter", color=COR_TEXTO_PRETO),
-        legend=dict(
-            orientation="h", yanchor="bottom", y=1.10, xanchor="center", x=0.5,
-            font=dict(color=COR_TEXTO_PRETO, family="Inter", size=12),
-        ),
-        hovermode="x unified",
-        height=460,
-    )
-    fig.update_xaxes(
-        title_text="Dia do mês",
-        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
-        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
-        dtick=1,
-        range=[0.5, proj["ultimo_dia"] + 0.5],
-    )
-    fig.update_yaxes(
-        title_text="Qtd. no dia",
-        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
-        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
-        showgrid=True,
-        gridcolor="rgba(226,232,240,0.5)",
-    )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-
-def _plot_comparativo_realizado_projetado(proj: Dict[str, Any]) -> None:
-    """Gráfico: projetado × realizado por dia no mês atual (regressão e médias)."""
-    st.markdown("##### Projetado × realizado por dia (mês atual)")
-
-    dia_hoje = proj["hoje"].day
-    df_reg = proj.get("comparativo_diario_reg", pd.DataFrame())
-    df_med = proj.get("comparativo_diario_medias", pd.DataFrame())
-    if (df_reg is None or df_reg.empty) and (df_med is None or df_med.empty):
-        st.info("Sem dados para o comparativo diário.")
-        return
-
-    fig = go.Figure()
-
-    # Realizado (uma série; igual em reg e médias)
-    base = df_reg if (df_reg is not None and not df_reg.empty) else df_med
-    real = base.dropna(subset=["realizado"]) if "realizado" in base.columns else pd.DataFrame()
-    if not real.empty:
-        textos_real = [fmt_qtd(float(v)) for v in real["realizado"]]
-        fig.add_trace(
-            go.Scatter(
-                x=real["dia"],
-                y=real["realizado"],
-                mode="lines+markers+text",
-                name="Realizado",
-                text=textos_real,
-                textposition="top center",
-                textfont=dict(size=10, color=COR_AZUL_ESC, family="Inter"),
-                line=dict(color=COR_AZUL_ESC, width=3),
-                marker=dict(size=8, color=COR_AZUL_ESC),
-            )
-        )
-
-    if df_reg is not None and not df_reg.empty:
-        textos_reg = [fmt_qtd(float(v)) for v in df_reg["projetado"]]
-        fig.add_trace(
-            go.Scatter(
-                x=df_reg["dia"],
-                y=df_reg["projetado"],
-                mode="lines+markers+text",
-                name="Projetado (regressão)",
-                text=textos_reg,
-                textposition="bottom center",
-                textfont=dict(size=10, color=COR_VERMELHO, family="Inter"),
-                line=dict(color=COR_VERMELHO, width=3, dash="dash"),
-                marker=dict(size=8, color=COR_VERMELHO),
-            )
-        )
-
-    if df_med is not None and not df_med.empty:
-        textos_med = [fmt_qtd(float(v)) for v in df_med["projetado"]]
-        fig.add_trace(
-            go.Scatter(
-                x=df_med["dia"],
-                y=df_med["projetado"],
-                mode="lines+markers+text",
-                name="Projetado (médias)",
-                text=textos_med,
-                textposition="top center",
-                textfont=dict(size=10, color="#0f766e", family="Inter"),
+                x=df_ritmo_acum["dia"],
+                y=df_ritmo_acum["acum"],
+                mode="lines+markers",
+                name="Acum. meta",
                 line=dict(color="#0f766e", width=3, dash="dot"),
-                marker=dict(size=8, symbol="diamond", color="#0f766e"),
-            )
+                marker=dict(size=6, color="#0f766e"),
+            ),
+            secondary_y=True,
+        )
+
+    meta_qtd = float(proj.get("meta_qtd_mes") or 0.0)
+    if meta_qtd > 0:
+        fig.add_hline(
+            y=meta_qtd,
+            line_width=1.5,
+            line_dash="dash",
+            line_color="#0f766e",
+            annotation_text=f"Meta QTD ({fmt_qtd(meta_qtd)})",
+            annotation_position="top left",
+            secondary_y=True,
         )
 
     fig.add_vline(
-        x=dia_hoje, line_width=1, line_dash="dot", line_color="#64748b",
-        annotation_text="Hoje", annotation_position="top",
-        annotation_font=dict(color=COR_TEXTO_PRETO, size=11, family="Inter"),
+        x=dia_hoje,
+        line_width=1,
+        line_dash="dot",
+        line_color=COR_TEXTO_MUTED,
+        annotation_text="Hoje",
+        annotation_position="top",
     )
+
     fig.update_layout(
-        margin=dict(l=20, r=20, t=50, b=20),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="Inter", color=COR_TEXTO_PRETO),
-        legend=dict(
-            orientation="h", yanchor="bottom", y=1.10, xanchor="center", x=0.5,
-            font=dict(color=COR_TEXTO_PRETO, family="Inter", size=12),
-        ),
-        hovermode="x unified",
-        height=460,
-    )
-    fig.update_xaxes(
-        title_text="Dia do mês",
-        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
-        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
-        dtick=1,
-        range=[0.5, proj["ultimo_dia"] + 0.5],
-    )
-    fig.update_yaxes(
-        title_text="Qtd. no dia",
-        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
-        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
-        showgrid=True,
-        gridcolor="rgba(226,232,240,0.5)",
-    )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-
-
-def render_projecao_vendas(
-    proj: Dict[str, Any],
-    titulo: Optional[str] = None,
-) -> None:
-    """Seção Streamlit: cartões + gráficos de projeção e gráfico único de meta diária."""
-    incluir_mes = bool(proj.get("incluir_mes", True))
-    if titulo is None:
-        titulo = (
-            "Projeção de Vendas"
-            if incluir_mes
-            else "Projeção de Vendas (sem efeito de mês)"
-        )
-
-    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
-    st.subheader(titulo)
-
-    st.markdown(
-        f"""
-        <div class="vel-kpi-row">
-            <div class="vel-kpi">
-                <div class="lbl">Qtd. (regressão)</div>
-                <div class="val">{fmt_qtd(proj['qtd_projetada_mes'])}</div>
-            </div>
-            <div class="vel-kpi">
-                <div class="lbl">Qtd. (médias)</div>
-                <div class="val">{fmt_qtd(proj.get('qtd_projetada_medias', 0))}</div>
-            </div>
-            <div class="vel-kpi">
-                <div class="lbl">VGV (regressão)</div>
-                <div class="val val--red">{fmt_br_milhoes(proj['vgv_projetado'])}</div>
-            </div>
-            <div class="vel-kpi">
-                <div class="lbl">VGV (médias)</div>
-                <div class="val val--red">{fmt_br_milhoes(proj.get('vgv_projetado_medias', 0))}</div>
-            </div>
-            <div class="vel-kpi">
-                <div class="lbl">% VGV reg. / médias</div>
-                <div class="val">{proj['pct_vgv_meta']:.1f}% / {proj.get('pct_vgv_medias', 0):.1f}%</div>
-            </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    _plot_projecao_mes(
-        "Projeção por regressão",
-        f"R² treino: {proj['r2_treino']:.2f}",
-        proj,
-        proj["diaria"],
-        proj["acumulado"],
-    )
-
-    med = proj.get("medias") or {}
-    mu = float(med.get("mu") or 0.0)
-    _plot_projecao_mes(
-        "Projeção por médias sazonais",
-        f"μ: {mu:.2f}",
-        proj,
-        proj.get("diaria_medias", pd.DataFrame()),
-        proj.get("acumulado_medias", pd.DataFrame()),
-    )
-
-    st.markdown("<br/>", unsafe_allow_html=True)
-    _plot_comparativo_realizado_projetado(proj)
-
-    st.markdown("<br/>", unsafe_allow_html=True)
-    st.subheader(
-        "Meta diária para bater a quantidade"
-        if incluir_mes
-        else "Meta diária para bater a quantidade (sem efeito de mês)"
-    )
-    _plot_meta_diaria_integrada(proj)
-
-
-def _plot_barra_efeitos(
-    titulo: str,
-    df: pd.DataFrame,
-    cor: str,
-    referencia: str,
-) -> None:
-    """Barra de efeitos relativos (índice; referência = 1.0)."""
-    st.markdown(f"##### {titulo}")
-    st.caption(f"Referência: {referencia} = 1,00")
-    if df is None or df.empty:
-        return
-
-    textos = [f"{float(v):.2f}" for v in df["indice"]]
-    cores = [COR_TEXTO_PRETO if abs(float(v) - 1.0) < 1e-9 else cor for v in df["indice"]]
-
-    fig = go.Figure(
-        go.Bar(
-            x=df["categoria"],
-            y=df["indice"],
-            text=textos,
-            textposition="outside",
-            textfont=dict(size=10, color=COR_TEXTO_PRETO, family="Inter"),
-            marker_color=cores,
-            name="Índice",
-            hovertemplate="%{x}<br>Índice: %{y:.2f}<br>Efeito (qtd): %{customdata:.2f}<extra></extra>",
-            customdata=df["efeito"],
-        )
-    )
-    fig.add_hline(
-        y=1.0, line_width=1, line_dash="dot", line_color="#64748b",
-        annotation_text="Ref. = 1", annotation_position="top left",
-        annotation_font=dict(color=COR_TEXTO_PRETO, size=10),
-    )
-    fig.update_layout(
+        barmode="overlay",
         margin=dict(l=20, r=20, t=40, b=20),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
-        font=dict(family="Inter", color=COR_TEXTO_PRETO),
-        showlegend=False,
-        height=360,
-        bargap=0.25,
+        font=dict(family="Inter", color=COR_TEXTO_LABEL),
+        legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="center", x=0.5),
+        hovermode="x unified",
+        height=440,
     )
-    fig.update_xaxes(
-        title_text="",
-        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
-        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter", size=11),
-    )
-    fig.update_yaxes(
-        title_text="Índice (ref. = 1)",
-        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
-        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
-        showgrid=True,
-        gridcolor="rgba(226,232,240,0.5)",
-    )
+    fig.update_xaxes(title_text="Dia do mês", dtick=1, range=[0.5, proj["ultimo_dia"] + 0.5])
+    fig.update_yaxes(title_text="Qtd. no dia", secondary_y=False, showgrid=False)
+    fig.update_yaxes(title_text="Qtd. acumulada", secondary_y=True, showgrid=True, gridcolor="rgba(226,232,240,0.5)")
+
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
-def render_efeitos_sazonais(efeitos: Dict[str, Any]) -> None:
-    """Seção: efeitos de dia da semana, dia do mês e mês (relativos à referência)."""
-    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
-    st.subheader("Efeitos sazonais (regressão)")
-    st.caption(
-        f"R²: {float(efeitos.get('r2', 0)):.2f} · "
-        f"Baseline (segunda + dia 1 + janeiro): {float(efeitos.get('intercepto', 0)):.2f} vendas/dia"
-    )
 
-    _plot_barra_efeitos(
-        "Efeito de dia da semana",
-        efeitos.get("dia_semana", pd.DataFrame()),
-        COR_AZUL_ESC,
-        "segunda-feira",
-    )
-    _plot_barra_efeitos(
-        "Efeito de dia do mês",
-        efeitos.get("dia_mes", pd.DataFrame()),
-        COR_VERMELHO,
-        "dia 1",
-    )
     _plot_barra_efeitos(
         "Efeito de mês",
         efeitos.get("mes", pd.DataFrame()),
@@ -2190,7 +1881,7 @@ def deduplicar_vendas_funil(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def deduplicar_pastas_funil(df: pd.DataFrame) -> pd.DataFrame:
-    """Uma linha por Nome da Avaliação de crédito (Data da Análise mais recente)."""
+    """Uma linha por Nome da Avaliação de crédito (Data Criação Pasta mais recente)."""
     return deduplicar_por_chave_mais_recente(
         df, ALIASES_NOME_AVALIACAO_CREDITO, COLUNAS_PASTAS_ALIASES
     )
@@ -2213,13 +1904,13 @@ def montar_mapa_funil_diario(
     Séries diárias do funil:
       agendamentos ← Data de criação
       visitas ← Data da visita
-      pastas ← Data da Análise
+      pastas ← Data Criação Pasta
       pastas_aprovadas ← Data Aprovação SAFI
       vendas ← Contrato gerado em (relatório SF ou série agregada)
 
     Deduplicação antes da contagem:
       vendas → ID da Oportunidade (Contrato gerado em mais recente)
-      pastas → Nome da Avaliação de crédito (Data da Análise mais recente)
+      pastas → Nome da Avaliação de crédito (Data Criação Pasta mais recente)
       pastas aprovadas → Nome da Avaliação (Data Aprovação SAFI mais recente)
       agendamentos → Código do agendamento (Data de criação mais recente)
     """
@@ -2727,19 +2418,93 @@ def _atualizar_lags_linha(cal: pd.DataFrame, i: int, lags: Tuple[int, ...]) -> N
                 cal.at[i, f"{etapa}_lag{L}"] = float(cal.at[j, etapa]) if j >= 0 else 0.0
 
 
+def _suavizar_efeitos_lag(efeitos: List[float], janela: int = 3) -> np.ndarray:
+    """Média móvel centrada para reduzir picos espúrios em lags longos."""
+    arr = np.asarray(efeitos, dtype=float)
+    if len(arr) == 0:
+        return arr
+    s = pd.Series(arr)
+    out = s.rolling(janela, center=True, min_periods=1).mean().values
+    return np.asarray(out, dtype=float)
+
+
+def _resumo_perfil_lag(df_p: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Extrai pico e meia-vida de forma estável:
+      - suaviza efeitos
+      - pico = maior efeito positivo suavizado (desempate: lag menor)
+      - centro de massa dos efeitos positivos (tempo típico)
+      - meia-vida = 50% do acúmulo positivo suavizado
+    """
+    efeitos = df_p["efeito"].astype(float).values
+    lags = df_p["lag"].astype(int).values
+    suav = _suavizar_efeitos_lag(list(efeitos), janela=3)
+    df = df_p.copy()
+    df["efeito_suav"] = suav
+    df["acumulado"] = df["efeito"].cumsum()
+    df["acumulado_suav"] = df["efeito_suav"].cumsum()
+
+    pos = df[df["efeito_suav"] > 0]
+    if not pos.empty:
+        max_e = float(pos["efeito_suav"].max())
+        # candidatos próximos do máximo (≥60%) — pega o lag mais cedo
+        cand = pos[pos["efeito_suav"] >= 0.60 * max_e]
+        i_peak = int(cand.sort_values(["lag", "efeito_suav"], ascending=[True, False]).index[0])
+        # centro de massa dos positivos suavizados
+        w = pos["efeito_suav"].astype(float).values
+        L = pos["lag"].astype(float).values
+        centro = float(np.average(L, weights=w)) if float(w.sum()) > 1e-12 else float(pos["lag"].iloc[0])
+    else:
+        i_peak = int(df["efeito_suav"].abs().idxmax())
+        centro = float(df.loc[i_peak, "lag"])
+
+    lag_pico = int(df.loc[i_peak, "lag"])
+    efeito_pico = float(df.loc[i_peak, "efeito_suav"])
+    acum_pos = float(pos["efeito_suav"].sum()) if not pos.empty else 0.0
+
+    lag_meia = lag_pico
+    if acum_pos > 1e-9:
+        running = 0.0
+        lag_meia = int(df["lag"].iloc[-1])
+        for _, r in df.iterrows():
+            e = float(r["efeito_suav"])
+            if e > 0:
+                running += e
+                if running >= 0.5 * acum_pos:
+                    lag_meia = int(r["lag"])
+                    break
+
+    # Tempo reportado: mistura pico cedo + centro de massa (mais estável que max bruto)
+    lag_reportado = int(round(0.35 * lag_pico + 0.65 * centro))
+    lag_reportado = int(np.clip(lag_reportado, int(lags.min()), int(lags.max())))
+
+    return {
+        "lag_pico": lag_reportado,
+        "lag_pico_bruto": lag_pico,
+        "lag_centro": float(centro),
+        "efeito_pico": efeito_pico,
+        "lag_meia_vida": lag_meia,
+        "efeito_lag0": float(df.loc[df["lag"] == 1, "efeito"].iloc[0]) if (df["lag"] == 1).any() else 0.0,
+        "efeito_acum": float(df["efeito"].sum()),
+        "df": df,
+    }
+
+
 def estimar_efeitos_lags_sobre_vendas(
     treino: pd.DataFrame,
     lags: Tuple[int, ...] = FUNIL_LAGS_PERFIL,
     incluir_mes: bool = True,
 ) -> Optional[Dict[str, Any]]:
     """
-    OLS: vendas ~ calendário + lags 1..30 de agendamentos/visitas/pastas/pastas_aprovadas.
-    Mostra quanto tempo cada variável demora para afetar vendas.
+    Perfil de tempo até o efeito nas vendas, por etapa.
+
+    Estima CADA driver em modelo separado (calendário + lags só daquela etapa)
+    para evitar colinearidade agendamentos↔visitas empurrar o pico para lags
+    longos espúrios (ex.: visitas em 28d).
     """
     if treino.empty or float(treino["vendas"].sum()) <= 0 or len(treino) < 40:
         return None
 
-    # Garante colunas de lag do perfil
     cal = treino.copy()
     for etapa in FUNIL_DRIVERS:
         if etapa not in cal.columns:
@@ -2749,24 +2514,26 @@ def estimar_efeitos_lags_sobre_vendas(
             if col not in cal.columns:
                 cal[col] = cal[etapa].shift(L).fillna(0.0)
 
-    X, lag_cols = _matriz_funil_explicativas(
-        cal,
-        incluir_mes=incluir_mes,
-        lags=lags,
-        alvo="vendas",
-        etapas_lag=FUNIL_DRIVERS,
-        modelo_vendas_completo=False,
-        efeitos_cruzados=False,
-    )
     y = cal["vendas"].astype(float).values
-    coef, *_ = np.linalg.lstsq(X, y, rcond=None)
-
-    n_cal = X.shape[1] - len(lag_cols) - 1
-    coef_lags = coef[n_cal:n_cal + len(lag_cols)]
-
     perfis: Dict[str, pd.DataFrame] = {}
     resumo: List[Dict[str, Any]] = []
+    r2s_etapa: Dict[str, float] = {}
+
     for etapa in FUNIL_DRIVERS:
+        # Modelo univariado: só lags desta etapa (+ calendário)
+        X, lag_cols = _matriz_funil_explicativas(
+            cal,
+            incluir_mes=incluir_mes,
+            lags=lags,
+            alvo="vendas",
+            etapas_lag=(etapa,),
+            modelo_vendas_completo=False,
+            efeitos_cruzados=False,
+        )
+        coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+        n_cal = X.shape[1] - len(lag_cols) - 1
+        coef_lags = coef[n_cal:n_cal + len(lag_cols)]
+
         efeitos = []
         for L in lags:
             col = f"{etapa}_lag{L}"
@@ -2775,49 +2542,37 @@ def estimar_efeitos_lags_sobre_vendas(
             else:
                 efeitos.append(0.0)
         df_p = pd.DataFrame({"lag": list(lags), "efeito": efeitos})
-        df_p["acumulado"] = df_p["efeito"].cumsum()
-        perfis[etapa] = df_p
+        info = _resumo_perfil_lag(df_p)
+        perfis[etapa] = info.pop("df")
 
-        # Lag de pico (maior |efeito|); preferir efeito positivo se houver
-        pos = df_p[df_p["efeito"] > 0]
-        if not pos.empty:
-            i_peak = int(pos["efeito"].idxmax())
-        else:
-            i_peak = int(df_p["efeito"].abs().idxmax())
-        lag_pico = int(df_p.loc[i_peak, "lag"])
-        efeito_pico = float(df_p.loc[i_peak, "efeito"])
-        acum_pos = float(df_p.loc[df_p["efeito"] > 0, "efeito"].sum()) if (df_p["efeito"] > 0).any() else 0.0
-        # dias até ~50% do efeito positivo acumulado
-        lag_meia = lag_pico
-        if acum_pos > 1e-9:
-            running = 0.0
-            lag_meia = int(df_p["lag"].iloc[-1])
-            for _, r in df_p.iterrows():
-                if float(r["efeito"]) > 0:
-                    running += float(r["efeito"])
-                    if running >= 0.5 * acum_pos:
-                        lag_meia = int(r["lag"])
-                        break
+        y_hat = X @ coef
+        ss_res = float(np.sum((y - y_hat) ** 2))
+        ss_tot = float(np.sum((y - y.mean()) ** 2))
+        r2s_etapa[etapa] = (1.0 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+
         resumo.append({
             "etapa": etapa,
             "label": FUNIL_LABELS.get(etapa, etapa),
-            "lag_pico": lag_pico,
-            "efeito_pico": efeito_pico,
-            "lag_meia_vida": lag_meia,
-            "efeito_lag0": float(df_p.loc[df_p["lag"] == 1, "efeito"].iloc[0]) if (df_p["lag"] == 1).any() else 0.0,
-            "efeito_acum": float(df_p["efeito"].sum()),
+            "lag_pico": int(info["lag_pico"]),
+            "lag_pico_bruto": int(info["lag_pico_bruto"]),
+            "lag_centro": float(info["lag_centro"]),
+            "efeito_pico": float(info["efeito_pico"]),
+            "lag_meia_vida": int(info["lag_meia_vida"]),
+            "efeito_lag0": float(info["efeito_lag0"]),
+            "efeito_acum": float(info["efeito_acum"]),
+            "r2": float(r2s_etapa[etapa]),
         })
 
-    y_hat = X @ coef
-    ss_res = float(np.sum((y - y_hat) ** 2))
-    ss_tot = float(np.sum((y - y.mean()) ** 2))
-    r2 = (1.0 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+    # R² médio dos modelos univariados (referência)
+    r2 = float(np.mean(list(r2s_etapa.values()))) if r2s_etapa else 0.0
 
     return {
         "r2": r2,
+        "r2s_etapa": r2s_etapa,
         "lags": lags,
         "perfis": perfis,
         "resumo": resumo,
+        "modo": "univariado_suavizado",
     }
 
 
@@ -2913,6 +2668,7 @@ def projetar_funil_mes_atual(
                 cal_med.at[i, "vendas_lag0"] = pred_m
 
     # montar resultados por etapa
+    # Projetado do mês = realizado até hoje (MTD) + projetado de amanhã ao fim do mês
     resultados: Dict[str, Any] = {}
     for etapa in FUNIL_ETAPAS:
         mtd = 0.0
@@ -2924,26 +2680,38 @@ def projetar_funil_mes_atual(
             if i is None:
                 continue
             real = float((mapas.get(etapa) or {}).get(d, 0.0)) if d <= hoje else None
-            p_reg = float(cal_reg.at[i, etapa])
-            p_med = float(cal_med.at[i, etapa])
+            # valor no calendário: realizado no passado; previsão no futuro
             if d <= hoje:
-                mtd += real or 0.0
+                val_reg_mes = float(real or 0.0)
+                val_med_mes = float(real or 0.0)
+                mtd += val_reg_mes
                 row = cal.loc[[i]]
-                p_reg = _prever_linha_reg_funil(coefs[etapa], row, incluir_mes, lags, etapa)
-                p_med = _prever_linha_medias_funil(
+                # contrafactual do modelo (só para gráfico diário comparativo)
+                p_reg_modelo = _prever_linha_reg_funil(coefs[etapa], row, incluir_mes, lags, etapa)
+                p_med_modelo = _prever_linha_medias_funil(
                     row.iloc[0], d, etapa, medias, incluir_mes
                 )
             else:
-                rest_reg += p_reg
-                rest_med += p_med
+                p_reg_modelo = float(cal_reg.at[i, etapa])
+                p_med_modelo = float(cal_med.at[i, etapa])
+                val_reg_mes = p_reg_modelo
+                val_med_mes = p_med_modelo
+                rest_reg += p_reg_modelo
+                rest_med += p_med_modelo
             diaria.append({
                 "dia": d.day,
                 "realizado": real,
-                "projetado_reg": p_reg,
-                "projetado_med": p_med,
+                "projetado_reg": p_reg_modelo,
+                "projetado_med": p_med_modelo,
+                # composição do funil/mês: real até hoje, previsão a partir de amanhã
+                "mes_reg": val_reg_mes,
+                "mes_med": val_med_mes,
             })
         resultados[etapa] = {
             "mtd": mtd,
+            "restante_reg": rest_reg,
+            "restante_med": rest_med,
+            # funil projetado do mês = MTD + restante (amanhã → fim)
             "projetado_reg": mtd + rest_reg,
             "projetado_med": mtd + rest_med,
             "r2": r2s[etapa],
@@ -2953,6 +2721,7 @@ def projetar_funil_mes_atual(
 
     totais_mtd = {e: float((resultados.get(e) or {}).get("mtd", 0)) for e in FUNIL_ETAPAS}
     totais_proj = {e: float((resultados.get(e) or {}).get("projetado_reg", 0)) for e in FUNIL_ETAPAS}
+    totais_restante = {e: float((resultados.get(e) or {}).get("restante_reg", 0)) for e in FUNIL_ETAPAS}
     totais_hist = {e: float(treino[e].sum()) for e in FUNIL_ETAPAS}
 
     # Conversões do mês (MTD / projetado) × histórico (treino: sem mês atual, até 1 ano)
@@ -2964,7 +2733,7 @@ def projetar_funil_mes_atual(
         "fim_hist": fim_treino,
     }
 
-    # Funil necessário para bater a meta de vendas (via conversões históricas indicador→venda)
+    # Funil necessário = TOTAL do mês para bater a meta (não só o complementar)
     meta_qtd = float(meta_qtd_mes or 0.0)
     gap_vendas = max(0.0, meta_qtd - totais_mtd.get("vendas", 0.0))
     taxas_hist_frac: Dict[str, Optional[float]] = {}
@@ -2973,13 +2742,14 @@ def projetar_funil_mes_atual(
         taxa = item.get("taxa")
         taxas_hist_frac[orig] = (float(taxa) / 100.0) if taxa is not None else None
 
-    funil_necessario: Dict[str, float] = {"vendas": meta_qtd if meta_qtd > 0 else totais_mtd.get("vendas", 0.0)}
+    funil_necessario: Dict[str, float] = {
+        "vendas": meta_qtd if meta_qtd > 0 else float(totais_mtd.get("vendas", 0.0)),
+    }
     for etapa in FUNIL_DRIVERS:
         t = taxas_hist_frac.get(etapa)
         if meta_qtd > 0 and t is not None and t > 1e-9:
             funil_necessario[etapa] = float(math.ceil(meta_qtd / t))
         else:
-            # fallback: proporção histórica vs vendas
             v_h = totais_hist.get("vendas", 0.0)
             i_h = totais_hist.get(etapa, 0.0)
             if meta_qtd > 0 and v_h > 0 and i_h > 0:
@@ -2987,17 +2757,14 @@ def projetar_funil_mes_atual(
             else:
                 funil_necessario[etapa] = float(totais_proj.get(etapa, 0.0))
 
-    # Gap restante por indicador:
-    # vendas faltantes ÷ conversão histórica indicador→venda
+    # Gap restante (só para metas diárias daqui pra frente)
     gap_indicadores: Dict[str, float] = {"vendas": gap_vendas}
     for etapa in FUNIL_DRIVERS:
-        t = taxas_hist_frac.get(etapa)
-        if gap_vendas > 0 and t is not None and t > 1e-9:
-            gap_indicadores[etapa] = float(math.ceil(gap_vendas / t))
-        else:
-            gap_indicadores[etapa] = max(
-                0.0, float(funil_necessario.get(etapa, 0.0)) - float(totais_mtd.get(etapa, 0.0))
-            )
+        # faltante = total necessário do mês − já realizado
+        gap_indicadores[etapa] = max(
+            0.0,
+            float(funil_necessario.get(etapa, 0.0)) - float(totais_mtd.get(etapa, 0.0)),
+        )
 
     dias_futuros = [d for d in dias_mes if d > hoje]
     metas_diarias: Dict[str, Any] = {}
@@ -3072,6 +2839,7 @@ def projetar_funil_mes_atual(
         "etapas": resultados,
         "totais_mtd": totais_mtd,
         "totais_proj": totais_proj,
+        "totais_restante": totais_restante,
         "totais_hist": totais_hist,
         "funil_necessario": funil_necessario,
         "conversoes": conversoes,
@@ -3088,7 +2856,7 @@ def _fmt_taxa_pct(taxa: Optional[float]) -> str:
 
 def _plot_funil_etapa_comparativo(etapa: str, df: pd.DataFrame, ultimo_dia: int, dia_hoje: int) -> None:
     label = FUNIL_LABELS.get(etapa, etapa)
-    st.markdown(f"##### {label}: projetado × realizado")
+    st.markdown(f"##### {label}")
     if df is None or df.empty:
         return
     fig = go.Figure()
@@ -3165,14 +2933,14 @@ def _plot_funil_etapa_comparativo(etapa: str, df: pd.DataFrame, ultimo_dia: int,
 
 
 def _render_kpi_cards(items: List[Dict[str, str]]) -> None:
-    """
-    Cards KPI em colunas Streamlit (evita HTML indentado virar bloco de código no markdown).
-    items: [{"lbl": ..., "val": ..., "sub": ...}, ...]
-    """
+    """Cards KPI em colunas Streamlit, com espaçamento entre eles."""
     if not items:
         return
     n = len(items)
-    cols = st.columns(n)
+    try:
+        cols = st.columns(n, gap="medium")
+    except TypeError:
+        cols = st.columns(n)
     for col, it in zip(cols, items):
         lbl = html.escape(str(it.get("lbl", "")))
         val = html.escape(str(it.get("val", "")))
@@ -3180,30 +2948,25 @@ def _render_kpi_cards(items: List[Dict[str, str]]) -> None:
         with col:
             st.markdown(
                 (
-                    f'<div class="vel-kpi" style="width:100%;box-sizing:border-box;">'
+                    f'<div class="vel-kpi" style="width:100%;box-sizing:border-box;'
+                    f'margin:0;min-height:100%;">'
                     f'<div class="lbl">{lbl}</div>'
                     f'<div class="val">{val}</div>'
-                    f'<div class="lbl" style="margin-top:6px;opacity:0.75;">{sub}</div>'
-                    f"</div>"
+                    + (f'<div class="lbl" style="margin-top:6px;opacity:0.75;">{sub}</div>' if sub else "")
+                    + "</div>"
                 ),
                 unsafe_allow_html=True,
             )
 
 
 def _render_conversoes_funil(conversoes: Dict[str, Any]) -> None:
-    """Conversões do mês atual × histórico (sem mês atual, até 1 ano)."""
+    """Conversões MTD × histórico."""
     if not conversoes:
         return
     mes = conversoes.get("realizado_mtd") or {}
     hist = conversoes.get("historico") or {}
-    ini = conversoes.get("inicio_hist")
-    fim = conversoes.get("fim_hist")
-    periodo = ""
-    if ini and fim:
-        periodo = f"{ini.strftime('%d/%m/%Y')} a {fim.strftime('%d/%m/%Y')}"
 
-    st.markdown("##### Conversões etapa → etapa")
-    st.caption(f"Mês atual (MTD) × histórico ({periodo or 'janela de treino'})")
+    st.markdown("##### Etapa → etapa")
     pares_m = mes.get("etapa_a_etapa") or []
     pares_h = {r["label"]: r for r in (hist.get("etapa_a_etapa") or [])}
     _render_kpi_cards([
@@ -3215,11 +2978,7 @@ def _render_conversoes_funil(conversoes: Dict[str, Any]) -> None:
         for r in pares_m
     ])
 
-    st.markdown("##### Conversões finais (indicador → venda)")
-    st.caption(
-        "Mês atual usa o funil do mês; histórico exclui o mês corrente "
-        "(até 1 ano atrás) — base das metas diárias e do funil necessário."
-    )
+    st.markdown("##### → Venda")
     fins_m = mes.get("para_venda") or []
     fins_h = {r["label"]: r for r in (hist.get("para_venda") or [])}
     _render_kpi_cards([
@@ -3240,12 +2999,12 @@ def _render_conversoes_funil(conversoes: Dict[str, Any]) -> None:
 
     fig = make_subplots(
         rows=1, cols=2,
-        subplot_titles=("Etapa → etapa", "Indicador → venda"),
-        horizontal_spacing=0.08,
+        subplot_titles=("Etapa → etapa", "→ Venda"),
+        horizontal_spacing=0.10,
     )
     fig.add_trace(
         go.Bar(
-            name="Mês atual (MTD)", x=labels_e, y=y_mes_e,
+            name="MTD", x=labels_e, y=y_mes_e,
             text=[_fmt_taxa_pct(v) for v in y_mes_e], textposition="outside",
             marker_color=COR_AZUL_ESC, textfont=dict(color=COR_TEXTO_PRETO, size=10),
             legendgroup="mes",
@@ -3254,7 +3013,7 @@ def _render_conversoes_funil(conversoes: Dict[str, Any]) -> None:
     )
     fig.add_trace(
         go.Bar(
-            name="Histórico (sem mês atual)", x=labels_e, y=y_hist_e,
+            name="Histórico", x=labels_e, y=y_hist_e,
             text=[_fmt_taxa_pct(v) for v in y_hist_e], textposition="outside",
             marker_color="#0f766e", textfont=dict(color=COR_TEXTO_PRETO, size=10),
             legendgroup="hist",
@@ -3263,7 +3022,7 @@ def _render_conversoes_funil(conversoes: Dict[str, Any]) -> None:
     )
     fig.add_trace(
         go.Bar(
-            name="Mês atual (MTD)", x=labels_f, y=y_mes_f,
+            name="MTD", x=labels_f, y=y_mes_f,
             text=[_fmt_taxa_pct(v) for v in y_mes_f], textposition="outside",
             marker_color=COR_AZUL_ESC, textfont=dict(color=COR_TEXTO_PRETO, size=10),
             legendgroup="mes", showlegend=False,
@@ -3272,7 +3031,7 @@ def _render_conversoes_funil(conversoes: Dict[str, Any]) -> None:
     )
     fig.add_trace(
         go.Bar(
-            name="Histórico (sem mês atual)", x=labels_f, y=y_hist_f,
+            name="Histórico", x=labels_f, y=y_hist_f,
             text=[_fmt_taxa_pct(v) for v in y_hist_f], textposition="outside",
             marker_color="#0f766e", textfont=dict(color=COR_TEXTO_PRETO, size=10),
             legendgroup="hist", showlegend=False,
@@ -3305,26 +3064,32 @@ def _render_conversoes_funil(conversoes: Dict[str, Any]) -> None:
 FUNIL_CORES_NIVEIS = ["#022654", "#04428f", "#1e60b3", "#cb0935", "#9e0828"]
 
 
-def _plot_funil_go(titulo: str, totais: Dict[str, float], altura: int = 350) -> None:
-    """Funil estilo marketing (go.Funnel), não barras."""
+def _plot_funil_go(titulo: str, totais: Dict[str, float], altura: int = 420) -> None:
+    """Funil estilo marketing (go.Funnel), não barras — fontes grandes."""
     labels = [FUNIL_LABELS[e] for e in FUNIL_ETAPAS]
     vals = [max(0.0, float(totais.get(e, 0.0))) for e in FUNIL_ETAPAS]
+    textos = [fmt_qtd(v) for v in vals]
     fig = go.Figure(go.Funnel(
         y=labels,
         x=vals,
-        textinfo="value",
+        text=textos,
+        textinfo="text+percent previous",
         textposition="inside",
+        textfont=dict(size=20, color="#ffffff", family="Inter"),
         marker={"color": FUNIL_CORES_NIVEIS},
         connector={"fillcolor": "rgba(4, 66, 143, 0.15)"},
+        insidetextfont=dict(size=20, color="#ffffff", family="Inter"),
+        outsidetextfont=dict(size=18, color=COR_TEXTO_PRETO, family="Inter"),
     ))
     fig.update_layout(
-        title=dict(text=titulo, font=dict(family="Inter", color=COR_TEXTO_PRETO, size=14)),
-        margin=dict(l=20, r=20, t=50, b=20),
+        title=dict(text=titulo, font=dict(family="Inter", color=COR_TEXTO_PRETO, size=18)),
+        margin=dict(l=24, r=24, t=56, b=24),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
         height=altura,
-        font=dict(family="Inter", color=COR_TEXTO_PRETO),
+        font=dict(family="Inter", color=COR_TEXTO_PRETO, size=16),
     )
+    fig.update_yaxes(tickfont=dict(size=16, color=COR_TEXTO_PRETO, family="Inter"))
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
@@ -3334,15 +3099,12 @@ def _plot_meta_diaria_indicador(
     ultimo_dia: int,
     dia_hoje: int,
 ) -> None:
-    """Realizado + meta diária (reg/médias) para bater a necessidade do indicador."""
+    """Realizado + meta diária para o indicador."""
     label = FUNIL_LABELS.get(etapa, etapa)
     gap = float(meta_info.get("gap", 0.0))
     nec = float(meta_info.get("necessario_mes", 0.0))
     st.markdown(f"##### Meta diária — {label}")
-    st.caption(
-        f"Necessário no mês: {fmt_qtd(nec)} · faltam {fmt_qtd(gap)} · "
-        "pesos = projeção diária (dia da semana / dia do mês / mês)"
-    )
+    st.caption(f"Meta mês {fmt_qtd(nec)} · faltam {fmt_qtd(gap)}")
     real = meta_info.get("realizado", pd.DataFrame())
     ritmo_reg = meta_info.get("ritmo_reg", pd.DataFrame())
     ritmo_med = meta_info.get("ritmo_med", pd.DataFrame())
@@ -3416,38 +3178,34 @@ def _plot_meta_diaria_indicador(
 
 
 def render_projecao_funil(proj: Dict[str, Any]) -> None:
-    """Seção Streamlit: 3 funis, conversões mês×histórico, metas diárias e projeções."""
+    """Funil: R², KPIs, 3 funis, conversões, metas e projeções."""
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
     st.subheader("Projeção do Funil Comercial")
-    lags = proj.get("lags") or FUNIL_LAGS
     meta_qtd = float(proj.get("meta_qtd_mes") or 0.0)
-    st.caption(
-        f"Modelos com efeitos cruzados + força de trabalho "
-        f"(o trabalho vaza entre etapas; não só cascata) · "
-        f"lags 1–{max(lags)}d"
-        + (f" · Meta vendas: {fmt_qtd(meta_qtd)}" if meta_qtd > 0 else "")
-    )
+    if meta_qtd > 0:
+        st.caption(f"Meta vendas: {fmt_qtd(meta_qtd)}")
 
     etapas = proj.get("etapas") or {}
     r2s = proj.get("r2s") or {}
     r2s_med = proj.get("r2s_medias") or {}
 
-    st.markdown("##### R² dos modelos (treino sem o mês atual)")
+    st.markdown("##### R²")
     _render_kpi_cards([
         {
             "lbl": FUNIL_LABELS.get(etapa, etapa),
-            "val": f"Reg {float(r2s.get(etapa, (etapas.get(etapa) or {}).get('r2', 0))):.2f}",
-            "sub": f"Médias {float(r2s_med.get(etapa, (etapas.get(etapa) or {}).get('r2_medias', 0))):.2f}",
+            "val": f"{float(r2s.get(etapa, (etapas.get(etapa) or {}).get('r2', 0))):.2f}",
+            "sub": f"Méd. {float(r2s_med.get(etapa, (etapas.get(etapa) or {}).get('r2_medias', 0))):.2f}",
         }
         for etapa in FUNIL_ETAPAS
     ])
 
+    st.markdown("##### MTD")
     _render_kpi_cards([
         {
             "lbl": FUNIL_LABELS.get(etapa, etapa),
             "val": fmt_qtd(float((etapas.get(etapa) or {}).get("mtd", 0))),
             "sub": (
-                f"Proj. reg {fmt_qtd(float((etapas.get(etapa) or {}).get('projetado_reg', 0)))}"
+                f"Proj. {fmt_qtd(float((etapas.get(etapa) or {}).get('projetado_reg', 0)))}"
                 f" · méd {fmt_qtd(float((etapas.get(etapa) or {}).get('projetado_med', 0)))}"
             ),
         }
@@ -3456,31 +3214,18 @@ def render_projecao_funil(proj: Dict[str, Any]) -> None:
 
     efeitos = proj.get("efeitos_lags_vendas")
     if efeitos:
-        st.markdown("##### Tempo até o efeito nas vendas")
-        st.caption(
-            f"R²: {float(efeitos.get('r2', 0)):.2f} · "
-            "pico = lag de maior efeito · meia-vida ≈ 50% do efeito positivo acumulado"
-        )
+        st.markdown("##### Tempo até o efeito")
         resumo = efeitos.get("resumo") or []
         _render_kpi_cards([
             {
                 "lbl": str(r.get("label", "")),
                 "val": f"{int(r.get('lag_pico', 0))}d",
-                "sub": (
-                    f"Meia-vida {int(r.get('lag_meia_vida', 0))}d"
-                    f" · lag1 {float(r.get('efeito_lag0', 0)):.2f}"
-                    f" · acum {float(r.get('efeito_acum', 0)):.2f}"
-                ),
+                "sub": f"Meia-vida {int(r.get('lag_meia_vida', 0))}d",
             }
             for r in resumo
         ])
 
-    # Três funis (go.Funnel)
-    st.markdown("##### Funis: realizado · projetado · necessário")
-    st.caption(
-        "Necessário = volumes do funil para bater a meta de vendas, "
-        "usando conversões históricas indicador→venda (sem o mês atual)."
-    )
+    st.markdown("##### Funis")
     totais_mtd = proj.get("totais_mtd") or {
         e: float((etapas.get(e) or {}).get("mtd", 0)) for e in FUNIL_ETAPAS
     }
@@ -3489,22 +3234,20 @@ def render_projecao_funil(proj: Dict[str, Any]) -> None:
     }
     funil_nec = proj.get("funil_necessario") or totais_proj
 
-    c1, c2, c3 = st.columns(3)
+    try:
+        c1, c2, c3 = st.columns(3, gap="large")
+    except TypeError:
+        c1, c2, c3 = st.columns(3)
     with c1:
-        _plot_funil_go("Realizado (MTD)", totais_mtd, altura=380)
+        _plot_funil_go("Realizado (MTD)", totais_mtd, altura=440)
     with c2:
-        _plot_funil_go("Projetado do mês", totais_proj, altura=380)
+        _plot_funil_go("Projetado do mês", totais_proj, altura=440)
     with c3:
-        _plot_funil_go("Necessário p/ meta", funil_nec, altura=380)
+        _plot_funil_go("Necessário (meta)", funil_nec, altura=440)
 
     _render_conversoes_funil(proj.get("conversoes") or {})
 
-    # Metas diárias por indicador
-    st.markdown("##### Meta diária por indicador (para bater a meta de vendas)")
-    st.caption(
-        "Vendas faltantes ÷ conversão histórica indicador→venda = gap do indicador; "
-        "distribuído nos dias restantes com pesos da projeção (reg / médias)."
-    )
+    st.markdown("##### Meta diária")
     metas_diarias = proj.get("metas_diarias") or {}
     dia_hoje = proj["hoje"].day
     ultimo = int(proj["ultimo_dia"])
@@ -3513,8 +3256,7 @@ def render_projecao_funil(proj: Dict[str, Any]) -> None:
         if info:
             _plot_meta_diaria_indicador(etapa, info, ultimo, dia_hoje)
 
-    # Comparativo diário projetado × realizado (ambos os modelos)
-    st.markdown("##### Projeção diária × realizado (modelos treinados sem o mês atual)")
+    st.markdown("##### Projetado × realizado")
     for etapa in FUNIL_ETAPAS:
         df = (etapas.get(etapa) or {}).get("diaria", pd.DataFrame())
         _plot_funil_etapa_comparativo(etapa, df, ultimo, dia_hoje)
@@ -3530,22 +3272,13 @@ def render_efeitos_lags_sobre_vendas(
     """Perfil de lags (1–30d) das etapas do funil sobre vendas."""
     st.markdown("<br/>", unsafe_allow_html=True)
     st.subheader("Perfil de lags sobre vendas")
-    st.caption(
-        f"R²: {float(efeitos.get('r2', 0)):.2f} · "
-        "efeito = Δ vendas por unidade da variável no lag (controlando calendário)"
-    )
-
     if mostrar_cards:
         resumo = efeitos.get("resumo") or []
         _render_kpi_cards([
             {
                 "lbl": str(r.get("label", "")),
                 "val": f"{int(r.get('lag_pico', 0))}d",
-                "sub": (
-                    f"Meia-vida {int(r.get('lag_meia_vida', 0))}d"
-                    f" · lag1 {float(r.get('efeito_lag0', 0)):.2f}"
-                    f" · acum {float(r.get('efeito_acum', 0)):.2f}"
-                ),
+                "sub": f"Meia-vida {int(r.get('lag_meia_vida', 0))}d",
             }
             for r in resumo
         ])
@@ -3557,10 +3290,11 @@ def render_efeitos_lags_sobre_vendas(
         if df is None or df.empty:
             continue
         cor = FUNIL_CORES_DRIVER.get(etapa, COR_AZUL_ESC)
+        y_col = "efeito_suav" if "efeito_suav" in df.columns else "efeito"
         fig.add_trace(
             go.Scatter(
                 x=df["lag"],
-                y=df["efeito"],
+                y=df[y_col],
                 mode="lines+markers",
                 name=FUNIL_LABELS.get(etapa, etapa),
                 line=dict(color=cor, width=3),
@@ -3593,7 +3327,7 @@ def render_efeitos_lags_sobre_vendas(
         showgrid=True,
         gridcolor="rgba(226,232,240,0.5)",
     )
-    st.markdown("##### Efeito por lag (1–30 dias)")
+    st.markdown("##### Efeito por lag")
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
     fig_c = go.Figure()
@@ -3602,10 +3336,11 @@ def render_efeitos_lags_sobre_vendas(
         if df is None or df.empty:
             continue
         cor = FUNIL_CORES_DRIVER.get(etapa, COR_AZUL_ESC)
+        y_acum = "acumulado_suav" if "acumulado_suav" in df.columns else "acumulado"
         fig_c.add_trace(
             go.Scatter(
                 x=df["lag"],
-                y=df["acumulado"],
+                y=df[y_acum],
                 mode="lines+markers",
                 name=FUNIL_LABELS.get(etapa, etapa),
                 line=dict(color=cor, width=3),
@@ -3638,7 +3373,7 @@ def render_efeitos_lags_sobre_vendas(
         showgrid=True,
         gridcolor="rgba(226,232,240,0.5)",
     )
-    st.markdown("##### Efeito acumulado até o lag")
+    st.markdown("##### Efeito acumulado")
     st.plotly_chart(fig_c, use_container_width=True, config={"displayModeBar": False})
 
 
@@ -4050,17 +3785,23 @@ def main() -> None:
         fig_ideal = go.Figure(go.Funnel(
             y=['Agendamentos', 'Visitas', 'Pastas', 'Past. Aprov.', 'Vendas (Meta)'],
             x=[a_ideal, vi_ideal, p_ideal, pa_ideal, v_meta],
-            textinfo="value",
+            text=[fmt_qtd(float(v)) for v in [a_ideal, vi_ideal, p_ideal, pa_ideal, v_meta]],
+            textinfo="text",
+            textposition="inside",
+            textfont=dict(size=20, color="#ffffff", family="Inter"),
+            insidetextfont=dict(size=20, color="#ffffff", family="Inter"),
+            outsidetextfont=dict(size=18, color=COR_TEXTO_PRETO, family="Inter"),
             marker={"color": ["#022654", "#04428f", "#1e60b3", "#cb0935", "#9e0828"]},
             connector={"fillcolor": "rgba(4, 66, 143, 0.15)"}
         ))
         fig_ideal.update_layout(
-            margin=dict(l=20, r=20, t=30, b=20),
+            margin=dict(l=24, r=24, t=30, b=24),
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
-            height=350,
-            font=dict(family="Inter", color=COR_TEXTO_PRETO),
+            height=420,
+            font=dict(family="Inter", color=COR_TEXTO_PRETO, size=16),
         )
+        fig_ideal.update_yaxes(tickfont=dict(size=16, color=COR_TEXTO_PRETO, family="Inter"))
         st.plotly_chart(fig_ideal, use_container_width=True, config={"displayModeBar": False})
 
     st.markdown("<br><hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
@@ -4071,27 +3812,33 @@ def main() -> None:
         fig_mkt = go.Figure(go.Funnel(
             y=['Leads Digitais', 'Oport. Digitais', 'Vendas Dig. (40% DV RJ)'],
             x=[ld_ideal, od_ideal, vd_ideal],
-            textinfo="value",
+            text=[fmt_qtd(float(v)) for v in [ld_ideal, od_ideal, vd_ideal]],
+            textinfo="text",
+            textposition="inside",
+            textfont=dict(size=20, color="#ffffff", family="Inter"),
+            insidetextfont=dict(size=20, color="#ffffff", family="Inter"),
+            outsidetextfont=dict(size=18, color=COR_TEXTO_PRETO, family="Inter"),
             marker={"color": ["#022654", "#1e60b3", "#cb0935"]},
             connector={"fillcolor": "rgba(4, 66, 143, 0.15)"}
         ))
         fig_mkt.update_layout(
-            margin=dict(l=20, r=20, t=30, b=20),
+            margin=dict(l=24, r=24, t=30, b=24),
             paper_bgcolor="rgba(0,0,0,0)",
             plot_bgcolor="rgba(0,0,0,0)",
-            height=300,
-            font=dict(family="Inter", color=COR_TEXTO_PRETO),
+            height=360,
+            font=dict(family="Inter", color=COR_TEXTO_PRETO, size=16),
         )
+        fig_mkt.update_yaxes(tickfont=dict(size=16, color=COR_TEXTO_PRETO, family="Inter"))
         st.plotly_chart(fig_mkt, use_container_width=True, config={"displayModeBar": False})
 
     st.markdown("<br><hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
-    st.subheader("Cenários: Corretores Ativos (Necessários para bater a meta global)")
+    st.subheader("Cenários: corretores ativos")
     st.markdown(
         f"""
         <div class="vel-kpi-row" style="justify-content: center; margin-top: 1rem;">
-            <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Pessimista (15% convert.)</div><div class="val">{corretores_pessimista}</div></div>
-            <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Moderado (20% convert.)</div><div class="val">{corretores_moderado}</div></div>
-            <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Otimista (25% convert.)</div><div class="val">{corretores_otimista}</div></div>
+            <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Pessimista (15%)</div><div class="val">{corretores_pessimista}</div></div>
+            <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Moderado (20%)</div><div class="val">{corretores_moderado}</div></div>
+            <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Otimista (25%)</div><div class="val">{corretores_otimista}</div></div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -4177,16 +3924,10 @@ def main() -> None:
             try:
                 # 1) Agendamentos / visitas
                 try:
-                    df_ag_vis, origem_ag = carregar_relatorio_salesforce(
+                    df_ag_vis, _origem_ag = carregar_relatorio_salesforce(
                         SF_REPORT_AGENDAMENTOS_ID, rotulo="agendamentos/visitas"
                     )
-                    n_ag_bruto = len(df_ag_vis)
                     df_ag_vis = deduplicar_agendamentos_funil(df_ag_vis)
-                    st.caption(
-                        f"Agendamentos/visitas: {origem_ag} · "
-                        f"{n_ag_bruto:,} → {len(df_ag_vis):,} linhas "
-                        f"(dedup Código do agendamento)"
-                    )
                 except Exception as e_sf:
                     st.warning(
                         f"SF agendamentos indisponível ({e_sf}). Fallback Sheets 'Dados Únicos'."
@@ -4200,53 +3941,31 @@ def main() -> None:
 
                 # 2) Pastas / pastas aprovadas
                 try:
-                    df_pastas_funil, origem_pastas = carregar_relatorio_salesforce(
+                    df_pastas_funil, _origem_pastas = carregar_relatorio_salesforce(
                         SF_REPORT_PASTAS_ID, rotulo="pastas"
                     )
-                    n_pas_bruto = len(df_pastas_funil)
-                    col_safi = achar_coluna_aprovacao_safi(df_pastas_funil)
-                    n_com_safi = 0
-                    if col_safi:
-                        n_com_safi = int(
-                            pd.to_datetime(
-                                df_pastas_funil[col_safi], dayfirst=True, errors="coerce"
-                            ).notna().sum()
-                        )
                     df_pastas_funil = deduplicar_pastas_funil(df_pastas_funil)
-                    st.caption(
-                        f"Pastas: {origem_pastas} · "
-                        f"{n_pas_bruto:,} → {len(df_pastas_funil):,} linhas "
-                        f"(dedup Nome da Avaliação) · "
-                        f"Aprov. SAFI: coluna '{col_safi or '?'}' · {n_com_safi:,} com data"
-                    )
                 except Exception as e_sf_p:
                     st.warning(
                         f"SF pastas indisponível ({e_sf_p}). Tentando planilha Sheets…"
                     )
                     sid_pastas = (SPREADSHEET_PASTAS_ID or "").strip()
-                    df_pastas_funil, origem_pastas = carregar_df_pastas_funil(
+                    df_pastas_funil, _origem_pastas = carregar_df_pastas_funil(
                         SPREADSHEET_FUNIL_ID, sid, sid_pastas, cred_fp
                     )
                     if df_pastas_funil.empty:
                         st.warning("Pastas não carregadas — funil sem essa etapa.")
                     else:
                         df_pastas_funil = deduplicar_pastas_funil(df_pastas_funil)
-                        st.caption(f"Pastas (Sheets): {origem_pastas}")
 
                 # 3) Vendas (Contrato gerado em)
                 df_vendas_funil = pd.DataFrame()
                 serie_vendas_funil = None
                 try:
-                    df_vendas_funil, origem_vendas = carregar_relatorio_salesforce(
+                    df_vendas_funil, _origem_vendas = carregar_relatorio_salesforce(
                         SF_REPORT_VENDAS_ID, rotulo="vendas"
                     )
-                    n_ven_bruto = len(df_vendas_funil)
                     df_vendas_funil = deduplicar_vendas_funil(df_vendas_funil)
-                    st.caption(
-                        f"Vendas: {origem_vendas} · "
-                        f"{n_ven_bruto:,} → {len(df_vendas_funil):,} linhas "
-                        f"(dedup ID da Oportunidade)"
-                    )
                 except Exception as e_sf_v:
                     st.warning(
                         f"SF vendas indisponível ({e_sf_v}). "
@@ -4279,7 +3998,7 @@ def main() -> None:
     # -------------------------------------------------------------------------
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
     dia_atual_janela = datetime.now().day
-    st.subheader(f"Comparativo de Vendas (Dia 01 ao Dia {dia_atual_janela:02d} do Mês)")
+    st.subheader(f"Comparativo (dia 01–{dia_atual_janela:02d})")
     
     if col_contrato_gerado:
         # Base de espelho limpa para o gráfico de eficiência temporal sem interferência de filtros de UI de competência
