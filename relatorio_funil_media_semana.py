@@ -1039,9 +1039,17 @@ def _sf_rel_name(val):
     return None
 
 
+def _sf_janela_12_meses_fechados(ref: Optional[date] = None) -> Tuple[date, date]:
+    """12 meses-calendário anteriores, excluindo o mês atual."""
+    ref = ref or date.today()
+    inicio = date(ref.year - 1, ref.month, 1)
+    fim = date(ref.year, ref.month, 1) - timedelta(days=1)
+    return inicio, fim
+
+
 def _sf_soql_desde() -> str:
-    """ISO datetime UTC: jan/1 de (ano atual - 4)."""
-    ini = date(date.today().year - 4, 1, 1)
+    """Início dos 12 meses fechados; mantém mês atual só para o realizado."""
+    ini, _ = _sf_janela_12_meses_fechados()
     return f"{ini.isoformat()}T00:00:00Z"
 
 
@@ -1058,6 +1066,10 @@ def _sf_soql_agendamentos(sf) -> pd.DataFrame:
         "FROM Event "
         "WHERE Unidade_de_negocio__c = 'Direcional' "
         "AND Regional__c = 'RJ' "
+        "AND PDV__r.Regional_Comercial__c = 'RJ' "
+        "AND PDV__r.UnidadeDeNegocio__c = 'Direcional' "
+        "AND Empreendimento_de_interesse__c != null "
+        "AND Account.Regional_Comercial__c = 'RJ' "
         f"AND CreatedDate >= {desde}"
     )
     res = sf.query_all(soql)
@@ -1110,6 +1122,26 @@ def _sf_soql_pastas(sf) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _sf_soql_dicionario_regional(sf) -> pd.DataFrame:
+    """Replica o relatório gerente→regional no trimestre fiscal atual."""
+    soql = (
+        "SELECT Owner.Name, Gerente_regional__c "
+        "FROM Opportunity "
+        "WHERE CloseDate = THIS_FISCAL_QUARTER "
+        "AND Gerente_regional__c != null"
+    )
+    res = sf.query_all(soql)
+    rows = []
+    for r in res.get("records") or []:
+        rows.append(
+            {
+                "Proprietário da oportunidade": _sf_rel_name(r.get("Owner")),
+                "Gerente regional": r.get("Gerente_regional__c"),
+            }
+        )
+    return pd.DataFrame(rows).drop_duplicates()
+
+
 def _sf_soql_por_relatorio(sf, report_id: str, rotulo: str):
     """Tenta SOQL para relatórios grandes. Retorna (df, origem) ou (None, None)."""
     rid = (report_id or "").strip()
@@ -1131,6 +1163,13 @@ def _sf_soql_por_relatorio(sf, report_id: str, rotulo: str):
                     f"{len(df):,} linhas".replace(",", ".")
                 )
                 return df, origem
+        if rid == SF_REPORT_DIC_REGIONAL_ID or "dicionário" in rotulo_l:
+            df = _sf_soql_dicionario_regional(sf)
+            if df is not None and not df.empty:
+                return df, (
+                    "Salesforce SOQL · Opportunity gerente→regional · "
+                    f"{len(df):,} linhas".replace(",", ".")
+                )
     except Exception:
         return None, None
     return None, None
@@ -1220,6 +1259,12 @@ def carregar_relatorio_salesforce(report_id: str, rotulo: str = "relatório"):
         )
 
     df = normalizar_colunas(df)
+    if rid == SF_REPORT_VENDAS_ID:
+        col_data = achar_coluna(df, ALIASES_CONTRATO_GERADO)
+        if col_data:
+            inicio_hist, _ = _sf_janela_12_meses_fechados()
+            dt = parse_data_serie(df[col_data])
+            df = df.loc[dt.notna() & (dt.dt.date >= inicio_hist)].copy()
     if not origem:
         origem = f"Salesforce · {rotulo} · {rid} · {len(df):,} linhas".replace(",", ".")
     elif "linhas" not in origem.lower():
@@ -1447,12 +1492,12 @@ def fmt_pct(v: Optional[float]) -> str:
 # Fim do módulo embutido
 # =============================================================================
 
-# Janelas históricas (sempre terminam no dia anterior à semana escolhida)
+# Janelas históricas em meses-calendário fechados (mês atual excluído)
 JANELAS_MEDIA: Tuple[Tuple[str, str, int], ...] = (
-    ("1_ano", "Média 1 ano", 365),
-    ("6_meses", "Média 6 meses", 182),
-    ("3_meses", "Média 3 meses", 91),
-    ("1_mes", "Média 1 mês", 30),
+    ("12_meses", "Média 12 meses", 12),
+    ("6_meses", "Média 6 meses", 6),
+    ("3_meses", "Média 3 meses", 3),
+    ("1_mes", "Média 1 mês", 1),
 )
 
 OPCOES_SEMANA = {
@@ -1495,24 +1540,37 @@ def filtrar_regionais(eventos: pd.DataFrame, regionais: List[str]) -> pd.DataFra
     return filtrar_hierarquia(eventos, regionais=regionais)
 
 
+def _inicio_mes_deslocado(inicio_mes: date, meses: int) -> date:
+    total = inicio_mes.year * 12 + (inicio_mes.month - 1) + int(meses)
+    return date(total // 12, total % 12 + 1, 1)
+
+
+def _janela_meses_fechados(fim_base: date, meses: int) -> Tuple[date, date]:
+    primeiro_mes_seguinte = date(
+        (fim_base + timedelta(days=1)).year,
+        (fim_base + timedelta(days=1)).month,
+        1,
+    )
+    return _inicio_mes_deslocado(primeiro_mes_seguinte, -int(meses)), fim_base
+
+
 def media_escalada_pessoa_etapa(
     datas: List[date],
+    ini_base: date,
     fim_base: date,
-    dias_janela: int,
     dias_alvo: int,
 ) -> float:
     """
     Média diária no período disponível da pessoa × dias_alvo.
-    Início efetivo = max(fim_base - janela + 1, menor data do indicador).
+    Início efetivo = max(início da janela, menor data do indicador).
     """
-    if not datas or dias_janela <= 0 or dias_alvo <= 0:
+    if not datas or ini_base > fim_base or dias_alvo <= 0:
         return 0.0
     datas_ok = [d for d in datas if d is not None and d <= fim_base]
     if not datas_ok:
         return 0.0
     min_ind = min(datas_ok)
-    ini_ideal = fim_base - timedelta(days=dias_janela - 1)
-    ini_eff = max(ini_ideal, min_ind)
+    ini_eff = max(ini_base, min_ind)
     if ini_eff > fim_base:
         return 0.0
     dias_disp = (fim_base - ini_eff).days + 1
@@ -1537,9 +1595,12 @@ def medias_historicas_pessoa(
                 por_etapa[e].append(d if isinstance(d, date) else pd.to_datetime(d).date())
 
     out: Dict[str, Dict[str, float]] = {}
-    for chave, _rotulo, dias_janela in JANELAS_MEDIA:
+    for chave, _rotulo, meses in JANELAS_MEDIA:
+        ini_base, _ = _janela_meses_fechados(fim_base, meses)
         out[chave] = {
-            e: media_escalada_pessoa_etapa(por_etapa[e], fim_base, dias_janela, dias_alvo)
+            e: media_escalada_pessoa_etapa(
+                por_etapa[e], ini_base, fim_base, dias_alvo
+            )
             for e in FUNIL_ETAPAS
         }
     return out
@@ -1571,6 +1632,68 @@ def _montar_tabela_pessoa(
             row_pct[FUNIL_LABELS[e]] = (100.0 * r / m) if m > 1e-9 else None
         rows.append(row_pct)
     return pd.DataFrame(rows)
+
+
+def _taxa_conversao(origem: float, destino: float) -> Optional[float]:
+    origem = float(origem or 0.0)
+    if origem <= 0:
+        return None
+    return 100.0 * float(destino or 0.0) / origem
+
+
+def _montar_tabela_conversoes(
+    realizado: Dict[str, float],
+    medias: Dict[str, Dict[str, float]],
+) -> pd.DataFrame:
+    """Conversões etapa→etapa e diretas→venda nas cinco linhas de tempo."""
+    fontes = [
+        (rotulo, medias.get(chave, {}))
+        for chave, rotulo, _meses in JANELAS_MEDIA
+    ]
+    fontes.append(("Realizado da semana", realizado))
+
+    rows = []
+    for rotulo, fonte in fontes:
+        row: Dict[str, Any] = {"Linha": rotulo}
+        row["Ag. → Vis."] = _taxa_conversao(
+            fonte.get("agendamentos", 0.0), fonte.get("visitas", 0.0)
+        )
+        row["Vis. → Pastas"] = _taxa_conversao(
+            fonte.get("visitas", 0.0), fonte.get("pastas", 0.0)
+        )
+        row["Pastas → Aprov."] = _taxa_conversao(
+            fonte.get("pastas", 0.0), fonte.get("pastas_aprovadas", 0.0)
+        )
+        row["Aprov. → Vendas"] = _taxa_conversao(
+            fonte.get("pastas_aprovadas", 0.0), fonte.get("vendas", 0.0)
+        )
+        row["Direta Ag. → Vendas"] = _taxa_conversao(
+            fonte.get("agendamentos", 0.0), fonte.get("vendas", 0.0)
+        )
+        row["Direta Vis. → Vendas"] = _taxa_conversao(
+            fonte.get("visitas", 0.0), fonte.get("vendas", 0.0)
+        )
+        row["Direta Pastas → Vendas"] = _taxa_conversao(
+            fonte.get("pastas", 0.0), fonte.get("vendas", 0.0)
+        )
+        row["Direta Aprov. → Vendas"] = _taxa_conversao(
+            fonte.get("pastas_aprovadas", 0.0), fonte.get("vendas", 0.0)
+        )
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _estilo_conversoes(df: pd.DataFrame):
+    out = df.copy()
+    for c in out.columns:
+        if c == "Linha":
+            continue
+        out[c] = out[c].map(
+            lambda v: "—" if v is None or pd.isna(v) else fmt_pct(float(v))
+        )
+    return out.style.set_properties(
+        **{"text-align": "center", "color": COR_TEXTO_PRETO}
+    )
 
 
 def _estilo_tabela(df: pd.DataFrame):
@@ -1688,11 +1811,15 @@ def _render_aba_dimensao(
         ev_p = ev_hist[ev_hist[dimensao].map(limpar_nome) == nome] if not ev_hist.empty else ev_hist
         medias = medias_historicas_pessoa(ev_p, fim_base, dias_alvo)
         df_t = _montar_tabela_pessoa(realizado, medias)
+        df_conv = _montar_tabela_conversoes(realizado, medias)
         st.markdown(
             f'<div class="bloco-pessoa"><div class="nome">{nome}</div></div>',
             unsafe_allow_html=True,
         )
         st.dataframe(_estilo_tabela(df_t), use_container_width=True, hide_index=True)
+        st.dataframe(
+            _estilo_conversoes(df_conv), use_container_width=True, hide_index=True
+        )
 
 
 def main() -> None:
@@ -1740,7 +1867,9 @@ def main() -> None:
 
     offset = {"atual": 0, "passada": 1, "retrasada": 2}[st.session_state["sem_escolha"]]
     ini_semana, fim_semana = semana_por_offset(hoje, offset)
-    fim_base = ini_semana - timedelta(days=1)
+    # Médias sempre terminam no último dia do mês anterior, independentemente
+    # da semana escolhida. O mês atual entra somente no realizado semanal.
+    _, fim_base = _sf_janela_12_meses_fechados(hoje)
 
     try:
         eventos, _origens = carregar_eventos_funil_pessoas()
