@@ -783,16 +783,21 @@ def _analytics_raw_to_df(raw):
         info = ext.get(c) or {}
         headers.append(str(info.get("label") or c))
 
+    def _cell_scalar(cell):
+        if not isinstance(cell, dict):
+            return cell
+        v = cell.get("value")
+        if isinstance(v, (dict, list, tuple)):
+            v = cell.get("label")
+        elif v is None:
+            v = cell.get("label")
+        return v
+
     rows_out = []
     fact = (raw.get("factMap") or {}).get("T!T") or {}
     for row in fact.get("rows") or []:
         cells = row.get("dataCells") or []
-        vals = []
-        for cell in cells:
-            v = cell.get("value")
-            if v is None:
-                v = cell.get("label")
-            vals.append(v)
+        vals = [_cell_scalar(cell) for cell in cells]
         if len(vals) < len(headers):
             vals = vals + [None] * (len(headers) - len(vals))
         rows_out.append(vals[: len(headers)])
@@ -801,15 +806,36 @@ def _analytics_raw_to_df(raw):
     return pd.DataFrame(rows_out, columns=headers)
 
 
-def _analytics_run(sf, report_id: str, report_metadata=None):
+def _analytics_run(sf, report_id: str, report_metadata=None, tentativas: int = 8):
+    """Executa relatório; em rate-limit (500/hora) espera e tenta de novo."""
+    import time as _time
+
     rid = (report_id or "").strip()
-    if report_metadata is None:
-        return sf.restful(f"analytics/reports/{rid}", params={"includeDetails": "true"})
-    return sf.restful(
-        f"analytics/reports/{rid}",
-        method="POST",
-        json={"reportMetadata": report_metadata},
-    )
+    ultimo = None
+    for i in range(max(1, int(tentativas))):
+        try:
+            if report_metadata is None:
+                return sf.restful(f"analytics/reports/{rid}", params={"includeDetails": "true"})
+            return sf.restful(
+                f"analytics/reports/{rid}",
+                method="POST",
+                json={"reportMetadata": report_metadata},
+            )
+        except Exception as e:
+            ultimo = e
+            msg = str(e).lower()
+            rate = (
+                ("500" in msg and "relat" in msg)
+                or ("forbidden" in msg and ("60 minuto" in msg or "60 minute" in msg))
+                or ("não é possível executar mais de 500" in msg)
+                or ("nao e possivel executar mais de 500" in msg)
+            )
+            if not rate or i >= tentativas - 1:
+                raise
+            espera = min(90, 15 * (i + 1))
+            _time.sleep(espera)
+    raise ultimo  # pragma: no cover
+
 
 
 def _analytics_pick_date_column(meta, ext):
@@ -828,25 +854,34 @@ def _analytics_pick_date_column(meta, ext):
 
 
 def _analytics_pick_id_column(meta, ext):
+    """Escolhe coluna estável p/ keyset — evita falso positivo (ex.: 'credito' contém 'id')."""
     cols = list(meta.get("detailColumns") or [])
     scored = []
     for c in cols:
         info = ext.get(c) or {}
         api = str(c)
         label = str(info.get("label") or "")
+        api_l = api.lower()
+        lab_l = label.lower()
         score = 0
-        if api.lower().endswith(".id") or api.lower() == "id":
+        if api_l == "id" or api_l.endswith(".id") or api_l.endswith("_id") or api_l.endswith("id__c"):
             score += 100
-        if "id" in api.lower():
-            score += 40
-        if "código" in label.lower() or "codigo" in label.lower():
+        if re.search(r"(^|[._])id($|[._])", api_l):
+            score += 80
+        if "identificador" in api_l or "identificador" in lab_l:
+            score += 90
+        if "codigo_do_agendamento" in api_l or "código do agendamento" in lab_l or "codigo do agendamento" in lab_l:
+            score += 95
+        if "código" in lab_l or "codigo" in lab_l:
             score += 50
-        if "id" in label.lower():
-            score += 30
-        if score:
+        if "nome da avalia" in lab_l or "nome_da_avalia" in api_l.replace("__", "_").lower():
+            score += 70
+        if any(x in lab_l for x in ("status", "contrato", "valor", "telefone", "email")):
+            score -= 60
+        if score > 0:
             scored.append((score, api))
     if scored:
-        scored.sort(reverse=True)
+        scored.sort(key=lambda t: (t[0], t[1]), reverse=True)
         return scored[0][1]
     return cols[0] if cols else None
 
@@ -994,7 +1029,10 @@ def _relatorio_sf_via_analytics_chunked(sf, report_id: str, anos_historico: int 
     if not partes:
         return pd.DataFrame()
     out = pd.concat(partes, ignore_index=True)
-    return out.drop_duplicates().reset_index(drop=True)
+    try:
+        return out.drop_duplicates().reset_index(drop=True)
+    except TypeError:
+        return out.astype(str).drop_duplicates().reset_index(drop=True)
 
 
 @st.cache_data(ttl=3600, show_spinner="Baixando relatório Salesforce (pode levar vários minutos)…")
