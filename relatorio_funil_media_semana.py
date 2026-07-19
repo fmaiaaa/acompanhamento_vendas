@@ -1033,12 +1033,116 @@ def _relatorio_sf_via_analytics_chunked(sf, report_id: str, anos_historico: int 
         return out.astype(str).drop_duplicates().reset_index(drop=True)
 
 
-@st.cache_data(ttl=3600, show_spinner="Baixando relatório Salesforce (pode levar vários minutos)…")
+def _sf_rel_name(val):
+    if isinstance(val, dict):
+        return val.get("Name") or val.get("name")
+    return None
+
+
+def _sf_soql_desde() -> str:
+    """ISO datetime UTC: jan/1 de (ano atual - 4)."""
+    ini = date(date.today().year - 4, 1, 1)
+    return f"{ini.isoformat()}T00:00:00Z"
+
+
+def _sf_soql_agendamentos(sf) -> pd.DataFrame:
+    """
+    Extrai agendamentos/visitas via SOQL em Event (queryMore).
+    Contorna Analytics 2k e cota de 500 relatórios/hora.
+    """
+    desde = _sf_soql_desde()
+    soql = (
+        "SELECT Id, Codigo_do_agendamento__c, CreatedDate, Data_da_Visita__c, "
+        "Gerente_Regional__c, Gerente_de_Vendas__c, Corretor__r.Name, Regional__c, "
+        "Unidade_de_negocio__c, Empreendimento_de_interesse__c "
+        "FROM Event "
+        "WHERE Unidade_de_negocio__c = 'Direcional' "
+        "AND Regional__c = 'RJ' "
+        f"AND CreatedDate >= {desde}"
+    )
+    res = sf.query_all(soql)
+    rows = []
+    for r in res.get("records") or []:
+        rows.append(
+            {
+                "Código do agendamento": r.get("Codigo_do_agendamento__c"),
+                "Data de criação": r.get("CreatedDate"),
+                "Data da visita": r.get("Data_da_Visita__c"),
+                "Gerente Regional": r.get("Gerente_Regional__c"),
+                "Gerente de Vendas": r.get("Gerente_de_Vendas__c"),
+                "Corretor: Nome completo": _sf_rel_name(r.get("Corretor__r")),
+                "Regional": r.get("Regional__c"),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _sf_soql_pastas(sf) -> pd.DataFrame:
+    """Extrai avaliações de crédito (pastas) via SOQL."""
+    desde = _sf_soql_desde()
+    soql = (
+        "SELECT Id, Name, CreatedDate, dataPrimeiroEnvioAnalise__c, dataAprovacaoSAFI__c, "
+        "Gerente_Regional__c, Gerente_Vendas__c, Corretor__r.Name, "
+        "Oportunidade__r.Gerente_regional__c "
+        "FROM Avaliacao_credito__c "
+        "WHERE Empreendimento__r.Regional__c = 'RJ' "
+        "AND Empreendimento__r.UnidadeDeNegocio__c = 'Direcional' "
+        f"AND CreatedDate >= {desde}"
+    )
+    res = sf.query_all(soql)
+    rows = []
+    for r in res.get("records") or []:
+        opp = r.get("Oportunidade__r") if isinstance(r.get("Oportunidade__r"), dict) else {}
+        rows.append(
+            {
+                "Nome da Avaliação de crédito": r.get("Name"),
+                "Data de criação": r.get("CreatedDate"),
+                "Data Primeiro Envio Análise": r.get("dataPrimeiroEnvioAnalise__c"),
+                "Data Aprovação SAFI": r.get("dataAprovacaoSAFI__c"),
+                "Gerente Regional": r.get("Gerente_Regional__c"),
+                "Gerente Vendas": r.get("Gerente_Vendas__c"),
+                "Corretor": _sf_rel_name(r.get("Corretor__r")),
+                "Avaliação de crédito : Oportunidade : Gerente regional": (
+                    opp.get("Gerente_regional__c") if opp else None
+                ),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _sf_soql_por_relatorio(sf, report_id: str, rotulo: str):
+    """Tenta SOQL para relatórios grandes. Retorna (df, origem) ou (None, None)."""
+    rid = (report_id or "").strip()
+    rotulo_l = (rotulo or "").lower()
+    try:
+        if rid == SF_REPORT_AGENDAMENTOS_ID or "agendamento" in rotulo_l:
+            df = _sf_soql_agendamentos(sf)
+            if df is not None and not df.empty:
+                origem = (
+                    f"Salesforce SOQL · Event · {rotulo} · "
+                    f"{len(df):,} linhas".replace(",", ".")
+                )
+                return df, origem
+        if rid == SF_REPORT_PASTAS_ID or "pasta" in rotulo_l:
+            df = _sf_soql_pastas(sf)
+            if df is not None and not df.empty:
+                origem = (
+                    f"Salesforce SOQL · Avaliacao_credito__c · {rotulo} · "
+                    f"{len(df):,} linhas".replace(",", ".")
+                )
+                return df, origem
+    except Exception:
+        return None, None
+    return None, None
+
+
+@st.cache_data(ttl=3600, show_spinner="Baixando dados Salesforce (SOQL)…")
 def carregar_relatorio_salesforce(report_id: str, rotulo: str = "relatório"):
     """
-    Baixa relatório Salesforce por ID sem ficar preso no teto de 2k.
-    1) Tenta CSV (rápido; pode cortar ~100k)
-    2) Se falhar, vier ~2k ou bater ~100k → Analytics fatiada por data (+ keyset)
+    Baixa dados Salesforce sem teto de 2k:
+    1) SOQL query_all (Event / Avaliacao_credito) — preferencial p/ volumes grandes
+    2) CSV do relatório
+    3) Analytics fatiada (fallback; cota 500/h)
     """
     sf, err = conectar_salesforce_app()
     if sf is None:
@@ -1049,6 +1153,14 @@ def carregar_relatorio_salesforce(report_id: str, rotulo: str = "relatório"):
         raise RuntimeError(f"Report ID vazio ({rotulo}).")
 
     tentativas = []
+
+    # 1) SOQL direto (melhor caminho para ~180k)
+    df_soql, origem_soql = _sf_soql_por_relatorio(sf, rid, rotulo)
+    if df_soql is not None and not df_soql.empty:
+        df = normalizar_colunas(df_soql)
+        return df, origem_soql or f"Salesforce SOQL · {rotulo} · {len(df)} linhas"
+
+    # 2) CSV
     df_csv = None
     try:
         df_csv = _relatorio_sf_via_csv(sf, rid)
@@ -1061,21 +1173,19 @@ def carregar_relatorio_salesforce(report_id: str, rotulo: str = "relatório"):
         precisa_chunk = True
     else:
         n_csv = len(df_csv)
-        # Teto típico da Analytics (~2k) ou do export CSV (~100k)
         if SF_ANALYTICS_ROW_CAP - 5 <= n_csv <= SF_ANALYTICS_ROW_CAP + 50:
             precisa_chunk = True
         if n_csv >= SF_CSV_SOFT_CAP:
             precisa_chunk = True
-        # Agendamentos (~180k): se CSV não trouxe volume alto, força fatia
         if "agendamento" in rotulo_l and n_csv < 120_000:
             precisa_chunk = True
-        # Pastas costuma passar de 2k; se veio no teto Analytics, já coberto acima
         if "pasta" in rotulo_l and n_csv <= SF_ANALYTICS_ROW_CAP + 50:
             precisa_chunk = True
 
     df = df_csv
     origem = f"Salesforce CSV · {rotulo} · {rid}" if df_csv is not None and not df_csv.empty else ""
 
+    # 3) Analytics fatiada
     if precisa_chunk:
         try:
             df_chunk = _relatorio_sf_via_analytics_chunked(sf, rid)
