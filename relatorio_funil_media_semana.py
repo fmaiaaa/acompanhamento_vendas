@@ -1714,21 +1714,69 @@ def _montar_tabela_conversoes(
     return pd.DataFrame(rows)
 
 
+# Farol realizado × média: verde ≥ 100%, amarelo 75–100%, vermelho < 75%
+_CSS_VERDE = "background-color: #ecfdf5; color: #065f46; font-weight: 600;"
+_CSS_AMARELO = "background-color: #fffbeb; color: #92400e; font-weight: 600;"
+_CSS_VERMELHO = f"background-color: #fef2f2; color: {COR_VERMELHO}; font-weight: 600;"
+_ROTULO_MEDIA_REF = JANELAS_MEDIA[0][1]  # "Média 12 meses"
+
+
+def _css_farol_pct(pct: Optional[float]) -> str:
+    if pct is None or (isinstance(pct, float) and pd.isna(pct)):
+        return ""
+    if float(pct) >= 100.0:
+        return _CSS_VERDE
+    if float(pct) >= 75.0:
+        return _CSS_AMARELO
+    return _CSS_VERMELHO
+
+
+def _css_realizado_vs_media(realizado: Any, media: Any) -> str:
+    if realizado is None or (isinstance(realizado, float) and pd.isna(realizado)):
+        return ""
+    r = float(realizado)
+    if media is None or (isinstance(media, float) and pd.isna(media)) or float(media) <= 1e-9:
+        # sem média de referência: acima de zero conta como ≥ média
+        return _CSS_VERDE if r > 0 else ""
+    return _css_farol_pct(100.0 * r / float(media))
+
+
 def _estilo_conversoes(df: pd.DataFrame):
-    out = df.copy()
-    for c in out.columns:
+    df_fmt = df.copy()
+    for c in df_fmt.columns:
         if c == "Linha":
             continue
-        out[c] = out[c].map(
+        df_fmt[c] = df_fmt[c].map(
             lambda v: "—" if v is None or pd.isna(v) else fmt_pct(float(v))
         )
-    return out.style.set_properties(
-        **{"text-align": "center", "color": COR_TEXTO_PRETO}
+
+    ref = df.loc[df["Linha"] == _ROTULO_MEDIA_REF]
+    medias_ref = ref.iloc[0] if not ref.empty else None
+
+    def farol(row):
+        if str(row.get("Linha", "")) != "Realizado da semana" or medias_ref is None:
+            return [""] * len(df.columns)
+        orig = df.loc[row.name]
+        css = []
+        for c in df.columns:
+            if c == "Linha":
+                css.append(
+                    f"background-color: #f8fafc; font-weight: 600; color: {COR_TEXTO_PRETO};"
+                )
+                continue
+            css.append(_css_realizado_vs_media(orig.get(c), medias_ref.get(c)))
+        return css
+
+    return (
+        df_fmt.style.set_properties(
+            **{"text-align": "center", "color": COR_TEXTO_PRETO}
+        )
+        .apply(farol, axis=1)
     )
 
 
 def _estilo_tabela(df: pd.DataFrame):
-    df_fmt = df.copy()
+    df_fmt = df.copy().astype(object)
     for i, row in df.iterrows():
         linha = str(row.get("Linha", ""))
         for c in df.columns:
@@ -1742,8 +1790,14 @@ def _estilo_tabela(df: pd.DataFrame):
             else:
                 df_fmt.at[i, c] = fmt_num(float(val), 1)
 
-    def highlight_pct(row):
-        if not str(row.get("Linha", "")).startswith("%"):
+    ref = df.loc[df["Linha"] == _ROTULO_MEDIA_REF]
+    medias_ref = ref.iloc[0] if not ref.empty else None
+
+    def highlight(row):
+        linha = str(row.get("Linha", ""))
+        eh_pct = linha.startswith("%")
+        eh_real = linha == "Realizado da semana"
+        if not eh_pct and not eh_real:
             return [""] * len(df.columns)
         cores = []
         orig = df.loc[row.name]
@@ -1754,17 +1808,14 @@ def _estilo_tabela(df: pd.DataFrame):
                 )
                 continue
             v = orig.get(c)
-            if v is None or (isinstance(v, float) and pd.isna(v)):
-                cores.append("")
-            elif float(v) >= 100:
-                cores.append("background-color: #ecfdf5; color: #065f46; font-weight: 600;")
-            elif float(v) >= 80:
-                cores.append("background-color: #fffbeb; color: #92400e; font-weight: 600;")
+            if eh_pct:
+                cores.append(_css_farol_pct(v))
             else:
-                cores.append(f"background-color: #fef2f2; color: {COR_VERMELHO}; font-weight: 600;")
+                m = medias_ref.get(c) if medias_ref is not None else None
+                cores.append(_css_realizado_vs_media(v, m))
         return cores
 
-    return df_fmt.style.apply(highlight_pct, axis=1)
+    return df_fmt.style.apply(highlight, axis=1)
 
 
 def nomes_ativos_30d(
