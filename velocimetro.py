@@ -1048,18 +1048,76 @@ def janela_treino_52_semanas(hoje: Optional[date] = None) -> Tuple[date, date]:
     return janela_treino_meses_exatos(hoje)
 
 
+_TZ_BR = "America/Sao_Paulo"
+
+
+def parse_data_serie(serie: pd.Series) -> pd.Series:
+    """
+    Converte datas Salesforce/relatórios para datetime64[ns] naive.
+
+    Datas ISO do SF (`2025-07-01T12:14:25.000+0000` ou `2025-07-01`) NÃO podem
+    usar dayfirst=True — o pandas troca 2025-07-01 por 2025-01-07 e invalida
+    dias > 12, o que derruba agendamentos/visitas do mês atual.
+    """
+    if serie is None:
+        return pd.Series(dtype="datetime64[ns]")
+    raw = serie
+    as_str = raw.map(
+        lambda x: ""
+        if x is None or (isinstance(x, float) and pd.isna(x))
+        else str(x).strip()
+    )
+    out = pd.Series(pd.NaT, index=raw.index, dtype="datetime64[ns]")
+
+    mask_iso = as_str.str.match(r"^\d{4}-\d{2}-\d{2}", na=False)
+    if mask_iso.any():
+        has_time = mask_iso & as_str.str.contains("T", na=False)
+        date_only = mask_iso & ~has_time
+        if has_time.any():
+            ts = pd.to_datetime(raw.loc[has_time], errors="coerce", utc=True)
+            out.loc[has_time] = ts.dt.tz_convert(_TZ_BR).dt.tz_localize(None)
+        if date_only.any():
+            out.loc[date_only] = pd.to_datetime(
+                as_str.loc[date_only], format="%Y-%m-%d", errors="coerce"
+            )
+
+    vazios = {"", "nan", "none", "nat", "null", "na", "n/a", "-"}
+    mask_rest = out.isna() & ~as_str.str.lower().isin(vazios)
+    if mask_rest.any():
+        out.loc[mask_rest] = pd.to_datetime(
+            raw.loc[mask_rest], dayfirst=True, errors="coerce"
+        )
+
+    if out.isna().all():
+        nums = pd.to_numeric(raw, errors="coerce")
+        if nums.notna().any():
+            med = float(nums.dropna().median())
+            if med > 1e12:
+                out = pd.to_datetime(nums, unit="ms", errors="coerce")
+            elif med > 1e9:
+                out = pd.to_datetime(nums, unit="s", errors="coerce")
+            else:
+                out = pd.to_datetime(
+                    nums, unit="D", origin="1899-12-30", errors="coerce"
+                )
+    return out
+
+
 def _as_date_funil(val: Any) -> Optional[date]:
     """Normaliza valor para date (evita falha de lookup Timestamp vs date)."""
     if val is None or (isinstance(val, float) and pd.isna(val)):
         return None
     if isinstance(val, datetime):
         return val.date()
-    if isinstance(val, date):
+    if isinstance(val, date) and not isinstance(val, datetime):
         return val
     if isinstance(val, pd.Timestamp):
         return val.date()
     try:
-        return pd.to_datetime(val, dayfirst=True, errors="coerce").date()
+        dt = parse_data_serie(pd.Series([val])).iloc[0]
+        if pd.isna(dt):
+            return None
+        return pd.Timestamp(dt).date()
     except Exception:
         return None
 
@@ -1129,7 +1187,7 @@ def serie_diaria_contratos(
 ) -> pd.DataFrame:
     """Agrega vendas comerciais por data de 'Contrato gerado em'."""
     base = df_vendas.copy()
-    base["_dt_contrato"] = pd.to_datetime(base[col_contrato], dayfirst=True, errors="coerce")
+    base["_dt_contrato"] = parse_data_serie(base[col_contrato])
     base = base.dropna(subset=["_dt_contrato"])
     if base.empty:
         return pd.DataFrame(columns=["data", "qtd", "vgv"])
@@ -2707,7 +2765,7 @@ def carregar_relatorio_salesforce(report_id: str, rotulo: str = "relatório"):
         col_data = achar_coluna(df, ALIASES_CONTRATO_GERADO)
         if col_data:
             inicio_hist, _ = _sf_janela_12_meses_fechados()
-            dt = pd.to_datetime(df[col_data], dayfirst=True, errors="coerce")
+            dt = parse_data_serie(df[col_data])
             df = df.loc[dt.notna() & (dt.dt.date >= inicio_hist)].copy()
     if not origem:
         origem = f"Salesforce · {rotulo} · {rid} · {len(df):,} linhas".replace(",", ".")
@@ -2734,21 +2792,7 @@ def contar_eventos_por_coluna(df: pd.DataFrame, col: str) -> Dict[date, float]:
     """Conta ocorrências por dia a partir de uma coluna já resolvida."""
     if not col or col not in df.columns or df.empty:
         return {}
-    serie = df[col]
-    dt = pd.to_datetime(serie, dayfirst=True, errors="coerce")
-    # fallback: serial Excel / epoch numérico
-    if dt.isna().all():
-        nums = pd.to_numeric(serie, errors="coerce")
-        if nums.notna().any():
-            # Excel serial (~40000+) vs unix timestamp
-            med = float(nums.dropna().median())
-            if med > 1e9:
-                dt = pd.to_datetime(nums, unit="s", errors="coerce")
-            elif med > 1e12:
-                dt = pd.to_datetime(nums, unit="ms", errors="coerce")
-            else:
-                dt = pd.to_datetime(nums, unit="D", origin="1899-12-30", errors="coerce")
-    dt = dt.dropna()
+    dt = parse_data_serie(df[col]).dropna()
     if dt.empty:
         return {}
     vc = dt.dt.normalize().value_counts()
@@ -2784,7 +2828,7 @@ def deduplicar_por_chave_mais_recente(
     if not col_chave or not col_data:
         return df
     out = df.copy()
-    out["_dedup_dt"] = pd.to_datetime(out[col_data], dayfirst=True, errors="coerce")
+    out["_dedup_dt"] = parse_data_serie(out[col_data])
     out["_dedup_key"] = out[col_chave].astype(str).str.strip()
     # Chaves vazias/NaN não entram na deduplicação entre si
     mask_ok = out["_dedup_key"].ne("") & out["_dedup_key"].str.lower().ne("nan")
@@ -5197,15 +5241,11 @@ def main() -> None:
                     n_com_safi = 0
                     if col_envio:
                         n_com_envio = int(
-                            pd.to_datetime(
-                                df_pastas_funil[col_envio], dayfirst=True, errors="coerce"
-                            ).notna().sum()
+                            parse_data_serie(df_pastas_funil[col_envio]).notna().sum()
                         )
                     if col_safi:
                         n_com_safi = int(
-                            pd.to_datetime(
-                                df_pastas_funil[col_safi], dayfirst=True, errors="coerce"
-                            ).notna().sum()
+                            parse_data_serie(df_pastas_funil[col_safi]).notna().sum()
                         )
                     n_aprov_filt = len(deduplicar_pastas_aprovadas_funil(df_pastas_funil))
                     df_pastas_funil = deduplicar_pastas_funil(df_pastas_funil)
@@ -5285,7 +5325,7 @@ def main() -> None:
     if col_contrato_gerado:
         # Base de espelho limpa para o gráfico de eficiência temporal sem interferência de filtros de UI de competência
         df_grafico_eficiencia = df_vendas.copy()
-        df_grafico_eficiencia["Data_Contrato_DT"] = pd.to_datetime(df_grafico_eficiencia[col_contrato_gerado], dayfirst=True, errors="coerce")
+        df_grafico_eficiencia["Data_Contrato_DT"] = parse_data_serie(df_grafico_eficiencia[col_contrato_gerado])
         df_grafico_eficiencia = df_grafico_eficiencia.dropna(subset=["Data_Contrato_DT"])
         
         if not df_grafico_eficiencia.empty:
