@@ -283,6 +283,21 @@ def aplicar_estilo() -> None:
         html, body, :root, [data-testid="stApp"] {{
             color-scheme: light !important;
         }}
+        /* Tabelas sempre claras, mesmo com Windows em modo escuro */
+        .stDataFrame,
+        [data-testid="stDataFrame"],
+        [data-testid="stDataFrame"] > div,
+        [data-testid="stDataFrameResizable"],
+        [data-testid="stTable"],
+        [data-testid="stTable"] table {{
+            color-scheme: light !important;
+            background-color: #ffffff !important;
+        }}
+        [data-testid="stTable"] th,
+        [data-testid="stTable"] td {{
+            background-color: #ffffff !important;
+            color: #000000 !important;
+        }}
         html, body {{
             font-family: 'Inter', sans-serif;
             color: {COR_TEXTO_PRETO};
@@ -1665,11 +1680,13 @@ def _montar_tabela_pessoa(
     return pd.DataFrame(rows)
 
 
-def _taxa_conversao(origem: float, destino: float) -> Optional[float]:
+def _taxa_conversao(origem: float, destino: float) -> float:
     origem = float(origem or 0.0)
+    destino = float(destino or 0.0)
+    # Sem origem (ou ambos zero): 0%, nunca infinito / "—"
     if origem <= 0:
-        return None
-    return 100.0 * float(destino or 0.0) / origem
+        return 0.0
+    return 100.0 * destino / origem
 
 
 def _montar_tabela_conversoes(
