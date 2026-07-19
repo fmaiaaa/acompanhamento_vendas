@@ -21,6 +21,7 @@ import streamlit as st
 # Módulo embutido (funil_pessoas_comum) — evita ModuleNotFoundError no Cloud
 # =============================================================================
 
+import copy
 import os
 import re
 import unicodedata
@@ -704,49 +705,93 @@ def conectar_salesforce_app() -> Tuple[Any, Optional[str]]:
         return None, f"{type(e).__name__}: {e}"
 
 
-def _relatorio_sf_via_csv(sf: Any, report_id: str) -> pd.DataFrame:
+# Analytics API: teto duro de detalhe por chamada. CSV Details: ~100k.
+SF_ANALYTICS_ROW_CAP = 2000
+SF_CSV_SOFT_CAP = 95_000
+
+
+def _sf_session_bits(sf):
+    """Retorna (base_url, session_id, headers) para export/API."""
+    base = (getattr(sf, "sf_instance", None) or "").rstrip("/")
+    if base and not base.startswith("http"):
+        base = f"https://{base}"
+    sid = str(getattr(sf, "session_id", "") or "")
+    headers = dict(getattr(sf, "headers", {}) or {})
+    if sid and "Authorization" not in headers:
+        headers["Authorization"] = f"Bearer {sid}"
+    return base, sid, headers
+
+
+def _relatorio_sf_via_csv(sf, report_id: str):
+    """
+    Export CSV do relatório (Details). Contorna o teto de 2k da Analytics API,
+    mas o Salesforce ainda pode cortar ~100k linhas em exports grandes.
+    """
     import requests
     from io import StringIO
 
     rid = (report_id or "").strip()
-    base = (getattr(sf, "sf_instance", None) or "").rstrip("/")
-    if not base.startswith("http"):
-        base = f"https://{base}"
-    url = f"{base}/{rid}?isdtp=p1&export=1&enc=UTF-8&xf=csv"
-    resp = requests.get(
-        url,
-        headers=dict(getattr(sf, "headers", {}) or {}),
-        cookies={"sid": getattr(sf, "session_id", "")},
-        timeout=600,
-    )
-    resp.raise_for_status()
-    text = resp.content.decode("utf-8", errors="replace")
-    sample = text.lstrip()[:200].lower()
-    if sample.startswith("<!doctype") or sample.startswith("<html"):
-        raise ValueError("Export CSV retornou HTML (sessão/permissão).")
-    return pd.read_csv(StringIO(text))
+    if not rid:
+        return pd.DataFrame()
+
+    base, sid, headers = _sf_session_bits(sf)
+    if not base or not sid:
+        raise ValueError("Sessão Salesforce sem instance/session_id.")
+
+    urls = [
+        f"{base}/{rid}?isdtp=p1&export=1&enc=UTF-8&xf=csv",
+        f"{base}/{rid}?isdtp=p1&export=1&enc=UTF-8&xf=csv&detailsOnly=1",
+        f"{base}/servlet/PrintableViewDownloadServlet?isdtp=p1&reportid={rid}",
+    ]
+    erros = []
+    for url in urls:
+        try:
+            resp = requests.get(
+                url,
+                headers=headers,
+                cookies={"sid": sid},
+                timeout=900,
+                allow_redirects=True,
+            )
+            resp.raise_for_status()
+            text = resp.content.decode("utf-8-sig", errors="replace")
+            sample = text.lstrip()[:300].lower()
+            if (
+                sample.startswith("<!doctype")
+                or sample.startswith("<html")
+                or "<table" in sample[:800]
+                or ("login" in sample[:400] and "password" in sample[:800])
+            ):
+                erros.append(f"HTML em {url.split('?')[0][-40:]}")
+                continue
+            df = pd.read_csv(StringIO(text), low_memory=False)
+            if df is None or df.empty:
+                erros.append("CSV vazio")
+                continue
+            return df
+        except Exception as e:
+            erros.append(f"{type(e).__name__}: {e}")
+    raise ValueError("Export CSV falhou: " + " | ".join(erros[:4]))
 
 
-def _relatorio_sf_via_analytics(sf: Any, report_id: str) -> pd.DataFrame:
-    rid = (report_id or "").strip()
-    raw = sf.restful(f"analytics/reports/{rid}", params={"includeDetails": "true"})
+def _analytics_raw_to_df(raw):
     meta = (raw.get("reportMetadata") or {})
     cols_meta = meta.get("detailColumns") or []
     ext = ((raw.get("reportExtendedMetadata") or {}).get("detailColumnInfo") or {})
-    headers: List[str] = []
+    headers = []
     for c in cols_meta:
         info = ext.get(c) or {}
         headers.append(str(info.get("label") or c))
+
+    rows_out = []
     fact = (raw.get("factMap") or {}).get("T!T") or {}
-    rows = fact.get("rows") or []
-    rows_out: List[List[Any]] = []
-    for row in rows:
+    for row in fact.get("rows") or []:
         cells = row.get("dataCells") or []
         vals = []
         for cell in cells:
-            v = cell.get("label")
+            v = cell.get("value")
             if v is None:
-                v = cell.get("value")
+                v = cell.get("label")
             vals.append(v)
         if len(vals) < len(headers):
             vals = vals + [None] * (len(headers) - len(vals))
@@ -756,33 +801,284 @@ def _relatorio_sf_via_analytics(sf: Any, report_id: str) -> pd.DataFrame:
     return pd.DataFrame(rows_out, columns=headers)
 
 
-@st.cache_data(ttl=3600, show_spinner="Baixando relatório do Salesforce…")
-def carregar_relatorio_salesforce(report_id: str, rotulo: str = "relatório") -> Tuple[pd.DataFrame, str]:
+def _analytics_run(sf, report_id: str, report_metadata=None):
+    rid = (report_id or "").strip()
+    if report_metadata is None:
+        return sf.restful(f"analytics/reports/{rid}", params={"includeDetails": "true"})
+    return sf.restful(
+        f"analytics/reports/{rid}",
+        method="POST",
+        json={"reportMetadata": report_metadata},
+    )
+
+
+def _analytics_pick_date_column(meta, ext):
+    sdf = meta.get("standardDateFilter") or {}
+    col = sdf.get("column")
+    if col:
+        return str(col)
+    for c in meta.get("detailColumns") or []:
+        info = ext.get(c) or {}
+        data_type = str(info.get("dataType") or "").lower()
+        label = str(info.get("label") or c).lower()
+        api = str(c).lower()
+        if data_type in ("date", "datetime") or "date" in api or "data" in label:
+            return str(c)
+    return None
+
+
+def _analytics_pick_id_column(meta, ext):
+    cols = list(meta.get("detailColumns") or [])
+    scored = []
+    for c in cols:
+        info = ext.get(c) or {}
+        api = str(c)
+        label = str(info.get("label") or "")
+        score = 0
+        if api.lower().endswith(".id") or api.lower() == "id":
+            score += 100
+        if "id" in api.lower():
+            score += 40
+        if "código" in label.lower() or "codigo" in label.lower():
+            score += 50
+        if "id" in label.lower():
+            score += 30
+        if score:
+            scored.append((score, api))
+    if scored:
+        scored.sort(reverse=True)
+        return scored[0][1]
+    return cols[0] if cols else None
+
+
+def _analytics_apply_date_filter(meta, date_col: str, ini, fim):
+    m = copy.deepcopy(meta)
+    m["standardDateFilter"] = {
+        "column": date_col,
+        "durationValue": "CUSTOM",
+        "startDate": ini.isoformat(),
+        "endDate": fim.isoformat(),
+    }
+    return m
+
+
+def _analytics_keyset_pages(sf, report_id: str, base_meta, date_col: str, id_col: str, ini, fim):
+    """Pagina um intervalo (ex.: 1 dia) com filtro greaterThan no Id ordenado."""
+    partes = []
+    last_val = None
+    vistos = set()
+    for _ in range(500):
+        meta = _analytics_apply_date_filter(base_meta, date_col, ini, fim)
+        meta["sortBy"] = [{"sortColumn": id_col, "sortOrder": "Asc"}]
+        filtros = [
+            f for f in (meta.get("reportFilters") or [])
+            if not (f.get("column") == id_col and f.get("operator") == "greaterThan")
+        ]
+        if last_val is not None:
+            filtros.append({"column": id_col, "operator": "greaterThan", "value": str(last_val)})
+        meta["reportFilters"] = filtros
+        orig_bool = str(base_meta.get("reportBooleanFilter") or "").strip()
+        if last_val is not None:
+            idx = len(filtros)
+            meta["reportBooleanFilter"] = f"({orig_bool}) AND {idx}" if orig_bool else str(idx)
+        else:
+            meta["reportBooleanFilter"] = orig_bool or None
+
+        raw = _analytics_run(sf, report_id, meta)
+        df = _analytics_raw_to_df(raw)
+        if df.empty:
+            break
+        ext = ((raw.get("reportExtendedMetadata") or {}).get("detailColumnInfo") or {})
+        id_label = str((ext.get(id_col) or {}).get("label") or id_col)
+        col_id = id_label if id_label in df.columns else (id_col if id_col in df.columns else df.columns[0])
+        novos = df[~df[col_id].astype(str).isin(vistos)] if col_id in df.columns else df
+        if novos.empty:
+            break
+        partes.append(novos)
+        vals = novos[col_id].astype(str).tolist()
+        vistos.update(vals)
+        last_val = vals[-1]
+        all_data = bool(raw.get("allData", False))
+        if all_data or len(df) < SF_ANALYTICS_ROW_CAP:
+            break
+    if not partes:
+        return pd.DataFrame()
+    return pd.concat(partes, ignore_index=True)
+
+
+def _analytics_fetch_range(sf, report_id: str, base_meta, date_col: str, id_col, ini, fim, profundidade: int = 0):
+    """Baixa um intervalo; se bater 2k, divide a janela (ou usa keyset no dia)."""
+    if ini > fim:
+        return pd.DataFrame()
+    meta = _analytics_apply_date_filter(base_meta, date_col, ini, fim)
+    meta.pop("sortBy", None)
+
+    raw = _analytics_run(sf, report_id, meta)
+    df = _analytics_raw_to_df(raw)
+    n = len(df)
+    all_data = bool(raw.get("allData", True)) if n < SF_ANALYTICS_ROW_CAP else bool(raw.get("allData", False))
+
+    if n == 0:
+        return df
+    if n < SF_ANALYTICS_ROW_CAP or all_data:
+        return df
+
+    if ini == fim:
+        if id_col:
+            return _analytics_keyset_pages(sf, report_id, base_meta, date_col, id_col, ini, fim)
+        return df
+
+    if profundidade > 40:
+        if id_col:
+            return _analytics_keyset_pages(sf, report_id, base_meta, date_col, id_col, ini, fim)
+        return df
+
+    mid = ini + timedelta(days=(fim - ini).days // 2)
+    if mid >= fim:
+        mid = fim - timedelta(days=1)
+    if mid < ini:
+        mid = ini
+
+    esq = _analytics_fetch_range(sf, report_id, base_meta, date_col, id_col, ini, mid, profundidade + 1)
+    dir_ = _analytics_fetch_range(
+        sf, report_id, base_meta, date_col, id_col, mid + timedelta(days=1), fim, profundidade + 1
+    )
+    if esq.empty:
+        return dir_
+    if dir_.empty:
+        return esq
+    return pd.concat([esq, dir_], ignore_index=True)
+
+
+def _relatorio_sf_via_analytics(sf, report_id: str):
+    """Uma chamada Analytics (máx. ~2k) — só para metadados / fallback mínimo."""
+    raw = _analytics_run(sf, report_id)
+    return _analytics_raw_to_df(raw)
+
+
+def _relatorio_sf_via_analytics_chunked(sf, report_id: str, anos_historico: int = 4, chunk_dias: int = 14):
+    """
+    Contorna o limite de 2.000 linhas da Analytics API:
+    fatia por data (standardDateFilter) e, se um dia ainda passar de 2k, pagina por Id.
+    """
+    rid = (report_id or "").strip()
+    raw0 = _analytics_run(sf, rid)
+    base_meta = copy.deepcopy(raw0.get("reportMetadata") or {})
+    ext = ((raw0.get("reportExtendedMetadata") or {}).get("detailColumnInfo") or {})
+    date_col = _analytics_pick_date_column(base_meta, ext)
+    if not date_col:
+        return _analytics_raw_to_df(raw0)
+
+    id_col = _analytics_pick_id_column(base_meta, ext)
+    hoje = date.today()
+    ini_global = date(hoje.year - int(anos_historico), 1, 1)
+    sdf = base_meta.get("standardDateFilter") or {}
+    try:
+        sd = sdf.get("startDate")
+        if sd:
+            ini_meta = date.fromisoformat(str(sd)[:10])
+            if ini_meta < ini_global:
+                ini_global = ini_meta
+    except Exception:
+        pass
+
+    partes = []
+    cursor = ini_global
+    while cursor <= hoje:
+        fim_chunk = min(cursor + timedelta(days=chunk_dias - 1), hoje)
+        parte = _analytics_fetch_range(sf, rid, base_meta, date_col, id_col, cursor, fim_chunk)
+        if not parte.empty:
+            partes.append(parte)
+        cursor = fim_chunk + timedelta(days=1)
+
+    if not partes:
+        return pd.DataFrame()
+    out = pd.concat(partes, ignore_index=True)
+    return out.drop_duplicates().reset_index(drop=True)
+
+
+@st.cache_data(ttl=3600, show_spinner="Baixando relatório Salesforce (pode levar vários minutos)…")
+def carregar_relatorio_salesforce(report_id: str, rotulo: str = "relatório"):
+    """
+    Baixa relatório Salesforce por ID sem ficar preso no teto de 2k.
+    1) Tenta CSV (rápido; pode cortar ~100k)
+    2) Se falhar, vier ~2k ou bater ~100k → Analytics fatiada por data (+ keyset)
+    """
     sf, err = conectar_salesforce_app()
     if sf is None:
         raise RuntimeError(err or "Falha ao conectar no Salesforce.")
+
     rid = (report_id or "").strip()
     if not rid:
         raise RuntimeError(f"Report ID vazio ({rotulo}).")
-    tentativas: List[str] = []
+
+    tentativas = []
+    df_csv = None
     try:
-        df = _relatorio_sf_via_csv(sf, rid)
-        origem = f"Salesforce CSV · {rotulo} · {rid}"
+        df_csv = _relatorio_sf_via_csv(sf, rid)
     except Exception as e_csv:
         tentativas.append(f"CSV: {e_csv}")
-        try:
-            df = _relatorio_sf_via_analytics(sf, rid)
-            origem = f"Salesforce Analytics · {rotulo} · {rid}"
-        except Exception as e_an:
-            tentativas.append(f"Analytics: {e_an}")
-            raise RuntimeError(
-                f"Não foi possível baixar o {rotulo} ({rid}). " + " | ".join(tentativas)
-            ) from e_an
-    df = normalizar_colunas(df)
-    if df.empty:
-        raise RuntimeError(f"Relatório {rotulo} ({rid}) retornou vazio.")
-    return df, origem
 
+    rotulo_l = (rotulo or "").lower()
+    precisa_chunk = False
+    if df_csv is None or df_csv.empty:
+        precisa_chunk = True
+    else:
+        n_csv = len(df_csv)
+        # Teto típico da Analytics (~2k) ou do export CSV (~100k)
+        if SF_ANALYTICS_ROW_CAP - 5 <= n_csv <= SF_ANALYTICS_ROW_CAP + 50:
+            precisa_chunk = True
+        if n_csv >= SF_CSV_SOFT_CAP:
+            precisa_chunk = True
+        # Agendamentos (~180k): se CSV não trouxe volume alto, força fatia
+        if "agendamento" in rotulo_l and n_csv < 120_000:
+            precisa_chunk = True
+        # Pastas costuma passar de 2k; se veio no teto Analytics, já coberto acima
+        if "pasta" in rotulo_l and n_csv <= SF_ANALYTICS_ROW_CAP + 50:
+            precisa_chunk = True
+
+    df = df_csv
+    origem = f"Salesforce CSV · {rotulo} · {rid}" if df_csv is not None and not df_csv.empty else ""
+
+    if precisa_chunk:
+        try:
+            df_chunk = _relatorio_sf_via_analytics_chunked(sf, rid)
+            if df_chunk is not None and not df_chunk.empty:
+                if df is None or df.empty or len(df_chunk) > len(df):
+                    df = df_chunk
+                    origem = (
+                        f"Salesforce Analytics fatiada · {rotulo} · {rid} · "
+                        f"{len(df_chunk):,} linhas".replace(",", ".")
+                    )
+                else:
+                    origem = (
+                        f"Salesforce CSV · {rotulo} · {rid} · "
+                        f"{len(df):,} linhas (chunk≤CSV)".replace(",", ".")
+                    )
+        except Exception as e_an:
+            tentativas.append(f"Analytics fatiada: {e_an}")
+            if df is None or df.empty:
+                try:
+                    df = _relatorio_sf_via_analytics(sf, rid)
+                    origem = f"Salesforce Analytics · {rotulo} · {rid} (truncado ~2k)"
+                except Exception as e_an2:
+                    tentativas.append(f"Analytics: {e_an2}")
+                    raise RuntimeError(
+                        f"Não foi possível baixar o {rotulo} ({rid}). "
+                        + " | ".join(tentativas)
+                    ) from e_an2
+
+    if df is None or df.empty:
+        raise RuntimeError(
+            f"Relatório {rotulo} ({rid}) retornou vazio. " + " | ".join(tentativas)
+        )
+
+    df = normalizar_colunas(df)
+    if not origem:
+        origem = f"Salesforce · {rotulo} · {rid} · {len(df):,} linhas".replace(",", ".")
+    elif "linhas" not in origem.lower():
+        origem = f"{origem} · {len(df):,} linhas".replace(",", ".")
+    return df, origem
 
 def segunda_da_semana(d: date) -> date:
     return d - timedelta(days=d.weekday())
