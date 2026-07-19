@@ -2507,9 +2507,20 @@ def _sf_rel_name(val):
     return None
 
 
+def _sf_janela_12_meses_fechados(ref: Optional[date] = None) -> Tuple[date, date]:
+    """12 meses-calendário anteriores, excluindo o mês atual."""
+    ref = ref or date.today()
+    inicio = date(ref.year - 1, ref.month, 1)
+    fim = date(ref.year, ref.month, 1) - timedelta(days=1)
+    return inicio, fim
+
+
 def _sf_soql_desde() -> str:
-    """ISO datetime UTC: jan/1 de (ano atual - 4)."""
-    ini = date(date.today().year - 4, 1, 1)
+    """
+    Início dos 12 meses fechados. A consulta também traz o mês atual para
+    realizado MTD/semanal; treino e médias o excluem explicitamente.
+    """
+    ini, _ = _sf_janela_12_meses_fechados()
     return f"{ini.isoformat()}T00:00:00Z"
 
 
@@ -2526,6 +2537,10 @@ def _sf_soql_agendamentos(sf) -> pd.DataFrame:
         "FROM Event "
         "WHERE Unidade_de_negocio__c = 'Direcional' "
         "AND Regional__c = 'RJ' "
+        "AND PDV__r.Regional_Comercial__c = 'RJ' "
+        "AND PDV__r.UnidadeDeNegocio__c = 'Direcional' "
+        "AND Empreendimento_de_interesse__c != null "
+        "AND Account.Regional_Comercial__c = 'RJ' "
         f"AND CreatedDate >= {desde}"
     )
     res = sf.query_all(soql)
@@ -2688,6 +2703,12 @@ def carregar_relatorio_salesforce(report_id: str, rotulo: str = "relatório"):
         )
 
     df = normalizar_colunas(df)
+    if rid == SF_REPORT_VENDAS_ID:
+        col_data = achar_coluna(df, ALIASES_CONTRATO_GERADO)
+        if col_data:
+            inicio_hist, _ = _sf_janela_12_meses_fechados()
+            dt = pd.to_datetime(df[col_data], dayfirst=True, errors="coerce")
+            df = df.loc[dt.notna() & (dt.dt.date >= inicio_hist)].copy()
     if not origem:
         origem = f"Salesforce · {rotulo} · {rid} · {len(df):,} linhas".replace(",", ".")
     elif "linhas" not in origem.lower():
