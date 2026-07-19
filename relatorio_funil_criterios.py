@@ -1041,9 +1041,17 @@ def _sf_rel_name(val):
     return None
 
 
+def _sf_janela_12_meses_fechados(ref: Optional[date] = None) -> Tuple[date, date]:
+    """12 meses-calendário anteriores, excluindo o mês atual."""
+    ref = ref or date.today()
+    inicio = date(ref.year - 1, ref.month, 1)
+    fim = date(ref.year, ref.month, 1) - timedelta(days=1)
+    return inicio, fim
+
+
 def _sf_soql_desde() -> str:
-    """ISO datetime UTC: jan/1 de (ano atual - 4)."""
-    ini = date(date.today().year - 4, 1, 1)
+    """Início dos 12 meses fechados; mantém mês atual só para o realizado."""
+    ini, _ = _sf_janela_12_meses_fechados()
     return f"{ini.isoformat()}T00:00:00Z"
 
 
@@ -1060,6 +1068,10 @@ def _sf_soql_agendamentos(sf) -> pd.DataFrame:
         "FROM Event "
         "WHERE Unidade_de_negocio__c = 'Direcional' "
         "AND Regional__c = 'RJ' "
+        "AND PDV__r.Regional_Comercial__c = 'RJ' "
+        "AND PDV__r.UnidadeDeNegocio__c = 'Direcional' "
+        "AND Empreendimento_de_interesse__c != null "
+        "AND Account.Regional_Comercial__c = 'RJ' "
         f"AND CreatedDate >= {desde}"
     )
     res = sf.query_all(soql)
@@ -1112,6 +1124,26 @@ def _sf_soql_pastas(sf) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _sf_soql_dicionario_regional(sf) -> pd.DataFrame:
+    """Replica o relatório gerente→regional no trimestre fiscal atual."""
+    soql = (
+        "SELECT Owner.Name, Gerente_regional__c "
+        "FROM Opportunity "
+        "WHERE CloseDate = THIS_FISCAL_QUARTER "
+        "AND Gerente_regional__c != null"
+    )
+    res = sf.query_all(soql)
+    rows = []
+    for r in res.get("records") or []:
+        rows.append(
+            {
+                "Proprietário da oportunidade": _sf_rel_name(r.get("Owner")),
+                "Gerente regional": r.get("Gerente_regional__c"),
+            }
+        )
+    return pd.DataFrame(rows).drop_duplicates()
+
+
 def _sf_soql_por_relatorio(sf, report_id: str, rotulo: str):
     """Tenta SOQL para relatórios grandes. Retorna (df, origem) ou (None, None)."""
     rid = (report_id or "").strip()
@@ -1133,6 +1165,13 @@ def _sf_soql_por_relatorio(sf, report_id: str, rotulo: str):
                     f"{len(df):,} linhas".replace(",", ".")
                 )
                 return df, origem
+        if rid == SF_REPORT_DIC_REGIONAL_ID or "dicionário" in rotulo_l:
+            df = _sf_soql_dicionario_regional(sf)
+            if df is not None and not df.empty:
+                return df, (
+                    "Salesforce SOQL · Opportunity gerente→regional · "
+                    f"{len(df):,} linhas".replace(",", ".")
+                )
     except Exception:
         return None, None
     return None, None
@@ -1222,6 +1261,12 @@ def carregar_relatorio_salesforce(report_id: str, rotulo: str = "relatório"):
         )
 
     df = normalizar_colunas(df)
+    if rid == SF_REPORT_VENDAS_ID:
+        col_data = achar_coluna(df, ALIASES_CONTRATO_GERADO)
+        if col_data:
+            inicio_hist, _ = _sf_janela_12_meses_fechados()
+            dt = parse_data_serie(df[col_data])
+            df = df.loc[dt.notna() & (dt.dt.date >= inicio_hist)].copy()
     if not origem:
         origem = f"Salesforce · {rotulo} · {rid} · {len(df):,} linhas".replace(",", ".")
     elif "linhas" not in origem.lower():
