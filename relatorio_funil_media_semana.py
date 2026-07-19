@@ -610,18 +610,49 @@ def limpar_nome(val: Any) -> str:
 
 
 def parse_data_serie(serie: pd.Series) -> pd.Series:
-    dt = pd.to_datetime(serie, dayfirst=True, errors="coerce")
-    if dt.isna().all():
-        nums = pd.to_numeric(serie, errors="coerce")
+    """
+    Converte datas Salesforce/relatórios para datetime64[ns] naive.
+    Não usa dayfirst em ISO SF — isso troca 2025-07-01 por 2025-01-07.
+    """
+    if serie is None:
+        return pd.Series(dtype="datetime64[ns]")
+    raw = serie
+    as_str = raw.map(
+        lambda x: ""
+        if x is None or (isinstance(x, float) and pd.isna(x))
+        else str(x).strip()
+    )
+    out = pd.Series(pd.NaT, index=raw.index, dtype="datetime64[ns]")
+    mask_iso = as_str.str.match(r"^\d{4}-\d{2}-\d{2}", na=False)
+    if mask_iso.any():
+        has_time = mask_iso & as_str.str.contains("T", na=False)
+        date_only = mask_iso & ~has_time
+        if has_time.any():
+            ts = pd.to_datetime(raw.loc[has_time], errors="coerce", utc=True)
+            out.loc[has_time] = ts.dt.tz_convert("America/Sao_Paulo").dt.tz_localize(None)
+        if date_only.any():
+            out.loc[date_only] = pd.to_datetime(
+                as_str.loc[date_only], format="%Y-%m-%d", errors="coerce"
+            )
+    vazios = {"", "nan", "none", "nat", "null", "na", "n/a", "-"}
+    mask_rest = out.isna() & ~as_str.str.lower().isin(vazios)
+    if mask_rest.any():
+        out.loc[mask_rest] = pd.to_datetime(
+            raw.loc[mask_rest], dayfirst=True, errors="coerce"
+        )
+    if out.isna().all():
+        nums = pd.to_numeric(raw, errors="coerce")
         if nums.notna().any():
             med = float(nums.dropna().median())
-            if med > 1e9:
-                dt = pd.to_datetime(nums, unit="s", errors="coerce")
-            elif med > 1e12:
-                dt = pd.to_datetime(nums, unit="ms", errors="coerce")
+            if med > 1e12:
+                out = pd.to_datetime(nums, unit="ms", errors="coerce")
+            elif med > 1e9:
+                out = pd.to_datetime(nums, unit="s", errors="coerce")
             else:
-                dt = pd.to_datetime(nums, unit="D", origin="1899-12-30", errors="coerce")
-    return dt
+                out = pd.to_datetime(
+                    nums, unit="D", origin="1899-12-30", errors="coerce"
+                )
+    return out
 
 
 def filtrar_vendas_comerciais(df: pd.DataFrame) -> pd.DataFrame:
