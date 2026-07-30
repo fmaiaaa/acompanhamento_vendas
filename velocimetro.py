@@ -14,8 +14,10 @@ import html
 import math
 import os
 import re
+import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
+
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
@@ -85,6 +87,8 @@ FUNIL_ANOS_TREINO = 3
 FUNIL_PESOS_ANUAIS = (1.00, 0.55, 0.30)
 # Buffer de produção: 28 dias de lags antes do 1º dia do mês atual.
 FUNIL_SOQL_BUFFER_LAGS = 28
+# Painel web: vendas com janela curta (projeção OLS usa até 24m; evita SOQL de 36m).
+PAINEL_MESES_VENDAS = 24
 FUNIL_MODELO_SCHEMA = "funil_elasticnet_cal_lags_v1"
 FUNIL_ELASTICNET_ALPHA = 0.5
 FUNIL_ELASTICNET_L1_RATIO = 0.3
@@ -1689,19 +1693,21 @@ def filtrar_vendas_competencia(
     Usa _ano/_mes e, quando vazios, a data de Contrato gerado em.
     """
     out = df.copy()
-    dt_contrato = _serie_data_contrato(out, col_contrato)
 
     if anos_sel:
+        dt_contrato = _serie_data_contrato(out, col_contrato)
         mask_ano = out["_ano"].isin(anos_sel)
         if dt_contrato.notna().any():
             mask_ano = mask_ano | (out["_ano"].isna() & dt_contrato.dt.year.isin(anos_sel))
-        out = out.loc[mask_ano]
+        out = out.loc[mask_ano].copy()
 
     if meses_sel:
+        # Recalcula datas após filtro de ano (índice de out muda).
+        dt_contrato = _serie_data_contrato(out, col_contrato)
         mask_mes = out["_mes"].isin(meses_sel)
         if dt_contrato.notna().any():
             mask_mes = mask_mes | (out["_mes"].isna() & dt_contrato.dt.month.isin(meses_sel))
-        out = out.loc[mask_mes]
+        out = out.loc[mask_mes].copy()
 
     return out
 
@@ -3143,6 +3149,15 @@ def conectar_salesforce_app() -> Tuple[Any, Optional[str]]:
         return None, f"{type(e).__name__}: {e}"
 
 
+@st.cache_resource(ttl=3300, show_spinner=False)
+def _cliente_salesforce_cache():
+    """Reutiliza sessão SF entre consultas (evita 3+ logins por refresh)."""
+    sf, err = conectar_salesforce_app()
+    if sf is None:
+        raise RuntimeError(err or "Falha ao conectar no Salesforce.")
+    return sf
+
+
 # Analytics API: teto duro de detalhe por chamada. CSV Details: ~100k.
 SF_ANALYTICS_ROW_CAP = 2000
 SF_CSV_SOFT_CAP = 95_000
@@ -3485,6 +3500,17 @@ def _sf_rel_name(val):
     return None
 
 
+def _sf_janela_painel_vendas(ref: Optional[date] = None) -> date:
+    """Janela enxuta do painel: últimos PAINEL_MESES_VENDAS meses (inclui MTD)."""
+    ref = ref or date.today()
+    y, m = ref.year, ref.month
+    m -= int(PAINEL_MESES_VENDAS) - 1
+    while m <= 0:
+        m += 12
+        y -= 1
+    return date(y, m, 1)
+
+
 def _sf_janela_12_meses_fechados(ref: Optional[date] = None) -> Tuple[date, date]:
     """12 meses-calendário anteriores, excluindo o mês atual."""
     ref = ref or date.today()
@@ -3511,11 +3537,14 @@ def _sf_inicio_producao(ref: Optional[date] = None) -> date:
 def _sf_soql_desde(modo_janela: str = "producao") -> str:
     """
     Início da janela SOQL.
-    - treino / painel / historico: 36 meses a partir do 1º dia do mês (inclui MTD)
-    - producao: 28 dias antes do 1º dia do mês atual (MTD + lags)
+    - painel: PAINEL_MESES_VENDAS (24m) — KPI + projeção OLS no painel web
+    - treino / historico: 36 meses (script offline)
+    - producao: 28 dias antes do 1º dia do mês atual (MTD + lags do funil)
     """
     modo = (modo_janela or "producao").strip().lower()
-    if modo in ("treino", "painel", "historico"):
+    if modo == "painel":
+        ini = _sf_janela_painel_vendas()
+    elif modo in ("treino", "historico"):
         ini, _ = _sf_janela_36_meses_fechados()
     else:
         ini = _sf_inicio_producao()
@@ -3536,9 +3565,7 @@ def _sf_soql_agendamentos(sf, modo_janela: str = "producao") -> pd.DataFrame:
         else f"CreatedDate >= {desde}"
     )
     soql = (
-        "SELECT Id, Codigo_do_agendamento__c, CreatedDate, Data_da_Visita__c, "
-        "Gerente_Regional__c, Gerente_de_Vendas__c, Corretor__r.Name, Regional__c, "
-        "Unidade_de_negocio__c, Empreendimento_de_interesse__c "
+        "SELECT Codigo_do_agendamento__c, CreatedDate, Data_da_Visita__c "
         "FROM Event "
         "WHERE Unidade_de_negocio__c = 'Direcional' "
         "AND Regional__c = 'RJ' "
@@ -3549,19 +3576,14 @@ def _sf_soql_agendamentos(sf, modo_janela: str = "producao") -> pd.DataFrame:
         f"AND {filtro_tempo}"
     )
     res = sf.query_all(soql)
-    rows = []
-    for r in res.get("records") or []:
-        rows.append(
-            {
-                "Código do agendamento": r.get("Codigo_do_agendamento__c"),
-                "Data de criação": r.get("CreatedDate"),
-                "Data da visita": r.get("Data_da_Visita__c"),
-                "Gerente Regional": r.get("Gerente_Regional__c"),
-                "Gerente de Vendas": r.get("Gerente_de_Vendas__c"),
-                "Corretor: Nome completo": _sf_rel_name(r.get("Corretor__r")),
-                "Regional": r.get("Regional__c"),
-            }
-        )
+    rows = [
+        {
+            "Código do agendamento": r.get("Codigo_do_agendamento__c"),
+            "Data de criação": r.get("CreatedDate"),
+            "Data da visita": r.get("Data_da_Visita__c"),
+        }
+        for r in (res.get("records") or [])
+    ]
     return pd.DataFrame(rows)
 
 
@@ -3576,33 +3598,22 @@ def _sf_soql_pastas(sf, modo_janela: str = "producao") -> pd.DataFrame:
         else f"CreatedDate >= {desde}"
     )
     soql = (
-        "SELECT Id, Name, CreatedDate, dataPrimeiroEnvioAnalise__c, dataAprovacaoSAFI__c, "
-        "Corretor__r.Name, Oportunidade__r.Gerente_regional__c, "
-        "Oportunidade__r.Contato_Corretor_Proprietario1__r.Name "
+        "SELECT Name, CreatedDate, dataPrimeiroEnvioAnalise__c, dataAprovacaoSAFI__c "
         "FROM Avaliacao_credito__c "
         "WHERE Empreendimento__r.Regional__c = 'RJ' "
         "AND Empreendimento__r.UnidadeDeNegocio__c = 'Direcional' "
         f"AND {filtro_tempo}"
     )
     res = sf.query_all(soql)
-    rows = []
-    for r in res.get("records") or []:
-        opp = r.get("Oportunidade__r") if isinstance(r.get("Oportunidade__r"), dict) else {}
-        rows.append(
-            {
-                "Nome da Avaliação de crédito": r.get("Name"),
-                "Data de criação": r.get("CreatedDate"),
-                "Data Primeiro Envio Análise": r.get("dataPrimeiroEnvioAnalise__c"),
-                "Data Aprovação SAFI": r.get("dataAprovacaoSAFI__c"),
-                "Corretor": _sf_rel_name(r.get("Corretor__r")),
-                "Avaliação de crédito : Oportunidade : Gerente regional": (
-                    opp.get("Gerente_regional__c") if opp else None
-                ),
-                "Oportunidade: Contato Corretor Proprietario: Nome completo": _sf_rel_name(
-                    opp.get("Contato_Corretor_Proprietario1__r") if opp else None
-                ),
-            }
-        )
+    rows = [
+        {
+            "Nome da Avaliação de crédito": r.get("Name"),
+            "Data de criação": r.get("CreatedDate"),
+            "Data Primeiro Envio Análise": r.get("dataPrimeiroEnvioAnalise__c"),
+            "Data Aprovação SAFI": r.get("dataAprovacaoSAFI__c"),
+        }
+        for r in (res.get("records") or [])
+    ]
     return pd.DataFrame(rows)
 
 
@@ -3690,6 +3701,90 @@ def _sf_soql_por_relatorio(sf, report_id: str, rotulo: str, modo_janela: str = "
     return None, None
 
 
+def _recortar_vendas_painel(df: pd.DataFrame) -> pd.DataFrame:
+    """Aplica recorte temporal de vendas do painel (24m)."""
+    if df is None or df.empty:
+        return df if df is not None else pd.DataFrame()
+    col_data = achar_coluna(df, ALIASES_CONTRATO_GERADO)
+    if not col_data:
+        return df
+    inicio_hist = _sf_janela_painel_vendas()
+    dt = parse_data_serie(df[col_data])
+    return df.loc[dt.notna() & (dt.dt.date >= inicio_hist)].copy()
+
+
+@st.cache_data(ttl=3600, show_spinner="Carregando vendas Salesforce…")
+def carregar_vendas_painel_sf() -> Dict[str, Any]:
+    """Vendas comerciais — janela curta (24m). Bloqueia só o KPI inicial."""
+    t0 = time.perf_counter()
+    sf = _cliente_salesforce_cache()
+    t1 = time.perf_counter()
+    df_vendas = _sf_soql_vendas(sf, modo_janela="painel")
+    t_vendas = time.perf_counter() - t1
+    df_vendas = normalizar_colunas(df_vendas) if df_vendas is not None and not df_vendas.empty else pd.DataFrame()
+    df_vendas = _recortar_vendas_painel(df_vendas)
+    t_total = time.perf_counter() - t0
+    n_v = len(df_vendas)
+    return {
+        "vendas": df_vendas,
+        "timings": {"vendas_s": t_vendas, "total_s": t_total},
+        "origem_vendas": (
+            f"Salesforce SOQL · Opportunity · vendas (painel {PAINEL_MESES_VENDAS}m) · "
+            f"{n_v:,} linhas".replace(",", ".")
+        ),
+    }
+
+
+@st.cache_data(ttl=3600, show_spinner="Carregando funil (agendamentos + pastas)…")
+def carregar_funil_painel_sf() -> Dict[str, Any]:
+    """Agendamentos + pastas — janela produção (~2 meses). Carrega ao abrir projeção."""
+    t0 = time.perf_counter()
+    sf = _cliente_salesforce_cache()
+    t1 = time.perf_counter()
+    df_ag = _sf_soql_agendamentos(sf, modo_janela="producao")
+    df_pastas = _sf_soql_pastas(sf, modo_janela="producao")
+    t_funil = time.perf_counter() - t1
+    df_ag = normalizar_colunas(df_ag) if df_ag is not None and not df_ag.empty else pd.DataFrame()
+    df_pastas = normalizar_colunas(df_pastas) if df_pastas is not None and not df_pastas.empty else pd.DataFrame()
+    t_total = time.perf_counter() - t0
+    n_a, n_p = len(df_ag), len(df_pastas)
+    return {
+        "agendamentos": df_ag,
+        "pastas": df_pastas,
+        "timings": {"funil_s": t_funil, "total_s": t_total},
+        "origem_ag": (
+            f"Salesforce SOQL · Event · agendamentos (produção) · "
+            f"{n_a:,} linhas".replace(",", ".")
+        ),
+        "origem_pastas": (
+            f"Salesforce SOQL · Avaliacao_credito__c · pastas (produção) · "
+            f"{n_p:,} linhas".replace(",", ".")
+        ),
+    }
+
+
+@st.cache_data(ttl=3600, show_spinner="Carregando bases Salesforce…")
+def carregar_pacote_painel_sf() -> Dict[str, Any]:
+    """Pacote completo (benchmark). Produção usa vendas + funil separados."""
+    vendas = carregar_vendas_painel_sf()
+    funil = carregar_funil_painel_sf()
+    tv = (vendas.get("timings") or {}).get("total_s", 0.0)
+    tf = (funil.get("timings") or {}).get("total_s", 0.0)
+    return {
+        "vendas": vendas["vendas"],
+        "agendamentos": funil["agendamentos"],
+        "pastas": funil["pastas"],
+        "timings": {
+            "vendas_s": (vendas.get("timings") or {}).get("vendas_s", tv),
+            "funil_s": (funil.get("timings") or {}).get("funil_s", tf),
+            "total_s": float(tv) + float(tf),
+        },
+        "origem_vendas": vendas["origem_vendas"],
+        "origem_ag": funil["origem_ag"],
+        "origem_pastas": funil["origem_pastas"],
+    }
+
+
 @st.cache_data(ttl=3600, show_spinner="Baixando dados Salesforce (SOQL)…")
 def carregar_relatorio_salesforce(
     report_id: str,
@@ -3703,12 +3798,16 @@ def carregar_relatorio_salesforce(
     3) Analytics fatiada (fallback; cota 500/h)
 
     modo_janela:
+      - painel: vendas 24 meses (painel web)
       - producao: buffer curto (MTD + 28d de lags)
       - treino: 36 meses fechados (script offline)
     """
-    sf, err = conectar_salesforce_app()
-    if sf is None:
-        raise RuntimeError(err or "Falha ao conectar no Salesforce.")
+    try:
+        sf = _cliente_salesforce_cache()
+    except Exception:
+        sf, err = conectar_salesforce_app()
+        if sf is None:
+            raise RuntimeError(err or "Falha ao conectar no Salesforce.")
 
     rid = (report_id or "").strip()
     if not rid:
@@ -3786,7 +3885,10 @@ def carregar_relatorio_salesforce(
     if rid == SF_REPORT_VENDAS_ID:
         col_data = achar_coluna(df, ALIASES_CONTRATO_GERADO)
         if col_data:
-            inicio_hist, _ = _sf_janela_36_meses_fechados()
+            if modo == "painel":
+                inicio_hist = _sf_janela_painel_vendas()
+            else:
+                inicio_hist, _ = _sf_janela_36_meses_fechados()
             dt = parse_data_serie(df[col_data])
             df = df.loc[dt.notna() & (dt.dt.date >= inicio_hist)].copy()
     if not origem:
@@ -6117,6 +6219,20 @@ def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_v
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
 
 
+def _distribuir_vendas_coordenador(
+    df_vendas: pd.DataFrame,
+    df_metas: pd.DataFrame,
+) -> pd.DataFrame:
+    """Expande vendas por coordenador via merge (substitui iterrows)."""
+    map_emp = df_metas[["Empreendimento", "Regiao_Coord", "_peso_coord"]].drop_duplicates()
+    out = df_vendas.merge(map_emp, on="Empreendimento", how="left")
+    if "Região" in out.columns:
+        out["Regiao_Coord"] = out["Regiao_Coord"].fillna(out["Região"].astype(str).str.strip())
+    out["Regiao_Coord"] = out["Regiao_Coord"].fillna("Não Informado")
+    out["_peso_coord"] = pd.to_numeric(out["_peso_coord"], errors="coerce").fillna(1.0)
+    return out
+
+
 def main() -> None:
     fav = _resolver_png_raiz(FAVICON_ARQUIVO)
     st.set_page_config(
@@ -6142,11 +6258,21 @@ def main() -> None:
         st.error(f"Erro ao ler metas na planilha: {str(e)}")
         return
 
+    df_ag_vis_cache: Optional[pd.DataFrame] = None
+    df_pastas_cache: Optional[pd.DataFrame] = None
+    origem_ag_cache = ""
+    origem_pastas_cache = ""
+
     try:
-        df_vendas_raw, origem_vendas_painel = carregar_relatorio_salesforce(
-            SF_REPORT_VENDAS_ID, rotulo="vendas (painel)", modo_janela="painel"
+        pacote_vendas = carregar_vendas_painel_sf()
+        df_vendas_raw = pacote_vendas["vendas"]
+        origem_vendas_painel = pacote_vendas["origem_vendas"]
+        timings_sf = pacote_vendas.get("timings") or {}
+        t_sf = float(timings_sf.get("total_s", 0.0))
+        st.caption(
+            f"Base de vendas: {origem_vendas_painel}"
+            + (f" · SF {t_sf:.1f}s" if t_sf else "")
         )
-        st.caption(f"Base de vendas: {origem_vendas_painel}")
     except Exception as e_sf_vendas:
         st.error(
             f"Não foi possível carregar vendas do Salesforce "
@@ -6285,26 +6411,7 @@ def main() -> None:
     # -------------------------------------------------------------------------
     # Multiplicação e Distribuição Segura das Vendas com Coordenador
     # -------------------------------------------------------------------------
-    map_emp_regiao = df_metas[["Empreendimento", "Regiao_Coord", "_peso_coord"]].drop_duplicates()
-    
-    lista_com_peso = []
-    for _, venda_row in df_vendas.iterrows():
-        emp_venda = str(venda_row["Empreendimento"]).strip()
-        sub_map = map_emp_regiao[map_emp_regiao["Empreendimento"] == emp_venda]
-        
-        if sub_map.empty:
-            nova_linha = venda_row.copy()
-            nova_linha["_peso_coord"] = 1.0
-            nova_linha["Regiao_Coord"] = venda_row.get("Região", "Não Informado")
-            lista_com_peso.append(nova_linha)
-        else:
-            for _, map_row in sub_map.iterrows():
-                nova_linha = venda_row.copy()
-                nova_linha["_peso_coord"] = float(map_row["_peso_coord"])
-                nova_linha["Regiao_Coord"] = map_row["Regiao_Coord"]
-                lista_com_peso.append(nova_linha)
-
-    df_vendas = pd.DataFrame(lista_com_peso)
+    df_vendas = _distribuir_vendas_coordenador(df_vendas, df_metas)
     df_vendas["_qtd_venda"] = 1.0 * df_vendas["_peso_coord"]
     df_vendas["_vgv_venda"] = df_vendas["_vgv"] * df_vendas["_peso_coord"]
     df_vendas_painel = df_vendas.copy()
@@ -6610,15 +6717,27 @@ def main() -> None:
                 if efeitos:
                     render_efeitos_sazonais(efeitos)
 
-            # Projeção do funil — 3 relatórios Salesforce (agendamentos, pastas, vendas)
+            # Projeção do funil — carrega ag/pastas sob demanda (não bloqueia KPI inicial)
             try:
+                try:
+                    pacote_funil = carregar_funil_painel_sf()
+                    df_ag_vis_cache = pacote_funil.get("agendamentos")
+                    df_pastas_cache = pacote_funil.get("pastas")
+                    origem_ag_cache = pacote_funil.get("origem_ag", "")
+                    origem_pastas_cache = pacote_funil.get("origem_pastas", "")
+                    tf = float((pacote_funil.get("timings") or {}).get("total_s", 0.0))
+                    if tf:
+                        st.caption(f"Funil SF carregado em {tf:.1f}s")
+                except Exception as e_funil_load:
+                    st.warning(f"Não foi possível pré-carregar funil SF: {e_funil_load}")
+
                 # 1) Agendamentos / visitas
                 try:
-                    df_ag_vis, origem_ag = carregar_relatorio_salesforce(
-                        SF_REPORT_AGENDAMENTOS_ID,
-                        rotulo="agendamentos/visitas",
-                        modo_janela="painel",
-                    )
+                    if df_ag_vis_cache is not None and not df_ag_vis_cache.empty:
+                        df_ag_vis = df_ag_vis_cache.copy()
+                        origem_ag = origem_ag_cache
+                    else:
+                        raise RuntimeError("Sem agendamentos no pacote funil.")
                     n_ag_bruto = len(df_ag_vis)
                     df_ag_vis = deduplicar_agendamentos_funil(df_ag_vis)
                     st.caption(
@@ -6639,9 +6758,11 @@ def main() -> None:
 
                 # 2) Pastas / pastas aprovadas
                 try:
-                    df_pastas_funil, origem_pastas = carregar_relatorio_salesforce(
-                        SF_REPORT_PASTAS_ID, rotulo="pastas", modo_janela="painel"
-                    )
+                    if df_pastas_cache is not None and not df_pastas_cache.empty:
+                        df_pastas_funil = df_pastas_cache.copy()
+                        origem_pastas = origem_pastas_cache
+                    else:
+                        raise RuntimeError("Sem pastas no pacote funil.")
                     n_pas_bruto = len(df_pastas_funil)
                     col_envio = achar_coluna_primeiro_envio_analise(df_pastas_funil)
                     col_safi = achar_coluna_aprovacao_safi(df_pastas_funil)
