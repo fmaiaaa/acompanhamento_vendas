@@ -1559,38 +1559,151 @@ def canal_de_imobiliaria(val: Any) -> str:
 
 
 def extrair_mes_da_data_venda(val: Any) -> Optional[int]:
-    if val is None or pd.isna(val): return None
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return None
+    dt = parse_data_serie(pd.Series([val])).iloc[0]
+    if pd.notna(dt):
+        m = int(dt.month)
+        if 1 <= m <= 12:
+            return m
     s = str(val).strip()
-    if not s or s in ("nan", "null", ""): return None
-    
+    if not s or s in ("nan", "null", ""):
+        return None
+
     if "/" in s:
         parts = s.split("/")
         if len(parts) >= 2 and parts[1].isdigit():
             m = int(parts[1])
-            if 1 <= m <= 12: return m
-            
+            if 1 <= m <= 12:
+                return m
+
     for k, v in MESES_TEXTO_MAP.items():
-        if k in s.lower(): return v
+        if k in s.lower():
+            return v
     return None
 
 
 def extrair_ano_da_data_venda(val: Any) -> Optional[int]:
-    if val is None or pd.isna(val): return None
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return None
+    dt = parse_data_serie(pd.Series([val])).iloc[0]
+    if pd.notna(dt):
+        y = int(dt.year)
+        if y > 2000:
+            return y
     s = str(val).strip()
-    if not s or s in ("nan", "null", ""): return None
-    
+    if not s or s in ("nan", "null", ""):
+        return None
+
     if "/" in s:
         parts = s.split("/")
         if len(parts) >= 3:
             ano_str = re.sub(r"[^\d]", "", parts[2].split()[0])
             if len(ano_str) == 4 and ano_str.isdigit():
                 return int(ano_str)
-                
+
     cleaned = re.sub(r"[^\d]", "", s)
     if len(cleaned) >= 4:
+        if len(cleaned) == 8 and cleaned[:4].isdigit():
+            ano = int(cleaned[:4])
+            if ano > 2000:
+                return ano
         ano = int(cleaned[-4:])
-        if ano > 2000: return ano
+        if ano > 2000:
+            return ano
     return None
+
+
+def extrair_mes_looker(val: Any) -> Optional[int]:
+    """Mês a partir de colunas Looker / Mês Venda (número, ISO ou texto)."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return None
+    n = pd.to_numeric(val, errors="coerce")
+    if pd.notna(n):
+        m = int(n)
+        if 1 <= m <= 12:
+            return m
+    return extrair_mes_da_data_venda(val)
+
+
+def extrair_ano_looker(val: Any) -> Optional[int]:
+    """Ano a partir de colunas Looker / Ano da Venda (número, ISO ou texto)."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return None
+    n = pd.to_numeric(val, errors="coerce")
+    if pd.notna(n):
+        y = int(n)
+        if y > 2000:
+            return y
+    return extrair_ano_da_data_venda(val)
+
+
+def aplicar_mes_ano_vendas(
+    df: pd.DataFrame,
+    cols_data: List[str],
+    col_mes_venda: Optional[str] = None,
+    col_ano_venda: Optional[str] = None,
+    col_mes_looker: Optional[str] = None,
+) -> Tuple[pd.Series, pd.Series]:
+    """
+    Preenche _mes/_ano coalescendo datas ISO do SF (Data da venda, Contrato gerado em)
+    e campos Mês Venda / Ano da Venda quando a data principal vem vazia.
+    """
+    mes = pd.Series(pd.NA, index=df.index, dtype="Int64")
+    ano = pd.Series(pd.NA, index=df.index, dtype="Int64")
+
+    for col in cols_data:
+        if not col or col not in df.columns:
+            continue
+        m = df[col].map(extrair_mes_da_data_venda)
+        a = df[col].map(extrair_ano_da_data_venda)
+        mes = mes.fillna(m.astype("Int64"))
+        ano = ano.fillna(a.astype("Int64"))
+
+    if col_mes_venda and col_mes_venda in df.columns:
+        mes = mes.fillna(df[col_mes_venda].map(extrair_mes_looker).astype("Int64"))
+    if col_mes_looker and col_mes_looker in df.columns:
+        mes = mes.fillna(df[col_mes_looker].map(extrair_mes_looker).astype("Int64"))
+
+    if col_ano_venda and col_ano_venda in df.columns:
+        ano = ano.fillna(df[col_ano_venda].map(extrair_ano_looker).astype("Int64"))
+
+    return mes, ano
+
+
+def _serie_data_contrato(df: pd.DataFrame, col_contrato: Optional[str]) -> pd.Series:
+    """Datetime de contrato para filtros de competência (fallback quando _mes/_ano vazios)."""
+    if not col_contrato or col_contrato not in df.columns:
+        return pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
+    return parse_data_serie(df[col_contrato])
+
+
+def filtrar_vendas_competencia(
+    df: pd.DataFrame,
+    anos_sel: List[int],
+    meses_sel: List[int],
+    col_contrato: Optional[str] = None,
+) -> pd.DataFrame:
+    """
+    Filtra vendas por ano/mês de competência.
+    Usa _ano/_mes e, quando vazios, a data de Contrato gerado em.
+    """
+    out = df.copy()
+    dt_contrato = _serie_data_contrato(out, col_contrato)
+
+    if anos_sel:
+        mask_ano = out["_ano"].isin(anos_sel)
+        if dt_contrato.notna().any():
+            mask_ano = mask_ano | (out["_ano"].isna() & dt_contrato.dt.year.isin(anos_sel))
+        out = out.loc[mask_ano]
+
+    if meses_sel:
+        mask_mes = out["_mes"].isin(meses_sel)
+        if dt_contrato.notna().any():
+            mask_mes = mask_mes | (out["_mes"].isna() & dt_contrato.dt.month.isin(meses_sel))
+        out = out.loc[mask_mes]
+
+    return out
 
 
 def _norm_txt_col(s: Any) -> str:
@@ -4838,6 +4951,15 @@ def projetar_funil_mes_atual(
         days=max(0, max_lag - FUNIL_SOQL_BUFFER_LAGS)
     )
     inicio_cal = min(inicio_cal, date(hoje.year, hoje.month, 1) - timedelta(days=max_lag))
+    # Se mapas têm histórico mais longo (SOQL painel), estende para lags completos.
+    datas_mapa: List[date] = []
+    for mp in (mapas or {}).values():
+        if isinstance(mp, dict):
+            datas_mapa.extend(d for d in mp.keys() if isinstance(d, date))
+    if datas_mapa:
+        inicio_mapa = min(datas_mapa)
+        inicio_cal = min(inicio_cal, inicio_mapa)
+        inicio_cal = min(inicio_cal, date(hoje.year, hoje.month, 1) - timedelta(days=max_lag))
 
     ano, mes = hoje.year, hoje.month
     ultimo_dia = calendar.monthrange(ano, mes)[1]
@@ -4853,10 +4975,7 @@ def projetar_funil_mes_atual(
     cal = cal.dropna(subset=["data"]).reset_index(drop=True)
     if cal.empty:
         return None
-    # Precisa ter algum volume no mês corrente ou no buffer.
-    mask_mes = (cal["data"] >= date(ano, mes, 1)) & (cal["data"] <= hoje)
-    if float(cal.loc[mask_mes, list(FUNIL_ETAPAS)].sum().sum()) < 0:
-        return None
+    # Mesmo sem volume MTD, segue com projeção (coeficientes + médias históricas).
 
     r2s = {e: float((modelo.get("r2s") or {}).get(e, 0.0)) for e in FUNIL_ETAPAS}
     r2s_medias = {
@@ -6078,14 +6197,17 @@ def main() -> None:
     col_regiao = achar_coluna(df_vendas, ["Região", "Regiao"])
     col_imobiliaria = achar_coluna(df_vendas, ["Imobiliária", "Imobiliaria"])
     col_canal = achar_coluna(df_vendas, ["Canal"])
-    col_valor = achar_coluna(df_vendas, ["Valor Real de Venda", "Valor Real", "Valor"])
+    col_valor = achar_coluna(
+        df_vendas,
+        ["Valor Real de Venda", "Valor Real", "Valor", "Valor_Real_de_Venda__c"],
+    )
     col_emp = achar_coluna(df_vendas, ["Empreendimento", "Obra", "Nome do Empreendimento"])
     col_venda_comercial = achar_coluna(df_vendas, ALIASES_VENDA_COMERCIAL)
     col_venda_facilitada = achar_coluna(df_vendas, ["Venda facilitada", "Venda Facilitada", "Venda Facilitada?"])
     col_proprietario = achar_coluna(df_vendas, ["Proprietário da oportunidade", "Proprietario da oportunidade", "Nome da conta", "Proprietario", "Corretor"])
     col_ranking = achar_coluna(df_vendas, ["Ranking"])
     col_data_venda = achar_coluna(df_vendas, ["Data da venda", "Data Venda", "Data de venda", "Data"])
-    col_contrato_gerado = achar_coluna(df_vendas, ["Contrato gerado em", "Contrato gerado"])
+    col_contrato_gerado = achar_coluna(df_vendas, ALIASES_CONTRATO_GERADO)
 
     if col_emp and col_emp != "Empreendimento":
         df_vendas.rename(columns={col_emp: "Empreendimento"}, inplace=True)
@@ -6124,20 +6246,30 @@ def main() -> None:
         df_vendas["Tipo_Venda"] = "Normal"
 
     # -------------------------------------------------------------------------
-    # Extração de Data Segura e Corrigida (Suporta 2.026 e 2026 nativos)
+    # Extração de mês/ano (ISO SF + fallback Contrato gerado em / Mês-Ano Venda)
     # -------------------------------------------------------------------------
-    if col_data_venda:
-        df_vendas["_mes"] = df_vendas[col_data_venda].apply(extrair_mes_da_data_venda)
-        df_vendas["_ano"] = df_vendas[col_data_venda].apply(extrair_ano_da_data_venda)
-    else:
-        if col_mes_looker:
-            df_vendas["_mes"] = df_vendas[col_mes_looker].apply(extrair_mes_looker)
-            df_vendas["_ano"] = df_vendas[col_mes_looker].apply(extrair_ano_looker)
-        else:
-            df_vendas["_mes"] = df_vendas[col_mes_venda].apply(extrair_mes_looker) if col_mes_venda else None
-            df_vendas["_ano"] = df_vendas[col_ano].apply(extrair_ano_looker) if col_ano else None
+    cols_data_venda = [
+        c for c in [col_data_venda, col_contrato_gerado] if c and c in df_vendas.columns
+    ]
+    df_vendas["_mes"], df_vendas["_ano"] = aplicar_mes_ano_vendas(
+        df_vendas,
+        cols_data=cols_data_venda,
+        col_mes_venda=col_mes_venda,
+        col_ano_venda=col_ano,
+        col_mes_looker=col_mes_looker,
+    )
 
-    df_vendas["_vgv"] = df_vendas[col_valor].map(parse_valor_br) if col_valor else 0.0
+    df_vendas["_vgv"] = (
+        pd.to_numeric(df_vendas[col_valor], errors="coerce").fillna(0.0)
+        if col_valor
+        else 0.0
+    )
+    if col_valor:
+        mask_txt = df_vendas["_vgv"] == 0
+        if mask_txt.any():
+            df_vendas.loc[mask_txt, "_vgv"] = (
+                df_vendas.loc[mask_txt, col_valor].map(parse_valor_br)
+            )
 
     if col_canal:
         def agrupar_canal(c: Any) -> str:
@@ -6175,14 +6307,30 @@ def main() -> None:
     df_vendas = pd.DataFrame(lista_com_peso)
     df_vendas["_qtd_venda"] = 1.0 * df_vendas["_peso_coord"]
     df_vendas["_vgv_venda"] = df_vendas["_vgv"] * df_vendas["_peso_coord"]
+    df_vendas_painel = df_vendas.copy()
 
     # -------------------------------------------------------------------------
     # LINHA ÚNICA DE FILTROS
     # -------------------------------------------------------------------------
-    anos_disponiveis = sorted(int(x) for x in df_vendas["_ano"].dropna().unique().tolist() if pd.notna(x) and x > 2000)
+    anos_disponiveis = sorted(
+        int(x)
+        for x in df_vendas["_ano"].dropna().unique().tolist()
+        if pd.notna(x) and int(x) > 2000
+    )
+    if not anos_disponiveis and col_contrato_gerado:
+        dt_anos = _serie_data_contrato(df_vendas, col_contrato_gerado).dropna()
+        if not dt_anos.empty:
+            anos_disponiveis = sorted(int(y) for y in dt_anos.dt.year.unique() if int(y) > 2000)
+
     meses_no_ano = list(range(1, 13))
     mes_atual = datetime.now().month
+    ano_atual = datetime.now().year
     mes_padrao = mes_atual if mes_atual in meses_no_ano else 1
+    default_anos = (
+        [ano_atual]
+        if ano_atual in anos_disponiveis
+        else ([anos_disponiveis[-1]] if anos_disponiveis else [])
+    )
     regioes_disponiveis = sorted(set(str(x).strip() for x in df_metas["Regiao_Coord"].dropna().unique() if str(x).strip()))
     
     todos_emps_vendas = sorted(list(set(str(x).strip() for x in df_vendas["Empreendimento"].dropna().unique() if str(x).strip())))
@@ -6193,7 +6341,7 @@ def main() -> None:
     with col_filtros[0]:
         canais_sel = st.multiselect("Canal da Meta", ["RIO", "DIR", "PARC", "RJ"], default=["RIO"])
     with col_filtros[1]:
-        anos_sel = st.multiselect("Ano", anos_disponiveis, default=[anos_disponiveis[-1]] if anos_disponiveis else [])
+        anos_sel = st.multiselect("Ano", anos_disponiveis, default=default_anos)
     with col_filtros[2]:
         meses_venda_sel = st.multiselect("Mês da Venda", meses_no_ano, default=[mes_padrao])
     with col_filtros[3]:
@@ -6209,10 +6357,10 @@ def main() -> None:
     vendas_f = df_vendas.copy()
     metas_f = df_metas.copy()
 
-    if anos_sel: vendas_f = vendas_f[vendas_f["_ano"].isin(anos_sel)]
-    
-    if meses_venda_sel:
-        vendas_f = vendas_f[vendas_f["_mes"].isin(meses_venda_sel)]
+    vendas_f = filtrar_vendas_competencia(
+        vendas_f, anos_sel, meses_venda_sel, col_contrato_gerado
+    )
+
     if meses_meta_sel:
         metas_f = metas_f[metas_f["Mes_Num"].isin(meses_meta_sel)]
         
@@ -6261,6 +6409,14 @@ def main() -> None:
 
     pct_qtd = (total_realizado_qtd / total_meta_qtd * 100.0) if total_meta_qtd > 0 else 0.0
     pct_vgv = (total_vgv_realizado / total_meta_vgv * 100.0) if total_meta_vgv > 0 else 0.0
+
+    if total_realizado_qtd <= 0 and len(df_vendas) > 0:
+        n_sem_comp = int(df_vendas["_mes"].isna().sum()) if "_mes" in df_vendas.columns else 0
+        st.caption(
+            f"Filtros ativos: ano={anos_sel or 'todos'} · mês venda={meses_venda_sel or 'todos'} · "
+            f"mês meta={meses_meta_sel or 'todos'} · "
+            f"base total={len(df_vendas):,} vendas · sem mês identificado={n_sem_comp:,}".replace(",", ".")
+        )
 
     st.markdown(
         f"""
@@ -6398,7 +6554,7 @@ def main() -> None:
 
     if col_contrato_gerado:
         # Base comercial; mesmos filtros de região/emp/canal do painel (RIO = todas as vendas).
-        base_proj = df_vendas.copy()
+        base_proj = df_vendas_painel.copy()
         if regioes_sel:
             if "Região" in base_proj.columns:
                 regioes_base = [r.split(" - ")[0].strip() for r in regioes_sel]
@@ -6459,7 +6615,9 @@ def main() -> None:
                 # 1) Agendamentos / visitas
                 try:
                     df_ag_vis, origem_ag = carregar_relatorio_salesforce(
-                        SF_REPORT_AGENDAMENTOS_ID, rotulo="agendamentos/visitas"
+                        SF_REPORT_AGENDAMENTOS_ID,
+                        rotulo="agendamentos/visitas",
+                        modo_janela="painel",
                     )
                     n_ag_bruto = len(df_ag_vis)
                     df_ag_vis = deduplicar_agendamentos_funil(df_ag_vis)
@@ -6482,7 +6640,7 @@ def main() -> None:
                 # 2) Pastas / pastas aprovadas
                 try:
                     df_pastas_funil, origem_pastas = carregar_relatorio_salesforce(
-                        SF_REPORT_PASTAS_ID, rotulo="pastas"
+                        SF_REPORT_PASTAS_ID, rotulo="pastas", modo_janela="painel"
                     )
                     n_pas_bruto = len(df_pastas_funil)
                     col_envio = achar_coluna_primeiro_envio_analise(df_pastas_funil)
@@ -6521,27 +6679,26 @@ def main() -> None:
                         df_pastas_funil = deduplicar_pastas_funil(df_pastas_funil)
                         st.caption(f"Pastas (Sheets): {origem_pastas}")
 
-                # 3) Vendas (Contrato gerado em)
+                # 3) Vendas — reutiliza base do painel (já com VGV e filtros comerciais)
                 df_vendas_funil = pd.DataFrame()
                 serie_vendas_funil = None
                 try:
-                    df_vendas_funil, origem_vendas = carregar_relatorio_salesforce(
-                        SF_REPORT_VENDAS_ID, rotulo="vendas"
-                    )
+                    df_vendas_funil = df_vendas_raw.copy()
+                    df_vendas_funil = normalizar_colunas(df_vendas_funil)
                     n_ven_bruto = len(df_vendas_funil)
                     df_vendas_funil = filtrar_vendas_comerciais(df_vendas_funil)
                     n_ven_comercial = len(df_vendas_funil)
                     df_vendas_funil = deduplicar_vendas_funil(df_vendas_funil)
                     st.caption(
-                        f"Vendas: {origem_vendas} · "
+                        f"Vendas (painel): {origem_vendas_painel} · "
                         f"{n_ven_bruto:,} → {n_ven_comercial:,} comerciais → "
                         f"{len(df_vendas_funil):,} linhas "
                         f"(dedup ID da Oportunidade)"
                     )
                 except Exception as e_sf_v:
                     st.warning(
-                        f"SF vendas indisponível ({e_sf_v}). "
-                        "Usando vendas filtradas do painel (Contrato gerado em)."
+                        f"Vendas do painel indisponíveis ({e_sf_v}). "
+                        "Usando base filtrada do painel (Contrato gerado em)."
                     )
                     serie_vendas_funil = serie_diaria_contratos(base_proj, col_contrato_gerado)
 
