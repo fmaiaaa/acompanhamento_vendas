@@ -2628,12 +2628,23 @@ def projetar_vendas_mes_atual(
     }
 
 
+def _plotly_key(*parts: str) -> str:
+    """Chave única para st.plotly_chart (evita colisão com/sem efeito de mês)."""
+    return "_".join(re.sub(r"[^a-zA-Z0-9_]+", "_", str(p).strip().lower()) for p in parts if p)
+
+
+def _proj_plot_key(proj: Dict[str, Any], *parts: str) -> str:
+    modo = "sem_mes" if not proj.get("incluir_mes", True) else "com_mes"
+    return _plotly_key("proj_vendas", modo, *parts)
+
+
 def _plot_projecao_mes(
     titulo: str,
     caption: str,
     proj: Dict[str, Any],
     diaria: pd.DataFrame,
     acumulado: pd.DataFrame,
+    chart_id: str = "reg",
 ) -> None:
     """Gráfico de projeção: realizado até hoje + projetado a partir de amanhã (sem meta)."""
     st.markdown(f"##### {titulo}")
@@ -2727,7 +2738,12 @@ def _plot_projecao_mes(
         showgrid=True,
         gridcolor="rgba(226,232,240,0.5)",
     )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        config={"displayModeBar": False},
+        key=_proj_plot_key(proj, chart_id, "mes"),
+    )
 
 
 def _plot_meta_diaria_integrada(proj: Dict[str, Any]) -> None:
@@ -2833,7 +2849,12 @@ def _plot_meta_diaria_integrada(proj: Dict[str, Any]) -> None:
         showgrid=True,
         gridcolor="rgba(226,232,240,0.5)",
     )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        config={"displayModeBar": False},
+        key=_proj_plot_key(proj, "meta_diaria"),
+    )
 
 
 def _plot_comparativo_realizado_projetado(proj: Dict[str, Any]) -> None:
@@ -2931,7 +2952,12 @@ def _plot_comparativo_realizado_projetado(proj: Dict[str, Any]) -> None:
         showgrid=True,
         gridcolor="rgba(226,232,240,0.5)",
     )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        config={"displayModeBar": False},
+        key=_proj_plot_key(proj, "comparativo"),
+    )
 
 
 def render_projecao_vendas(
@@ -2988,6 +3014,7 @@ def render_projecao_vendas(
         proj,
         proj["diaria"],
         proj["acumulado"],
+        chart_id="reg",
     )
 
     med = proj.get("medias") or {}
@@ -2998,6 +3025,7 @@ def render_projecao_vendas(
         proj,
         proj.get("diaria_medias", pd.DataFrame()),
         proj.get("acumulado_medias", pd.DataFrame()),
+        chart_id="med",
     )
 
     st.markdown("<br/>", unsafe_allow_html=True)
@@ -3017,6 +3045,7 @@ def _plot_barra_efeitos(
     df: pd.DataFrame,
     cor: str,
     referencia: str,
+    chart_key: Optional[str] = None,
 ) -> None:
     """Barra de efeitos relativos (índice; referência = 1.0)."""
     st.markdown(f"##### {titulo}")
@@ -3066,7 +3095,12 @@ def _plot_barra_efeitos(
         showgrid=True,
         gridcolor="rgba(226,232,240,0.5)",
     )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        config={"displayModeBar": False},
+        key=chart_key or _plotly_key("efeitos_sazonais", titulo),
+    )
 
 
 def render_efeitos_sazonais(efeitos: Dict[str, Any]) -> None:
@@ -3083,18 +3117,21 @@ def render_efeitos_sazonais(efeitos: Dict[str, Any]) -> None:
         efeitos.get("dia_semana", pd.DataFrame()),
         COR_AZUL_ESC,
         "segunda-feira",
+        chart_key=_plotly_key("efeitos_sazonais", "dia_semana"),
     )
     _plot_barra_efeitos(
         "Efeito de dia do mês",
         efeitos.get("dia_mes", pd.DataFrame()),
         COR_VERMELHO,
         "dia 1",
+        chart_key=_plotly_key("efeitos_sazonais", "dia_mes"),
     )
     _plot_barra_efeitos(
         "Efeito de mês",
         efeitos.get("mes", pd.DataFrame()),
         "#0f766e",
         "janeiro",
+        chart_key=_plotly_key("efeitos_sazonais", "mes"),
     )
 
 
