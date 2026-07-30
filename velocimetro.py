@@ -1550,6 +1550,14 @@ def parse_valor_br(val: Any) -> float:
     except ValueError: return 0.0
 
 
+def canal_de_imobiliaria(val: Any) -> str:
+    """Canal = LEFT(Imobiliária, 3) — mesma regra da planilha BD Vendas."""
+    s = str(val or "").strip().upper()
+    if not s or s.lower() in ("nan", "none", "null"):
+        return ""
+    return s[:3]
+
+
 def extrair_mes_da_data_venda(val: Any) -> Optional[int]:
     if val is None or pd.isna(val): return None
     s = str(val).strip()
@@ -3390,10 +3398,11 @@ def _sf_inicio_producao(ref: Optional[date] = None) -> date:
 def _sf_soql_desde(modo_janela: str = "producao") -> str:
     """
     Início da janela SOQL.
-    - treino: 36 meses fechados (para treinar_modelo_funil.py)
+    - treino / painel / historico: 36 meses a partir do 1º dia do mês (inclui MTD)
     - producao: 28 dias antes do 1º dia do mês atual (MTD + lags)
     """
-    if (modo_janela or "").strip().lower() == "treino":
+    modo = (modo_janela or "producao").strip().lower()
+    if modo in ("treino", "painel", "historico"):
         ini, _ = _sf_janela_36_meses_fechados()
     else:
         ini = _sf_inicio_producao()
@@ -3455,8 +3464,8 @@ def _sf_soql_pastas(sf, modo_janela: str = "producao") -> pd.DataFrame:
     )
     soql = (
         "SELECT Id, Name, CreatedDate, dataPrimeiroEnvioAnalise__c, dataAprovacaoSAFI__c, "
-        "Gerente_Regional__c, Gerente_Vendas__c, Corretor__r.Name, "
-        "Oportunidade__r.Gerente_regional__c "
+        "Corretor__r.Name, Oportunidade__r.Gerente_regional__c, "
+        "Oportunidade__r.Contato_Corretor_Proprietario1__r.Name "
         "FROM Avaliacao_credito__c "
         "WHERE Empreendimento__r.Regional__c = 'RJ' "
         "AND Empreendimento__r.UnidadeDeNegocio__c = 'Direcional' "
@@ -3472,11 +3481,12 @@ def _sf_soql_pastas(sf, modo_janela: str = "producao") -> pd.DataFrame:
                 "Data de criação": r.get("CreatedDate"),
                 "Data Primeiro Envio Análise": r.get("dataPrimeiroEnvioAnalise__c"),
                 "Data Aprovação SAFI": r.get("dataAprovacaoSAFI__c"),
-                "Gerente Regional": r.get("Gerente_Regional__c"),
-                "Gerente Vendas": r.get("Gerente_Vendas__c"),
                 "Corretor": _sf_rel_name(r.get("Corretor__r")),
                 "Avaliação de crédito : Oportunidade : Gerente regional": (
                     opp.get("Gerente_regional__c") if opp else None
+                ),
+                "Oportunidade: Contato Corretor Proprietario: Nome completo": _sf_rel_name(
+                    opp.get("Contato_Corretor_Proprietario1__r") if opp else None
                 ),
             }
         )
@@ -3490,9 +3500,10 @@ def _sf_soql_vendas(sf, modo_janela: str = "producao") -> pd.DataFrame:
     """
     desde = _sf_soql_desde(modo_janela)[:10]  # ContratoGeradoEm__c é Date, não DateTime
     soql = (
-        "SELECT Id, Name, Empreendimento__r.Name, Valor_Real_de_Venda__c, "
-        "Owner.Name, DirecionalVendas__c, ContratoGeradoEm__c, "
-        "Contato_Corretor_Proprietario1__r.Name, Gerente_regional__c, Regional__c "
+        "SELECT Id, Name, Empreendimento__r.Name, Empreendimento__r.Regional__c, "
+        "Valor_Real_de_Venda__c, Owner.Name, DirecionalVendas__c, ContratoGeradoEm__c, "
+        "DataVenda__c, Termo_de_reserva__c, Ranking__c, M_s_Venda__c, Ano_da_Venda__c, "
+        "Imobiliaria__r.Name, Contato_Corretor_Proprietario1__r.Name, Gerente_regional__c, Regional__c "
         "FROM Opportunity "
         "WHERE DirecionalVendas__c = true "
         "AND Empreendimento__r.Regional__c = 'RJ' "
@@ -3502,13 +3513,24 @@ def _sf_soql_vendas(sf, modo_janela: str = "producao") -> pd.DataFrame:
     res = sf.query_all(soql)
     rows = []
     for r in res.get("records") or []:
+        emp = r.get("Empreendimento__r") if isinstance(r.get("Empreendimento__r"), dict) else {}
+        regiao = (emp.get("Regional__c") if emp else None) or r.get("Regional__c")
+        imob = _sf_rel_name(r.get("Imobiliaria__r"))
         rows.append({
             "ID da Oportunidade": r.get("Id"),
             "Nome da oportunidade": r.get("Name"),
-            "Empreendimento": _sf_rel_name(r.get("Empreendimento__r")),
+            "Empreendimento": _sf_rel_name(emp),
+            "Região": regiao,
+            "Imobiliária": imob,
+            "Canal": canal_de_imobiliaria(imob),
             "Valor Real de Venda": r.get("Valor_Real_de_Venda__c"),
             "Proprietário da oportunidade": _sf_rel_name(r.get("Owner")),
             "Venda Comercial?": r.get("DirecionalVendas__c"),
+            "Venda facilitada": r.get("Termo_de_reserva__c"),
+            "Ranking": r.get("Ranking__c"),
+            "Data da venda": r.get("DataVenda__c"),
+            "Mês Venda": r.get("M_s_Venda__c"),
+            "Ano da Venda": r.get("Ano_da_Venda__c"),
             "Contato Corretor Proprietario": _sf_rel_name(
                 r.get("Contato_Corretor_Proprietario1__r")
             ),
@@ -5996,10 +6018,21 @@ def main() -> None:
     cred_fp = _fingerprint_credenciais(info)
 
     try:
-        df_vendas_raw = ler_planilha_aba_df(sid, WS_VENDAS, cred_fp)
         df_metas_raw = ler_planilha_aba_df(sid, WS_METAS, cred_fp)
     except Exception as e:
-        st.error(f"Erro ao ler a planilha principal: {str(e)}")
+        st.error(f"Erro ao ler metas na planilha: {str(e)}")
+        return
+
+    try:
+        df_vendas_raw, origem_vendas_painel = carregar_relatorio_salesforce(
+            SF_REPORT_VENDAS_ID, rotulo="vendas (painel)", modo_janela="painel"
+        )
+        st.caption(f"Base de vendas: {origem_vendas_painel}")
+    except Exception as e_sf_vendas:
+        st.error(
+            f"Não foi possível carregar vendas do Salesforce "
+            f"(relatório {SF_REPORT_VENDAS_ID}): {e_sf_vendas}"
+        )
         return
 
     df_vendas = normalizar_colunas(df_vendas_raw)
@@ -6043,6 +6076,7 @@ def main() -> None:
     col_mes_looker = achar_coluna(df_vendas, ["Mês da Venda - Looker"])
     col_mes_venda = achar_coluna(df_vendas, ["Mês Venda"])
     col_regiao = achar_coluna(df_vendas, ["Região", "Regiao"])
+    col_imobiliaria = achar_coluna(df_vendas, ["Imobiliária", "Imobiliaria"])
     col_canal = achar_coluna(df_vendas, ["Canal"])
     col_valor = achar_coluna(df_vendas, ["Valor Real de Venda", "Valor Real", "Valor"])
     col_emp = achar_coluna(df_vendas, ["Empreendimento", "Obra", "Nome do Empreendimento"])
@@ -6059,6 +6093,14 @@ def main() -> None:
     if col_regiao and col_regiao != "Região":
         df_vendas.rename(columns={col_regiao: "Região"}, inplace=True)
         col_regiao = "Região"
+
+    if col_imobiliaria and col_imobiliaria != "Imobiliária":
+        df_vendas.rename(columns={col_imobiliaria: "Imobiliária"}, inplace=True)
+        col_imobiliaria = "Imobiliária"
+
+    if col_imobiliaria:
+        df_vendas["Canal"] = df_vendas[col_imobiliaria].map(canal_de_imobiliaria)
+        col_canal = "Canal"
 
     # Limpeza de Lixo na Base de Vendas (Mantida Conforme Pedido)
     if col_emp:
