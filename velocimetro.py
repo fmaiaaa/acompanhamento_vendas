@@ -860,6 +860,57 @@ FUNIL_CORES_DRIVER = {
     "pastas_aprovadas": "#b45309",
 }
 FUNIL_CORES_NIVEIS = ["#022654", "#04428f", "#1e60b3", "#cb0935", "#9e0828"]
+# Ordem das fases de oportunidade (Track Funnel — pipeline comercial RJ)
+TRACK_FUNIL_FASES = (
+    "Aguardando aprovação comercial",
+    "Aguardando atendimento Corretor",
+    "Em atendimento",
+    "Visita Agendada",
+    "Visita Realizada",
+    "Em elaboração",
+    "Em Análise de Crédito",
+    "Análise de Crédito Realizada",
+    "Proposta",
+    "Proposta Reprovada",
+    "Proposta Aprovada",
+    "Enviado Aprovação Comissões",
+    "Reprovado Comissões",
+    "Aprovado Comissões",
+    "Análise SAFI",
+    "Aprovado SAFI",
+    "Rejeitado SAFI",
+    "Enviado Aprovação Pré Soluto",
+    "Aprovado Pré soluto",
+    "Rejeitado Pro Soluto",
+    "Contrato gerado",
+    "Contrato comunicado",
+    "Contrato com pendência comercial",
+    "Enviado para Aprovação",
+    "Reprovado",
+    "Rejeitado",
+    "Em cessão",
+    "Fechado e ganho",
+    "Fechado e perdido",
+    "Cancelado",
+    "Distratado",
+    "Repassado",
+)
+TRACK_FUNIL_CORES = [
+    "#b8d4f0", "#9ec5eb", "#7ab3e8", "#5a9fe3",
+    "#3d8bdc", "#2a7ad4", "#1e60b3", "#04428f",
+    "#033a7a", "#022654", "#4a5568",
+]
+ORIGENS_NUCLEO_DIGITAL = frozenset({
+    "Lead ADS", "WhatsApp", "Portal Vertical", "Cadastre-se", "Chat", "Chatbot",
+    "Simulador financeiro", "Simulador Virtual", "Landing page oferta",
+    "Landing Page Breve Lancamento", "LP Compra Online", "LP Fica na Boa Direcional",
+    "LP MCMV", "LP Squad Dire", "Messenger FB", "Blog Direcional", "Blog Riva",
+    "Agendar visita", "Fale conosco", "Fale com o consultor", "Google Meu Negócio",
+    "DV ON", "RVON", "RV ON", "Squad Dire", "Origem SDR",
+})
+ALIASES_EMPREENDIMENTO = [
+    "Empreendimento", "Obra", "Nome do Empreendimento", "Nome do empreendimento",
+]
 COLUNAS_PASTAS_ALIASES = [
     "Data Primeiro Envio Análise", "Data Primeiro Envio Analise",
     "Data do Primeiro Envio Análise", "Data do Primeiro Envio Analise",
@@ -3664,7 +3715,8 @@ def _sf_soql_vendas(sf, modo_janela: str = "producao") -> pd.DataFrame:
         "SELECT Id, Name, Empreendimento__r.Name, Empreendimento__r.Regional__c, "
         "Valor_Real_de_Venda__c, Owner.Name, DirecionalVendas__c, ContratoGeradoEm__c, "
         "DataVenda__c, Termo_de_reserva__c, Ranking__c, M_s_Venda__c, Ano_da_Venda__c, "
-        "Imobiliaria__r.Name, Contato_Corretor_Proprietario1__r.Name, Gerente_regional__c, Regional__c "
+        "Imobiliaria__r.Name, Contato_Corretor_Proprietario1__r.Name, Gerente_regional__c, "
+        "Regional__c, OrigemConta__c, LeadSource "
         "FROM Opportunity "
         "WHERE DirecionalVendas__c = true "
         "AND Empreendimento__r.Regional__c = 'RJ' "
@@ -3698,8 +3750,143 @@ def _sf_soql_vendas(sf, modo_janela: str = "producao") -> pd.DataFrame:
             "Contrato gerado em": r.get("ContratoGeradoEm__c"),
             "Gerente regional": r.get("Gerente_regional__c"),
             "Regional": r.get("Regional__c"),
+            "Origem da Conta": r.get("OrigemConta__c"),
+            "Origem do lead": r.get("LeadSource"),
         })
     return pd.DataFrame(rows)
+
+
+def _sf_inicio_funil_empreendimento(hoje: Optional[date] = None) -> date:
+    """Desde o 1º dia do mês ou 6 dias atrás (cobre MTD + últimos 7 dias)."""
+    hoje = hoje or date.today()
+    ini_mes = date(hoje.year, hoje.month, 1)
+    ini_7d = hoje - timedelta(days=6)
+    return min(ini_mes, ini_7d)
+
+
+def _sf_soql_agendamentos_empreendimento(sf, hoje: Optional[date] = None) -> pd.DataFrame:
+    """Agendamentos/visitas com empreendimento (aba Funil por Empreendimento)."""
+    hoje = hoje or date.today()
+    ini = _sf_inicio_funil_empreendimento(hoje)
+    desde = f"{ini.isoformat()}T00:00:00Z"
+    desde_date = ini.isoformat()
+    filtro_tempo = f"(CreatedDate >= {desde} OR Data_da_Visita__c >= {desde_date})"
+    soql = (
+        "SELECT Codigo_do_agendamento__c, CreatedDate, Data_da_Visita__c, "
+        "Nome_do_empreendimento__c "
+        "FROM Event "
+        "WHERE Unidade_de_negocio__c = 'Direcional' "
+        "AND Regional__c = 'RJ' "
+        "AND PDV__r.Regional_Comercial__c = 'RJ' "
+        "AND PDV__r.UnidadeDeNegocio__c = 'Direcional' "
+        "AND Empreendimento_de_interesse__c != null "
+        "AND Account.Regional_Comercial__c = 'RJ' "
+        f"AND {filtro_tempo}"
+    )
+    res = sf.query_all(soql)
+    rows = []
+    for r in res.get("records") or []:
+        emp = (r.get("Nome_do_empreendimento__c") or "").strip()
+        rows.append({
+            "Código do agendamento": r.get("Codigo_do_agendamento__c"),
+            "Data de criação": r.get("CreatedDate"),
+            "Data da visita": r.get("Data_da_Visita__c"),
+            "Empreendimento": emp,
+        })
+    return pd.DataFrame(rows)
+
+
+def _sf_soql_pastas_empreendimento(sf, hoje: Optional[date] = None) -> pd.DataFrame:
+    """Pastas com empreendimento (aba Funil por Empreendimento)."""
+    hoje = hoje or date.today()
+    ini = _sf_inicio_funil_empreendimento(hoje)
+    desde = f"{ini.isoformat()}T00:00:00Z"
+    desde_date = ini.isoformat()
+    filtro_tempo = (
+        f"(CreatedDate >= {desde} OR dataPrimeiroEnvioAnalise__c >= {desde_date} "
+        f"OR dataAprovacaoSAFI__c >= {desde_date})"
+    )
+    soql = (
+        "SELECT Name, CreatedDate, dataPrimeiroEnvioAnalise__c, dataAprovacaoSAFI__c, "
+        "Empreendimento__r.Name "
+        "FROM Avaliacao_credito__c "
+        "WHERE Empreendimento__r.Regional__c = 'RJ' "
+        "AND Empreendimento__r.UnidadeDeNegocio__c = 'Direcional' "
+        f"AND {filtro_tempo}"
+    )
+    res = sf.query_all(soql)
+    rows = []
+    for r in res.get("records") or []:
+        emp = _sf_rel_name(r.get("Empreendimento__r"))
+        rows.append({
+            "Nome da Avaliação de crédito": r.get("Name"),
+            "Data de criação": r.get("CreatedDate"),
+            "Data Primeiro Envio Análise": r.get("dataPrimeiroEnvioAnalise__c"),
+            "Data Aprovação SAFI": r.get("dataAprovacaoSAFI__c"),
+            "Empreendimento": emp,
+        })
+    return pd.DataFrame(rows)
+
+
+def _sf_soql_oportunidades_empreendimento(sf, hoje: Optional[date] = None) -> pd.DataFrame:
+    """Oportunidades abertas + movimentadas no período (Track Funnel por fase)."""
+    hoje = hoje or date.today()
+    ini = _sf_inicio_funil_empreendimento(hoje)
+    desde = f"{ini.isoformat()}T00:00:00Z"
+    soql = (
+        "SELECT Id, StageName, CreatedDate, LastStageChangeDate, IsClosed, IsWon, "
+        "Empreendimento__r.Name, AtribuicaoDigital__c, UltimaEntradaDigital__c, "
+        "OrigemConta__c, LeadSource "
+        "FROM Opportunity "
+        "WHERE Empreendimento__r.Regional__c = 'RJ' "
+        "AND Empreendimento__r.UnidadeDeNegocio__c = 'Direcional' "
+        f"AND (CreatedDate >= {desde} OR LastStageChangeDate >= {desde})"
+    )
+    res = sf.query_all(soql)
+    rows = []
+    for r in res.get("records") or []:
+        rows.append({
+            "ID da Oportunidade": r.get("Id"),
+            "Fase": r.get("StageName"),
+            "Data de criação": r.get("CreatedDate"),
+            "Data mudança fase": r.get("LastStageChangeDate"),
+            "Empreendimento": _sf_rel_name(r.get("Empreendimento__r")),
+            "Atribuição Digital": r.get("AtribuicaoDigital__c"),
+            "Última entrada Digital": r.get("UltimaEntradaDigital__c"),
+            "Origem da Conta": r.get("OrigemConta__c"),
+            "Origem do lead": r.get("LeadSource"),
+            "Fechada": r.get("IsClosed"),
+            "Ganha": r.get("IsWon"),
+        })
+    return pd.DataFrame(rows)
+
+
+@st.cache_data(ttl=3600, show_spinner="Carregando funil por empreendimento (Salesforce)…")
+def carregar_funil_empreendimento_sf() -> Dict[str, Any]:
+    """Pacote MTD+7d: agendamentos, pastas, oportunidades por empreendimento."""
+    t0 = time.perf_counter()
+    sf = _cliente_salesforce_cache()
+    hoje = date.today()
+    df_ag = normalizar_colunas(_sf_soql_agendamentos_empreendimento(sf, hoje))
+    df_pas = normalizar_colunas(_sf_soql_pastas_empreendimento(sf, hoje))
+    df_opps = normalizar_colunas(_sf_soql_oportunidades_empreendimento(sf, hoje))
+    df_ven = normalizar_colunas(_sf_soql_vendas(sf, modo_janela="producao"))
+    df_ven = filtrar_vendas_comerciais(df_ven)
+    ini = _sf_inicio_funil_empreendimento(hoje)
+    if not df_ven.empty:
+        col_c = achar_coluna(df_ven, ALIASES_CONTRATO_GERADO)
+        if col_c:
+            dt = parse_data_serie(df_ven[col_c])
+            df_ven = df_ven.loc[dt.notna() & (dt.dt.date >= ini)].copy()
+    t_total = time.perf_counter() - t0
+    return {
+        "agendamentos": df_ag if df_ag is not None else pd.DataFrame(),
+        "pastas": df_pas if df_pas is not None else pd.DataFrame(),
+        "oportunidades": df_opps if df_opps is not None else pd.DataFrame(),
+        "vendas": df_ven if df_ven is not None else pd.DataFrame(),
+        "inicio_janela": ini.isoformat(),
+        "timings": {"total_s": t_total},
+    }
 
 
 def _sf_soql_por_relatorio(sf, report_id: str, rotulo: str, modo_janela: str = "producao"):
@@ -6270,6 +6457,1029 @@ def _distribuir_vendas_coordenador(
     return out
 
 
+def _limpar_emp(val: Any) -> str:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return ""
+    s = str(val).strip()
+    if s.lower() in ("", "nan", "none", "null", "-", "n/a"):
+        return ""
+    return s
+
+
+def _janelas_funil_emp(hoje: Optional[date] = None) -> Tuple[date, date, date, date]:
+    """Retorna (ini_mes, fim, ini_7d, fim) — fim = hoje."""
+    hoje = hoje or date.today()
+    ini_mes = date(hoje.year, hoje.month, 1)
+    ini_7d = hoje - timedelta(days=6)
+    return ini_mes, hoje, ini_7d, hoje
+
+
+def _filtrar_df_periodo(
+    df: pd.DataFrame,
+    aliases_data: List[str],
+    ini: date,
+    fim: date,
+) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    col = achar_coluna(df, aliases_data)
+    if not col:
+        return pd.DataFrame()
+    dt = parse_data_serie(df[col])
+    mask = dt.notna() & (dt.dt.date >= ini) & (dt.dt.date <= fim)
+    return df.loc[mask].copy()
+
+
+def _filtrar_df_emp(df: pd.DataFrame, empreendimento: str) -> pd.DataFrame:
+    if df is None or df.empty or not empreendimento:
+        return pd.DataFrame()
+    col = achar_coluna(df, ALIASES_EMPREENDIMENTO)
+    if not col:
+        return pd.DataFrame()
+    emp_norm = _limpar_emp(empreendimento).lower()
+    mask = df[col].map(_limpar_emp).str.lower() == emp_norm
+    return df.loc[mask].copy()
+
+
+def _contar_etapa_df(
+    df: pd.DataFrame,
+    aliases_data: List[str],
+    dedup_fn=None,
+) -> float:
+    if df is None or df.empty:
+        return 0.0
+    base = dedup_fn(df) if dedup_fn else df
+    col = achar_coluna(base, aliases_data)
+    if not col:
+        return 0.0
+    return float(parse_data_serie(base[col]).notna().sum())
+
+
+def totais_funil_empreendimento(
+    df_ag: pd.DataFrame,
+    df_pastas: pd.DataFrame,
+    df_vendas: pd.DataFrame,
+    empreendimento: str,
+    ini: date,
+    fim: date,
+) -> Dict[str, float]:
+    """Conta as 5 etapas do funil comercial para um empreendimento no período."""
+    ag = _filtrar_df_emp(_filtrar_df_periodo(df_ag, ALIASES_DATA_CRIACAO, ini, fim), empreendimento)
+    pas_raw = _filtrar_df_emp(_filtrar_df_periodo(df_pastas, COLUNAS_PASTAS_ALIASES + ALIASES_DATA_CRIACAO, ini, fim), empreendimento)
+    ven = _filtrar_df_emp(_filtrar_df_periodo(df_vendas, ALIASES_CONTRATO_GERADO, ini, fim), empreendimento)
+
+    ag_d = deduplicar_agendamentos_funil(ag) if not ag.empty else ag
+    pas_d = deduplicar_pastas_funil(pas_raw) if not pas_raw.empty else pas_raw
+    pas_ap = deduplicar_pastas_aprovadas_funil(pas_raw) if not pas_raw.empty else pas_raw
+    ven_d = deduplicar_vendas_funil(filtrar_vendas_comerciais(ven)) if not ven.empty else ven
+
+    col_envio = achar_coluna_primeiro_envio_analise(pas_d)
+    col_safi = achar_coluna_aprovacao_safi(pas_ap)
+    col_visita = achar_coluna(ag_d, [
+        "Data da visita", "Data da Visita", "Data visita", "Activity Date",
+    ])
+
+    n_ag = _contar_etapa_df(ag_d, ALIASES_DATA_CRIACAO)
+    n_vis = float(parse_data_serie(ag_d[col_visita]).notna().sum()) if col_visita and not ag_d.empty else 0.0
+    n_pas = float(parse_data_serie(pas_d[col_envio]).notna().sum()) if col_envio and not pas_d.empty else 0.0
+    n_ap = float(parse_data_serie(pas_ap[col_safi]).notna().sum()) if col_safi and not pas_ap.empty else 0.0
+    n_ven = float(len(ven_d)) if ven_d is not None and not ven_d.empty else 0.0
+
+    return {
+        "agendamentos": n_ag,
+        "visitas": n_vis,
+        "pastas": n_pas,
+        "pastas_aprovadas": n_ap,
+        "vendas": n_ven,
+    }
+
+
+def _is_oportunidade_nucleo_digital(row: pd.Series) -> bool:
+    ad = row.get("Atribuição Digital")
+    if ad is True or str(ad).strip().upper() in ("TRUE", "1", "SIM"):
+        return True
+    if pd.notna(row.get("Última entrada Digital")) and str(row.get("Última entrada Digital")).strip():
+        return True
+    origem = _limpar_emp(row.get("Origem da Conta") or row.get("Origem do lead"))
+    return origem in ORIGENS_NUCLEO_DIGITAL
+
+
+def contagem_fases_oportunidade(
+    df_opps: pd.DataFrame,
+    empreendimento: str,
+    ini: date,
+    fim: date,
+    apenas_digital: bool = False,
+) -> Tuple[Dict[str, int], int]:
+    """Oportunidades criadas no período, agrupadas pela fase atual."""
+    if df_opps is None or df_opps.empty:
+        return {}, 0
+    base = _filtrar_df_emp(df_opps, empreendimento)
+    base = _filtrar_df_periodo(base, ALIASES_DATA_CRIACAO, ini, fim)
+    if base.empty:
+        return {}, 0
+    if apenas_digital:
+        base = base.loc[base.apply(_is_oportunidade_nucleo_digital, axis=1)].copy()
+    if base.empty:
+        return {}, 0
+    base = base.drop_duplicates(subset=[achar_coluna(base, ALIASES_ID_OPORTUNIDADE) or "ID da Oportunidade"])
+    col_fase = achar_coluna(base, ["Fase", "StageName"]) or "Fase"
+    vc = base[col_fase].fillna("Sem fase").astype(str).value_counts()
+    por_fase = {str(k): int(v) for k, v in vc.items()}
+    return por_fase, int(sum(por_fase.values()))
+
+
+def _ordenar_fases_track(por_fase: Dict[str, int]) -> List[Tuple[str, int]]:
+    ordem = {f: i for i, f in enumerate(TRACK_FUNIL_FASES)}
+    items = list(por_fase.items())
+    items.sort(key=lambda x: (ordem.get(x[0], 999), -x[1], x[0]))
+    return items
+
+
+def _criar_fig_funil_com_conversoes(
+    totais: Dict[str, float],
+    titulo: str = "",
+    altura: int = 380,
+    chart_key: str = "",
+) -> go.Figure:
+    """Funil vertical com conversão etapa→etapa abaixo de cada volume."""
+    labels = [FUNIL_LABELS[e] for e in FUNIL_ETAPAS]
+    ceil_tot = ceil_funil_totais(totais)
+    vals = [float(ceil_tot.get(e, 0.0)) for e in FUNIL_ETAPAS]
+    textos: List[str] = []
+    for i, etapa in enumerate(FUNIL_ETAPAS):
+        linha1 = fmt_funil_valor(vals[i])
+        if i == 0:
+            linha2 = ""
+        else:
+            prev = FUNIL_ETAPAS[i - 1]
+            taxa = taxa_conversao(float(ceil_tot.get(prev, 0)), float(ceil_tot.get(etapa, 0)))
+            linha2 = _fmt_taxa_pct(taxa)
+        textos.append(f"{linha1}<br><span style='font-size:13px'>{linha2}</span>" if linha2 else linha1)
+    fig = go.Figure(go.Funnel(
+        y=labels,
+        x=vals,
+        text=textos,
+        textinfo="text",
+        textposition="inside",
+        insidetextfont=dict(size=16, color=FUNIL_TEXTO_BRANCO, family="Inter"),
+        outsidetextfont=dict(size=14, color=COR_TEXTO_PRETO, family="Inter"),
+        marker={"color": FUNIL_CORES_NIVEIS},
+        connector={"fillcolor": "rgba(4, 66, 143, 0.15)"},
+    ))
+    layout: Dict[str, Any] = dict(
+        margin=dict(l=10, r=100, t=50, b=20),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=altura,
+        font=dict(family="Inter", color=COR_TEXTO_PRETO, size=14),
+    )
+    if titulo:
+        layout["title"] = dict(text=titulo, font=dict(family="Inter", color=COR_TEXTO_PRETO, size=15))
+    fig.update_layout(**layout)
+    return fig
+
+
+def _criar_fig_track_funnel(
+    por_fase: Dict[str, int],
+    titulo: str = "",
+    altura: int = 320,
+) -> go.Figure:
+    """Barras horizontais por fase de oportunidade (% do total abaixo do número)."""
+    items = _ordenar_fases_track(por_fase)
+    if not items:
+        fig = go.Figure()
+        fig.update_layout(title=titulo or "Track Funnel", height=200)
+        return fig
+    total = max(sum(por_fase.values()), 1)
+    fases = [x[0] for x in items]
+    qtds = [x[1] for x in items]
+    pcts = [100.0 * q / total for q in qtds]
+    cores = [TRACK_FUNIL_CORES[i % len(TRACK_FUNIL_CORES)] for i in range(len(fases))]
+    textos = [f"{q}<br><span style='font-size:11px'>{p:.1f}%</span>" for q, p in zip(qtds, pcts)]
+    fig = go.Figure(go.Bar(
+        y=[f[:18] + "…" if len(f) > 19 else f for f in fases],
+        x=qtds,
+        orientation="h",
+        text=textos,
+        textposition="inside",
+        insidetextfont=dict(color="#ffffff", size=12, family="Inter"),
+        marker=dict(color=cores),
+        hovertemplate="%{y}<br>Qtd: %{x}<br>%{customdata:.1f}%<extra></extra>",
+        customdata=pcts,
+    ))
+    fig.update_layout(
+        title=dict(text=titulo, font=dict(family="Inter", size=14, color=COR_TEXTO_PRETO)),
+        margin=dict(l=140, r=30, t=50, b=20),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=max(altura, 40 + len(fases) * 28),
+        xaxis=dict(title="Oportunidades", tickfont=dict(family="Inter")),
+        yaxis=dict(tickfont=dict(family="Inter", size=10), autorange="reversed"),
+    )
+    return fig
+
+
+def _kpi_gap_projetado(
+    meta_qtd: float,
+    realizado: float,
+    hoje: Optional[date] = None,
+) -> Dict[str, float]:
+    """Gap vs ritmo projetado linear (meta proporcional ao dia do mês)."""
+    hoje = hoje or date.today()
+    dias_mes = calendar.monthrange(hoje.year, hoje.month)[1]
+    dia = hoje.day
+    meta = max(float(meta_qtd), 0.0)
+    real = max(float(realizado), 0.0)
+    projetado_pace = meta * dia / dias_mes if dias_mes > 0 else 0.0
+    gap = projetado_pace - real
+    pct_meta = (real / meta * 100.0) if meta > 0 else 0.0
+    pct_pace = (real / projetado_pace * 100.0) if projetado_pace > 0 else 0.0
+    return {
+        "meta": meta,
+        "realizado": real,
+        "projetado_pace": projetado_pace,
+        "gap": gap,
+        "pct_meta": pct_meta,
+        "pct_pace": pct_pace,
+    }
+
+
+def _empreendimentos_rj_direcional(
+    df_metas: pd.DataFrame,
+    df_vendas: pd.DataFrame,
+    df_ag: pd.DataFrame,
+    df_pastas: pd.DataFrame,
+) -> List[str]:
+    emps: set = set()
+    if df_metas is not None and not df_metas.empty and "Empreendimento" in df_metas.columns:
+        for e in df_metas["Empreendimento"].dropna():
+            s = _limpar_emp(e)
+            if s and s.lower() not in ("total", "geral"):
+                emps.add(s)
+    for df in (df_vendas, df_ag, df_pastas):
+        if df is None or df.empty:
+            continue
+        col = achar_coluna(df, ALIASES_EMPREENDIMENTO)
+        if col:
+            for e in df[col].dropna():
+                s = _limpar_emp(e)
+                if s:
+                    emps.add(s)
+    return sorted(emps)
+
+
+def _mapear_fase_funil(fase: str) -> Optional[str]:
+    f = (fase or "").lower()
+    if "visita" in f:
+        return "visitas"
+    if "análise de crédito" in f or "analise de credito" in f or "análise safi" in f or "analise safi" in f:
+        return "pastas"
+    if "aprovado safi" in f:
+        return "pastas_aprovadas"
+    if "fechado e ganho" in f or f == "contrato gerado":
+        return "vendas"
+    if any(x in f for x in ("aguardando", "atendimento", "elaboração", "elaboracao", "proposta")):
+        return "agendamentos"
+    return None
+
+
+def totais_funil_digital_oportunidades(
+    df_opps: pd.DataFrame,
+    df_vendas: pd.DataFrame,
+    empreendimento: str,
+    ini: date,
+    fim: date,
+) -> Dict[str, float]:
+    """Funil digital via oportunidades (núcleo digital) + vendas com origem digital."""
+    out = {e: 0.0 for e in FUNIL_ETAPAS}
+    if df_opps is not None and not df_opps.empty:
+        base = _filtrar_df_emp(_filtrar_df_periodo(df_opps, ALIASES_DATA_CRIACAO, ini, fim), empreendimento)
+        base = base.loc[base.apply(_is_oportunidade_nucleo_digital, axis=1)].copy()
+        col_id = achar_coluna(base, ALIASES_ID_OPORTUNIDADE) or "ID da Oportunidade"
+        col_fase = achar_coluna(base, ["Fase", "StageName"]) or "Fase"
+        if not base.empty:
+            base = base.drop_duplicates(subset=[col_id])
+            out["agendamentos"] = float(len(base))
+            for _, row in base.iterrows():
+                etapa = _mapear_fase_funil(str(row.get(col_fase, "")))
+                if etapa and etapa != "agendamentos":
+                    out[etapa] += 1.0
+    df_ven_d = df_vendas.copy() if df_vendas is not None else pd.DataFrame()
+    if not df_ven_d.empty:
+        col_orig = achar_coluna(df_ven_d, ["Origem da Conta", "Origem do lead"])
+        if col_orig:
+            df_ven_d = df_ven_d.loc[df_ven_d[col_orig].map(_limpar_emp).isin(ORIGENS_NUCLEO_DIGITAL)].copy()
+        ven = _filtrar_df_emp(_filtrar_df_periodo(df_ven_d, ALIASES_CONTRATO_GERADO, ini, fim), empreendimento)
+        ven_d = deduplicar_vendas_funil(filtrar_vendas_comerciais(ven)) if not ven.empty else ven
+        out["vendas"] = max(out["vendas"], float(len(ven_d)) if ven_d is not None and not ven_d.empty else 0.0)
+    return out
+
+
+def render_aba_funil_empreendimentos(
+    df_metas: pd.DataFrame,
+    df_vendas: pd.DataFrame,
+    col_contrato_gerado: Optional[str],
+) -> None:
+    """Aba: funil MTD e 7d por empreendimento + marketing digital + gap vs projetado."""
+    st.subheader("Funil por Empreendimento — Direcional · RJ")
+    st.caption(
+        "Vendas comerciais · funil do mês (MTD) e últimos 7 dias · "
+        "conversões abaixo de cada etapa · oportunidades por fase · núcleo digital"
+    )
+    hoje = date.today()
+    ini_mes, fim, ini_7d, _ = _janelas_funil_emp(hoje)
+    mes_num = hoje.month
+
+    try:
+        pacote = carregar_funil_empreendimento_sf()
+        df_ag = pacote.get("agendamentos") or pd.DataFrame()
+        df_pastas = pacote.get("pastas") or pd.DataFrame()
+        df_opps = pacote.get("oportunidades") or pd.DataFrame()
+        df_ven_funil = pacote.get("vendas") or pd.DataFrame()
+        t_sf = float((pacote.get("timings") or {}).get("total_s", 0.0))
+        st.caption(
+            f"Janela SF desde {pacote.get('inicio_janela', '?')}"
+            + (f" · carregado em {t_sf:.1f}s" if t_sf else "")
+            + f" · ag {len(df_ag):,} · pas {len(df_pastas):,} · opp {len(df_opps):,} · ven {len(df_ven_funil):,}".replace(",", ".")
+        )
+    except Exception as exc:
+        st.error(f"Não foi possível carregar dados do funil por empreendimento: {exc}")
+        return
+
+    empreendimentos = _empreendimentos_rj_direcional(df_metas, df_ven_funil, df_ag, df_pastas)
+    if not empreendimentos:
+        st.info("Nenhum empreendimento encontrado para Direcional · RJ.")
+        return
+
+    emp_sel = st.selectbox("Empreendimento", empreendimentos, key="funil_emp_select")
+
+    metas_emp = df_metas[
+        (df_metas["Empreendimento"].map(_limpar_emp) == emp_sel)
+        & (df_metas["Mes_Num"] == mes_num)
+    ] if (df_metas is not None and not df_metas.empty and "Mes_Num" in df_metas.columns) else pd.DataFrame()
+    meta_qtd = float(metas_emp["Meta_Qtd"].sum()) if not metas_emp.empty else 0.0
+
+    tot_mes = totais_funil_empreendimento(df_ag, df_pastas, df_ven_funil, emp_sel, ini_mes, fim)
+    tot_7d = totais_funil_empreendimento(df_ag, df_pastas, df_ven_funil, emp_sel, ini_7d, fim)
+    kpi = _kpi_gap_projetado(meta_qtd, tot_mes.get("vendas", 0.0), hoje)
+
+    st.markdown("##### Ritmo vs meta (mês corrente)")
+    gap_txt = f"{fmt_qtd(kpi['gap'])} abaixo do projetado" if kpi["gap"] > 0.01 else "no ritmo ou acima"
+    st.markdown(
+        f"""
+        <div class="vel-kpi-row">
+            <div class="vel-kpi"><div class="lbl">Meta mês</div><div class="val">{int(kpi['meta'])}</div></div>
+            <div class="vel-kpi"><div class="lbl">Vendas MTD</div><div class="val">{fmt_qtd(kpi['realizado'])}</div></div>
+            <div class="vel-kpi"><div class="lbl">Projetado até hoje</div><div class="val">{fmt_qtd(kpi['projetado_pace'])}</div></div>
+            <div class="vel-kpi"><div class="lbl">Gap vs projetado</div><div class="val val--red">{fmt_qtd(kpi['gap'])}</div></div>
+            <div class="vel-kpi"><div class="lbl">% da meta</div><div class="val">{kpi['pct_meta']:.1f}%</div></div>
+            <div class="vel-kpi"><div class="lbl">% do ritmo</div><div class="val">{kpi['pct_pace']:.1f}%</div></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.caption(f"Indicador de ritmo: {gap_txt} (projeção linear da meta ao dia {hoje.day}).")
+
+    st.markdown("##### Funil comercial")
+    c_mes, c_7d = st.columns(2)
+    with c_mes:
+        fig_m = _criar_fig_funil_com_conversoes(
+            tot_mes,
+            titulo=f"Mês ({ini_mes.strftime('%d/%m')} → {fim.strftime('%d/%m')})",
+            chart_key=_plotly_key("funil_emp_mes", emp_sel),
+        )
+        st.plotly_chart(
+            fig_m,
+            use_container_width=True,
+            config={"displayModeBar": False},
+            key=_plotly_key("chart_funil_emp_mes", emp_sel),
+        )
+    with c_7d:
+        fig_7 = _criar_fig_funil_com_conversoes(
+            tot_7d,
+            titulo=f"Últimos 7 dias ({ini_7d.strftime('%d/%m')} → {fim.strftime('%d/%m')})",
+            chart_key=_plotly_key("funil_emp_7d", emp_sel),
+        )
+        st.plotly_chart(
+            fig_7,
+            use_container_width=True,
+            config={"displayModeBar": False},
+            key=_plotly_key("chart_funil_emp_7d", emp_sel),
+        )
+
+    fases_mes, total_mes = contagem_fases_oportunidade(df_opps, emp_sel, ini_mes, fim, apenas_digital=False)
+    fases_7d, total_7d = contagem_fases_oportunidade(df_opps, emp_sel, ini_7d, fim, apenas_digital=False)
+
+    st.markdown("##### Oportunidades por fase (Track Funnel)")
+    st.caption("Oportunidades criadas no período · fase atual · % abaixo do total em cada barra")
+    cf1, cf2 = st.columns([1, 3])
+    with cf1:
+        st.metric("Oportunidades (mês)", total_mes)
+    with cf2:
+        st.plotly_chart(
+            _criar_fig_track_funnel(fases_mes, titulo="Mês corrente"),
+            use_container_width=True,
+            config={"displayModeBar": False},
+            key=_plotly_key("track_mes", emp_sel),
+        )
+    cf3, cf4 = st.columns([1, 3])
+    with cf3:
+        st.metric("Oportunidades (7 dias)", total_7d)
+    with cf4:
+        st.plotly_chart(
+            _criar_fig_track_funnel(fases_7d, titulo="Últimos 7 dias"),
+            use_container_width=True,
+            config={"displayModeBar": False},
+            key=_plotly_key("track_7d", emp_sel),
+        )
+
+    st.markdown("##### Marketing digital (núcleo digital)")
+    st.caption(
+        "Filtro: Atribuição Digital, Última entrada Digital ou origem digital "
+        "(Lead ADS, WhatsApp, Portal Vertical, simuladores, LPs etc.) · "
+        "funil = oportunidades digitais por fase + vendas com origem digital"
+    )
+
+    tot_mes_dig = totais_funil_digital_oportunidades(df_opps, df_ven_funil, emp_sel, ini_mes, fim)
+    tot_7d_dig = totais_funil_digital_oportunidades(df_opps, df_ven_funil, emp_sel, ini_7d, fim)
+    fases_mes_d, total_mes_d = contagem_fases_oportunidade(df_opps, emp_sel, ini_mes, fim, apenas_digital=True)
+    fases_7d_d, total_7d_d = contagem_fases_oportunidade(df_opps, emp_sel, ini_7d, fim, apenas_digital=True)
+
+    cd1, cd2 = st.columns(2)
+    with cd1:
+        st.plotly_chart(
+            _criar_fig_funil_com_conversoes(tot_mes_dig, titulo="Funil digital — mês"),
+            use_container_width=True,
+            config={"displayModeBar": False},
+            key=_plotly_key("funil_dig_mes", emp_sel),
+        )
+        st.plotly_chart(
+            _criar_fig_track_funnel(fases_mes_d, titulo=f"Fases digitais — mês ({total_mes_d} opp.)"),
+            use_container_width=True,
+            config={"displayModeBar": False},
+            key=_plotly_key("track_dig_mes", emp_sel),
+        )
+    with cd2:
+        st.plotly_chart(
+            _criar_fig_funil_com_conversoes(tot_7d_dig, titulo="Funil digital — 7 dias"),
+            use_container_width=True,
+            config={"displayModeBar": False},
+            key=_plotly_key("funil_dig_7d", emp_sel),
+        )
+        st.plotly_chart(
+            _criar_fig_track_funnel(fases_7d_d, titulo=f"Fases digitais — 7 dias ({total_7d_d} opp.)"),
+            use_container_width=True,
+            config={"displayModeBar": False},
+            key=_plotly_key("track_dig_7d", emp_sel),
+        )
+
+
+
+def _corpo_painel_metas(
+    df_vendas: pd.DataFrame,
+    df_metas: pd.DataFrame,
+    df_vendas_painel: pd.DataFrame,
+    df_vendas_raw: pd.DataFrame,
+    origem_vendas_painel: str,
+    col_contrato_gerado: Optional[str],
+    col_canal: Optional[str],
+    cred_fp: str,
+    sid: str,
+) -> None:
+
+    # -------------------------------------------------------------------------
+    # LINHA ÚNICA DE FILTROS
+    # -------------------------------------------------------------------------
+    anos_disponiveis = sorted(
+        int(x)
+        for x in df_vendas["_ano"].dropna().unique().tolist()
+        if pd.notna(x) and int(x) > 2000
+    )
+    if not anos_disponiveis and col_contrato_gerado:
+        dt_anos = _serie_data_contrato(df_vendas, col_contrato_gerado).dropna()
+        if not dt_anos.empty:
+            anos_disponiveis = sorted(int(y) for y in dt_anos.dt.year.unique() if int(y) > 2000)
+
+    meses_no_ano = list(range(1, 13))
+    mes_atual = datetime.now().month
+    ano_atual = datetime.now().year
+    mes_padrao = mes_atual if mes_atual in meses_no_ano else 1
+    default_anos = (
+        [ano_atual]
+        if ano_atual in anos_disponiveis
+        else ([anos_disponiveis[-1]] if anos_disponiveis else [])
+    )
+    regioes_disponiveis = sorted(set(str(x).strip() for x in df_metas["Regiao_Coord"].dropna().unique() if str(x).strip()))
+    
+    todos_emps_vendas = sorted(list(set(str(x).strip() for x in df_vendas["Empreendimento"].dropna().unique() if str(x).strip())))
+
+    st.markdown("<div style='margin-bottom:1rem; text-align: center;'><strong>Filtros</strong></div>", unsafe_allow_html=True)
+    
+    col_filtros = st.columns(6) 
+    with col_filtros[0]:
+        canais_sel = st.multiselect("Canal da Meta", ["RIO", "DIR", "PARC", "RJ"], default=["RIO"])
+    with col_filtros[1]:
+        anos_sel = st.multiselect("Ano", anos_disponiveis, default=default_anos)
+    with col_filtros[2]:
+        meses_venda_sel = st.multiselect("Mês da Venda", meses_no_ano, default=[mes_padrao])
+    with col_filtros[3]:
+        meses_meta_sel = st.multiselect("Mês da Meta", meses_no_ano, default=[mes_padrao])
+    with col_filtros[4]:
+        regioes_sel = st.multiselect("Região", regioes_disponiveis, default=[])
+    with col_filtros[5]:
+        emps_sel = st.multiselect("Empreendimento", todos_emps_vendas, default=[])
+
+    # -------------------------------------------------------------------------
+    # Aplicação de Filtros
+    # -------------------------------------------------------------------------
+    vendas_f = df_vendas.copy()
+    metas_f = df_metas.copy()
+
+    vendas_f = filtrar_vendas_competencia(
+        vendas_f, anos_sel, meses_venda_sel, col_contrato_gerado
+    )
+
+    if meses_meta_sel:
+        metas_f = metas_f[metas_f["Mes_Num"].isin(meses_meta_sel)]
+    
+    if regioes_sel:
+        metas_f = metas_f[metas_f["Regiao_Coord"].isin(regioes_sel)]
+        if not emps_sel:
+                regioes_base = [r.split(" - ")[0].strip() for r in regioes_sel]
+                vendas_f = vendas_f[vendas_f["Regiao_Coord"].isin(regioes_sel) | vendas_f["Região"].isin(regioes_base)]
+        else:
+                vendas_f = vendas_f[vendas_f["Regiao_Coord"].isin(regioes_sel)]
+    
+    if emps_sel:
+        metas_f = metas_f[metas_f["Empreendimento"].isin(emps_sel)]
+        vendas_f = vendas_f[vendas_f["Empreendimento"].isin(emps_sel)]
+
+    fator_meta = 0.0
+    mask_vendas = pd.Series(False, index=vendas_f.index)
+
+    if not canais_sel or "RIO" in canais_sel:
+        fator_meta = 1.0
+        mask_vendas = pd.Series(True, index=vendas_f.index)
+    else:
+        if "DIR" in canais_sel:
+                fator_meta += 0.50
+                mask_vendas |= (vendas_f["Canal_Agrupado"] == "DV RJ")
+        if "PARC" in canais_sel and col_canal:
+                fator_meta += 0.25
+                mask_vendas |= vendas_f[col_canal].astype(str).str.upper().str.strip().apply(lambda x: x.split('-')[0].strip() == 'RJG' or x == 'RJG')
+        if "RJ" in canais_sel and col_canal:
+                fator_meta += 0.25
+                mask_vendas |= vendas_f[col_canal].astype(str).str.upper().str.strip().apply(lambda x: x.split('-')[0].strip() == 'RJ' or x == 'RJ')
+
+    fator_meta = min(1.0, factor_meta := fator_meta)
+    vendas_f = vendas_f[mask_vendas]
+
+    total_meta_qtd_base = float(metas_f["Meta_Qtd"].sum()) if not metas_f.empty else 0.0
+    total_meta_vgv_base = float(metas_f["Meta_VGV"].sum()) if not metas_f.empty else 0.0
+
+    metas_f["Meta_Qtd"] = (metas_f["Meta_Qtd"] * fator_meta).apply(math.floor)
+    metas_f["Meta_VGV"] = metas_f["Meta_VGV"] * fator_meta
+
+    total_realizado_qtd = float(vendas_f["_qtd_venda"].sum())
+    total_meta_qtd = float(metas_f["Meta_Qtd"].sum()) if not metas_f.empty else 0.0
+    total_vgv_realizado = float(vendas_f["_vgv_venda"].sum())
+    total_meta_vgv = float(metas_f["Meta_VGV"].sum()) if not metas_f.empty else 0.0
+
+    pct_qtd = (total_realizado_qtd / total_meta_qtd * 100.0) if total_meta_qtd > 0 else 0.0
+    pct_vgv = (total_vgv_realizado / total_meta_vgv * 100.0) if total_meta_vgv > 0 else 0.0
+
+    if total_realizado_qtd <= 0 and len(df_vendas) > 0:
+        n_sem_comp = int(df_vendas["_mes"].isna().sum()) if "_mes" in df_vendas.columns else 0
+        st.caption(
+                f"Filtros ativos: ano={anos_sel or 'todos'} · mês venda={meses_venda_sel or 'todos'} · "
+                f"mês meta={meses_meta_sel or 'todos'} · "
+                f"base total={len(df_vendas):,} vendas · sem mês identificado={n_sem_comp:,}".replace(",", ".")
+        )
+
+    st.markdown(
+        f"""
+        <div class="vel-kpi-row" style="margin-top: 1rem;">
+                <div class="vel-kpi"><div class="lbl">Qtd Meta</div><div class="val">{int(total_meta_qtd)}</div></div>
+                <div class="vel-kpi"><div class="lbl">Qtd Realizado</div><div class="val">{fmt_qtd(total_realizado_qtd)}</div></div>
+                <div class="vel-kpi"><div class="lbl">% Qtd</div><div class="val">{pct_qtd:.1f}%</div></div>
+        </div>
+        <div class="vel-kpi-row">
+                <div class="vel-kpi"><div class="lbl">VGV Meta</div><div class="val">{fmt_br_milhoes(total_meta_vgv)}</div></div>
+                <div class="vel-kpi"><div class="lbl">VGV Realizado</div><div class="val val--red">{fmt_br_milhoes(total_vgv_realizado)}</div></div>
+                <div class="vel-kpi"><div class="lbl">% VGV</div><div class="val">{pct_vgv:.1f}%</div></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.subheader("Perfil das Vendas")
+    qtd_facilitada = float(vendas_f[vendas_f["Tipo_Venda"] == "Facilitada"]["_qtd_venda"].sum())
+    qtd_normal = float(vendas_f[vendas_f["Tipo_Venda"] == "Normal"]["_qtd_venda"].sum())
+    st.markdown(
+        f"""
+        <div class="vel-kpi-row">
+                <div class="vel-kpi"><div class="lbl">Vendas Facilitadas</div><div class="val">{fmt_qtd(qtd_facilitada)}</div></div>
+                <div class="vel-kpi"><div class="lbl">Vendas Normais</div><div class="val">{fmt_qtd(qtd_normal)}</div></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    st.subheader("Visão geral")
+    c1, c2, c3 = st.columns([1, 2, 1])
+    with c2:
+        criar_medidor("Geral — quantidade vs meta", float(total_realizado_qtd), total_meta_qtd, total_vgv_realizado, total_meta_vgv, total_realizado_qtd)
+
+    st.subheader("Por região")
+    if "Regiao_Coord" in metas_f.columns:
+        regioes_m = sorted(str(x).strip() for x in metas_f["Regiao_Coord"].dropna().unique() if str(x).strip())
+        if regioes_m:
+                cols = st.columns(min(3, len(regioes_m)) or 1)
+                for i, regiao in enumerate(regioes_m):
+                    with cols[i % len(cols)]:
+                        m_reg = metas_f[metas_f["Regiao_Coord"] == regiao]
+                        v_reg = vendas_f[vendas_f["Regiao_Coord"] == regiao]
+                        criar_medidor(regiao, float(v_reg["_qtd_venda"].sum()), m_reg["Meta_Qtd"].sum(), v_reg["_vgv_venda"].sum(), m_reg["Meta_VGV"].sum(), float(v_reg["_qtd_venda"].sum()))
+
+    # -------------------------------------------------------------------------
+    # TABELAS
+    # -------------------------------------------------------------------------
+    st.subheader("Tabela Resumo: Por Região")
+    if "Regiao_Coord" in metas_f.columns:
+        vg_reg = vendas_f.groupby("Regiao_Coord", as_index=False).agg(real_qtd=("_qtd_venda", "sum"), real_vgv=("_vgv_venda", "sum")).rename(columns={"Regiao_Coord": "Região"})
+        mg_reg = metas_f.groupby("Regiao_Coord", as_index=False).agg(meta_qtd=("Meta_Qtd", "sum"), meta_vgv=("Meta_VGV", "sum")).rename(columns={"Regiao_Coord": "Região"})
+        tab_reg = vg_reg.merge(mg_reg, on="Região", how="outer").fillna(0)
+        tab_reg["% Qtd"] = tab_reg.apply(lambda r: (r["real_qtd"] / r["meta_qtd"] * 100.0) if r["meta_qtd"] > 0 else 0.0, axis=1)
+        tab_reg["% VGV"] = tab_reg.apply(lambda r: (r["real_vgv"] / r["meta_vgv"] * 100.0) if r["meta_vgv"] > 0 else 0.0, axis=1)
+        st.dataframe(tab_reg.sort_values("meta_qtd", ascending=False), use_container_width=True, hide_index=True)
+
+    # -------------------------------------------------------------------------
+    # FUNIL IDEAL E ENGENHARIA REVERSA
+    # -------------------------------------------------------------------------
+    st.markdown("<br><hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
+    st.subheader("Engenharia Reversa: Funil Ideal")
+
+    v_meta = math.floor(total_meta_qtd)
+    pa_ideal = math.ceil(v_meta / 0.64) if v_meta > 0 else 0
+    p_ideal = math.ceil(pa_ideal / 0.64) if pa_ideal > 0 else 0
+    vi_ideal = math.ceil(p_ideal / 0.25) if p_ideal > 0 else 0
+    a_ideal = math.ceil(vi_ideal / 0.50) if vi_ideal > 0 else 0
+    
+    meta_global_referencia = (total_meta_qtd / fator_meta) if fator_meta > 0 else 0
+    meta_dvrj_ref = meta_global_referencia * 0.5
+    vd_ideal = math.ceil(meta_dvrj_ref * 0.40)
+    
+    od_ideal = math.ceil(vd_ideal / 0.044) if vd_ideal > 0 else 0
+    ld_ideal = math.ceil(od_ideal / 0.50) if od_ideal > 0 else 0
+    
+    corretores_pessimista = math.ceil(v_meta / 0.15) if v_meta > 0 else 0
+    corretores_moderado = math.ceil(v_meta / 0.20) if v_meta > 0 else 0
+    corretores_otimista = math.ceil(v_meta / 0.25) if v_meta > 0 else 0
+
+    col_f_meta_espaco, col_f_meta, col_f_meta_espaco2 = st.columns([1, 2, 1])
+    with col_f_meta:
+        fig_ideal = _criar_fig_funil(
+                ['Agendamentos', 'Visitas', 'Pastas', 'Past. Aprov.', 'Vendas (Meta)'],
+                [a_ideal, vi_ideal, p_ideal, pa_ideal, v_meta],
+                cores=["#022654", "#04428f", "#1e60b3", "#cb0935", "#9e0828"],
+                altura=350,
+        )
+        st.plotly_chart(fig_ideal, use_container_width=True, config={"displayModeBar": False})
+
+    st.markdown("<br><hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
+    st.subheader("Funil de Marketing Digital")
+    
+    col_mkt_espaco, col_mkt_grafico, col_mkt_espaco2 = st.columns([1, 2, 1])
+    with col_mkt_grafico:
+        fig_mkt = _criar_fig_funil(
+                ['Leads Digitais', 'Oport. Digitais', 'Vendas Dig. (40% DV RJ)'],
+                [ld_ideal, od_ideal, vd_ideal],
+                cores=["#022654", "#1e60b3", "#cb0935"],
+                altura=300,
+        )
+        st.plotly_chart(fig_mkt, use_container_width=True, config={"displayModeBar": False})
+
+    st.markdown("<br><hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
+    st.subheader("Cenários: Corretores Ativos (Necessários para bater a meta global)")
+    st.markdown(
+        f"""
+        <div class="vel-kpi-row" style="justify-content: center; margin-top: 1rem;">
+                <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Pessimista (15% convert.)</div><div class="val">{corretores_pessimista}</div></div>
+                <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Moderado (20% convert.)</div><div class="val">{corretores_moderado}</div></div>
+                <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Otimista (25% convert.)</div><div class="val">{corretores_otimista}</div></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # -------------------------------------------------------------------------
+    # Projeção de Vendas (regressão diária — Contrato gerado em)
+    # -------------------------------------------------------------------------
+    mes_corrente = datetime.now().month
+    metas_mes_atual = metas_f[metas_f["Mes_Num"] == mes_corrente] if "Mes_Num" in metas_f.columns else metas_f.iloc[0:0]
+    if metas_mes_atual.empty and "Mes_Num" in df_metas.columns:
+        # fallback: meta do mês corrente na base completa, com mesmos filtros de região/emp e fator de canal
+        metas_mes_atual = df_metas[df_metas["Mes_Num"] == mes_corrente].copy()
+        if regioes_sel:
+                metas_mes_atual = metas_mes_atual[metas_mes_atual["Regiao_Coord"].isin(regioes_sel)]
+        if emps_sel:
+                metas_mes_atual = metas_mes_atual[metas_mes_atual["Empreendimento"].isin(emps_sel)]
+        metas_mes_atual["Meta_VGV"] = metas_mes_atual["Meta_VGV"] * fator_meta
+        if "Meta_Qtd" in metas_mes_atual.columns:
+                metas_mes_atual["Meta_Qtd"] = (metas_mes_atual["Meta_Qtd"] * fator_meta).apply(math.floor)
+    meta_vgv_proj = float(metas_mes_atual["Meta_VGV"].sum()) if not metas_mes_atual.empty else float(total_meta_vgv)
+    meta_qtd_proj = float(metas_mes_atual["Meta_Qtd"].sum()) if (not metas_mes_atual.empty and "Meta_Qtd" in metas_mes_atual.columns) else float(total_meta_qtd)
+
+    if col_contrato_gerado:
+        # Base comercial; mesmos filtros de região/emp/canal do painel (RIO = todas as vendas).
+        base_proj = df_vendas_painel.copy()
+        if regioes_sel:
+                if "Região" in base_proj.columns:
+                    regioes_base = [r.split(" - ")[0].strip() for r in regioes_sel]
+                    base_proj = base_proj[
+                        base_proj["Regiao_Coord"].isin(regioes_sel) | base_proj["Região"].isin(regioes_base)
+                    ]
+                else:
+                    base_proj = base_proj[base_proj["Regiao_Coord"].isin(regioes_sel)]
+        if emps_sel:
+                base_proj = base_proj[base_proj["Empreendimento"].isin(emps_sel)]
+
+        # Mesma regra do KPI: RIO (ou vazio) = 100% das vendas comerciais; senão, recorte por canal.
+        if canais_sel and "RIO" not in canais_sel:
+                mask_p = pd.Series(False, index=base_proj.index)
+                if "DIR" in canais_sel:
+                    mask_p |= (base_proj["Canal_Agrupado"] == "DV RJ")
+                if "PARC" in canais_sel and col_canal:
+                    mask_p |= base_proj[col_canal].astype(str).str.upper().str.strip().apply(
+                        lambda x: x.split("-")[0].strip() == "RJG" or x == "RJG"
+                    )
+                if "RJ" in canais_sel and col_canal:
+                    mask_p |= base_proj[col_canal].astype(str).str.upper().str.strip().apply(
+                        lambda x: x.split("-")[0].strip() == "RJ" or x == "RJ"
+                    )
+                base_proj = base_proj[mask_p]
+
+        try:
+                proj = projetar_vendas_mes_atual(
+                    base_proj, col_contrato_gerado, meta_vgv_proj, meta_qtd_mes=meta_qtd_proj
+                )
+                if proj:
+                    render_projecao_vendas(proj)
+                else:
+                    st.info("Dados insuficientes para treinar a projeção de vendas (janela de meses exatos).")
+
+                proj_sem_mes = projetar_vendas_mes_atual(
+                    base_proj,
+                    col_contrato_gerado,
+                    meta_vgv_proj,
+                    meta_qtd_mes=meta_qtd_proj,
+                    incluir_mes=False,
+                )
+                if proj_sem_mes:
+                    render_projecao_vendas(proj_sem_mes)
+
+                # Efeitos sazonais relativos a segunda / dia 1 / janeiro
+                hoje_ef = date.today()
+                ini_ef, fim_ef = janela_treino_meses_exatos(hoje_ef)
+                serie_ef = serie_diaria_contratos(base_proj, col_contrato_gerado)
+                if not serie_ef.empty:
+                    treino_ef = calendario_diario(ini_ef, fim_ef, serie_ef)
+                    efeitos = estimar_efeitos_sazonais(treino_ef)
+                    if efeitos:
+                        render_efeitos_sazonais(efeitos)
+
+                # Projeção do funil — carrega ag/pastas sob demanda (não bloqueia KPI inicial)
+                try:
+                    try:
+                        pacote_funil = carregar_funil_painel_sf()
+                        df_ag_vis_cache = pacote_funil.get("agendamentos")
+                        df_pastas_cache = pacote_funil.get("pastas")
+                        origem_ag_cache = pacote_funil.get("origem_ag", "")
+                        origem_pastas_cache = pacote_funil.get("origem_pastas", "")
+                        tf = float((pacote_funil.get("timings") or {}).get("total_s", 0.0))
+                        if tf:
+                            st.caption(f"Funil SF carregado em {tf:.1f}s")
+                    except Exception as e_funil_load:
+                        st.warning(f"Não foi possível pré-carregar funil SF: {e_funil_load}")
+
+                    # 1) Agendamentos / visitas
+                    try:
+                        if df_ag_vis_cache is not None and not df_ag_vis_cache.empty:
+                            df_ag_vis = df_ag_vis_cache.copy()
+                            origem_ag = origem_ag_cache
+                        else:
+                            raise RuntimeError("Sem agendamentos no pacote funil.")
+                        n_ag_bruto = len(df_ag_vis)
+                        df_ag_vis = deduplicar_agendamentos_funil(df_ag_vis)
+                        st.caption(
+                            f"Agendamentos/visitas: {origem_ag} · "
+                            f"{n_ag_bruto:,} → {len(df_ag_vis):,} linhas "
+                            f"(dedup Código do agendamento)"
+                        )
+                    except Exception as e_sf:
+                        st.warning(
+                            f"SF agendamentos indisponível ({e_sf}). Fallback Sheets 'Dados Únicos'."
+                        )
+                        df_ag_vis = normalizar_colunas(
+                            ler_planilha_aba_df(
+                                SPREADSHEET_FUNIL_ID, ABA_AGENDAMENTOS_VISITAS, cred_fp
+                            )
+                        )
+                        df_ag_vis = deduplicar_agendamentos_funil(df_ag_vis)
+
+                    # 2) Pastas / pastas aprovadas
+                    try:
+                        if df_pastas_cache is not None and not df_pastas_cache.empty:
+                            df_pastas_funil = df_pastas_cache.copy()
+                            origem_pastas = origem_pastas_cache
+                        else:
+                            raise RuntimeError("Sem pastas no pacote funil.")
+                        n_pas_bruto = len(df_pastas_funil)
+                        col_envio = achar_coluna_primeiro_envio_analise(df_pastas_funil)
+                        col_safi = achar_coluna_aprovacao_safi(df_pastas_funil)
+                        n_com_envio = 0
+                        n_com_safi = 0
+                        if col_envio:
+                            n_com_envio = int(
+                                parse_data_serie(df_pastas_funil[col_envio]).notna().sum()
+                            )
+                        if col_safi:
+                            n_com_safi = int(
+                                parse_data_serie(df_pastas_funil[col_safi]).notna().sum()
+                            )
+                        n_aprov_filt = len(deduplicar_pastas_aprovadas_funil(df_pastas_funil))
+                        df_pastas_funil = deduplicar_pastas_funil(df_pastas_funil)
+                        st.caption(
+                            f"Pastas: {origem_pastas} · "
+                            f"{n_pas_bruto:,} → {len(df_pastas_funil):,} linhas "
+                            f"(dedup Nome da Avaliação) · "
+                            f"1º envio: '{col_envio or '?'}' ({n_com_envio:,}) · "
+                            f"Aprov. SAFI: '{col_safi or '?'}' ({n_com_safi:,}) · "
+                            f"aprovadas (dedup): {n_aprov_filt:,}"
+                        )
+                    except Exception as e_sf_p:
+                        st.warning(
+                            f"SF pastas indisponível ({e_sf_p}). Tentando planilha Sheets…"
+                        )
+                        sid_pastas = (SPREADSHEET_PASTAS_ID or "").strip()
+                        df_pastas_funil, origem_pastas = carregar_df_pastas_funil(
+                            SPREADSHEET_FUNIL_ID, sid, sid_pastas, cred_fp
+                        )
+                        if df_pastas_funil.empty:
+                            st.warning("Pastas não carregadas — funil sem essa etapa.")
+                        else:
+                            df_pastas_funil = deduplicar_pastas_funil(df_pastas_funil)
+                            st.caption(f"Pastas (Sheets): {origem_pastas}")
+
+                    # 3) Vendas — reutiliza base do painel (já com VGV e filtros comerciais)
+                    df_vendas_funil = pd.DataFrame()
+                    serie_vendas_funil = None
+                    try:
+                        df_vendas_funil = df_vendas_raw.copy()
+                        df_vendas_funil = normalizar_colunas(df_vendas_funil)
+                        n_ven_bruto = len(df_vendas_funil)
+                        df_vendas_funil = filtrar_vendas_comerciais(df_vendas_funil)
+                        n_ven_comercial = len(df_vendas_funil)
+                        df_vendas_funil = deduplicar_vendas_funil(df_vendas_funil)
+                        st.caption(
+                            f"Vendas (painel): {origem_vendas_painel} · "
+                            f"{n_ven_bruto:,} → {n_ven_comercial:,} comerciais → "
+                            f"{len(df_vendas_funil):,} linhas "
+                            f"(dedup ID da Oportunidade)"
+                        )
+                    except Exception as e_sf_v:
+                        st.warning(
+                            f"Vendas do painel indisponíveis ({e_sf_v}). "
+                            "Usando base filtrada do painel (Contrato gerado em)."
+                        )
+                        serie_vendas_funil = serie_diaria_contratos(base_proj, col_contrato_gerado)
+
+                    mapas_funil = montar_mapa_funil_diario(
+                        df_ag_vis,
+                        df_pastas_funil if df_pastas_funil is not None else pd.DataFrame(),
+                        serie_vendas=serie_vendas_funil,
+                        df_vendas=df_vendas_funil if not df_vendas_funil.empty else None,
+                    )
+                    proj_funil = projetar_funil_mes_atual(
+                        mapas_funil, incluir_mes=True, meta_qtd_mes=meta_qtd_proj
+                    )
+                    if proj_funil:
+                        render_projecao_funil(proj_funil)
+                    else:
+                        st.info("Dados insuficientes para a projeção do funil comercial.")
+                except Exception as exc_funil:
+                    st.warning(f"Não foi possível calcular a projeção do funil: {exc_funil}")
+        except Exception as exc:
+                st.warning(f"Não foi possível calcular a projeção de vendas: {exc}")
+    else:
+        st.warning("Coluna 'Contrato gerado em' não encontrada — seção de Projeção de Vendas indisponível.")
+
+    # -------------------------------------------------------------------------
+    # Comparativo de Vendas Eficiência Isolado (Janela Histórica: Dia 1 ao Dia Atual MTD)
+    # -------------------------------------------------------------------------
+    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
+    dia_atual_janela = datetime.now().day
+    st.subheader(f"Comparativo de Vendas (Dia 01 ao Dia {dia_atual_janela:02d} do Mês)")
+    
+    if col_contrato_gerado:
+        # Base de espelho limpa para o gráfico de eficiência temporal sem interferência de filtros de UI de competência
+        df_grafico_eficiencia = df_vendas.copy()
+        df_grafico_eficiencia["Data_Contrato_DT"] = parse_data_serie(df_grafico_eficiencia[col_contrato_gerado])
+        df_grafico_eficiencia = df_grafico_eficiencia.dropna(subset=["Data_Contrato_DT"])
+    
+        if not df_grafico_eficiencia.empty:
+                # Trava a janela da série histórica estritamente do dia 01 ao dia atual de cada mês para medição justa de ritmo MTD
+                df_parcial_janela = df_grafico_eficiencia[df_grafico_eficiencia["Data_Contrato_DT"].dt.day <= dia_atual_janela].copy()
+        
+                df_parcial_janela["_ano_c"] = df_parcial_janela["Data_Contrato_DT"].dt.year
+                df_parcial_janela["_mes_c"] = df_parcial_janela["Data_Contrato_DT"].dt.month
+        
+                df_comp = df_parcial_janela.groupby(["_ano_c", "_mes_c"], as_index=False).agg(
+                    QTD=("_qtd_venda", "sum"),
+                    VGV=("_vgv_venda", "sum")
+                ).sort_values(["_ano_c", "_mes_c"])
+        
+                df_comp["Periodo"] = df_comp["_mes_c"].astype(str).str.zfill(2) + "/" + df_comp["_ano_c"].astype(str)
+                df_comp["VGV_Formatado"] = df_comp["VGV"].apply(lambda x: fmt_br_milhoes(x))
+                df_comp["QTD_Formatado"] = df_comp["QTD"].apply(lambda x: fmt_qtd(x))
+        
+                fig_linha = make_subplots(specs=[[{"secondary_y": True}]])
+        
+                fig_linha.add_trace(
+                    go.Scatter(
+                        x=df_comp["Periodo"], 
+                        y=df_comp["QTD"], 
+                        mode="lines+markers+text",
+                        name="QTD Vendas",
+                        line=dict(color=COR_AZUL_ESC, width=3),
+                        marker=dict(size=8, color=COR_AZUL_ESC),
+                        text=df_comp["QTD_Formatado"],
+                        textposition="top center",
+                        textfont=dict(color=COR_AZUL_ESC, size=11, family="Inter")
+                    ),
+                    secondary_y=False,
+                )
+        
+                fig_linha.add_trace(
+                    go.Scatter(
+                        x=df_comp["Periodo"], 
+                        y=df_comp["VGV"], 
+                        mode="lines+markers+text",
+                        name="VGV Real",
+                        line=dict(color=COR_VERMELHO, width=3),
+                        marker=dict(size=8, color=COR_VERMELHO),
+                        text=df_comp["VGV_Formatado"],
+                        textposition="bottom center",
+                        textfont=dict(color=COR_VERMELHO, size=11, family="Inter")
+                    ),
+                    secondary_y=True,
+                )
+        
+                fig_linha.update_layout(
+                    margin=dict(l=20, r=20, t=40, b=20),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(family="Inter", color=COR_TEXTO_PRETO),
+                    legend=dict(
+                        orientation="h", yanchor="bottom", y=1.08, xanchor="center", x=0.5,
+                        font=dict(color=COR_TEXTO_PRETO, family="Inter", size=12),
+                    ),
+                    hovermode="x unified",
+                )
+
+                fig_linha.update_xaxes(
+                    title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+                    tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+                )
+                fig_linha.update_yaxes(
+                    title_text="Quantidade (Vendas)",
+                    title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+                    tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+                    secondary_y=False,
+                    showgrid=False,
+                )
+                fig_linha.update_yaxes(
+                    title_text="VGV Real (R$)",
+                    title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+                    tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+                    secondary_y=True,
+                    showgrid=True,
+                    gridcolor="rgba(226, 232, 240, 0.5)",
+                )
+                st.plotly_chart(fig_linha, use_container_width=True, config={"displayModeBar": False})
+        else:
+                st.info("Não há dados de vendas no período acumulado de eficiência para exibir.")
+    else:
+        st.warning("A coluna de Contrato Gerado em não foi encontrada. Impossível renderizar a linha do tempo.")
+
+    st.markdown(
+        f'<div class="footer" style="text-align:center;padding:1rem 0;color:{COR_TEXTO_PRETO};font-size:0.82rem;">'
+        f"Direcional Engenharia · Vendas — Acompanhamento de metas</div>",
+        unsafe_allow_html=True,
+    )
+
+
 def main() -> None:
     fav = _resolver_png_raiz(FAVICON_ARQUIVO)
     st.set_page_config(
@@ -6453,536 +7663,25 @@ def main() -> None:
     df_vendas["_vgv_venda"] = df_vendas["_vgv"] * df_vendas["_peso_coord"]
     df_vendas_painel = df_vendas.copy()
 
-    # -------------------------------------------------------------------------
-    # LINHA ÚNICA DE FILTROS
-    # -------------------------------------------------------------------------
-    anos_disponiveis = sorted(
-        int(x)
-        for x in df_vendas["_ano"].dropna().unique().tolist()
-        if pd.notna(x) and int(x) > 2000
-    )
-    if not anos_disponiveis and col_contrato_gerado:
-        dt_anos = _serie_data_contrato(df_vendas, col_contrato_gerado).dropna()
-        if not dt_anos.empty:
-            anos_disponiveis = sorted(int(y) for y in dt_anos.dt.year.unique() if int(y) > 2000)
-
-    meses_no_ano = list(range(1, 13))
-    mes_atual = datetime.now().month
-    ano_atual = datetime.now().year
-    mes_padrao = mes_atual if mes_atual in meses_no_ano else 1
-    default_anos = (
-        [ano_atual]
-        if ano_atual in anos_disponiveis
-        else ([anos_disponiveis[-1]] if anos_disponiveis else [])
-    )
-    regioes_disponiveis = sorted(set(str(x).strip() for x in df_metas["Regiao_Coord"].dropna().unique() if str(x).strip()))
-    
-    todos_emps_vendas = sorted(list(set(str(x).strip() for x in df_vendas["Empreendimento"].dropna().unique() if str(x).strip())))
-
-    st.markdown("<div style='margin-bottom:1rem; text-align: center;'><strong>Filtros</strong></div>", unsafe_allow_html=True)
-    
-    col_filtros = st.columns(6) 
-    with col_filtros[0]:
-        canais_sel = st.multiselect("Canal da Meta", ["RIO", "DIR", "PARC", "RJ"], default=["RIO"])
-    with col_filtros[1]:
-        anos_sel = st.multiselect("Ano", anos_disponiveis, default=default_anos)
-    with col_filtros[2]:
-        meses_venda_sel = st.multiselect("Mês da Venda", meses_no_ano, default=[mes_padrao])
-    with col_filtros[3]:
-        meses_meta_sel = st.multiselect("Mês da Meta", meses_no_ano, default=[mes_padrao])
-    with col_filtros[4]:
-        regioes_sel = st.multiselect("Região", regioes_disponiveis, default=[])
-    with col_filtros[5]:
-        emps_sel = st.multiselect("Empreendimento", todos_emps_vendas, default=[])
-
-    # -------------------------------------------------------------------------
-    # Aplicação de Filtros
-    # -------------------------------------------------------------------------
-    vendas_f = df_vendas.copy()
-    metas_f = df_metas.copy()
-
-    vendas_f = filtrar_vendas_competencia(
-        vendas_f, anos_sel, meses_venda_sel, col_contrato_gerado
-    )
-
-    if meses_meta_sel:
-        metas_f = metas_f[metas_f["Mes_Num"].isin(meses_meta_sel)]
-        
-    if regioes_sel:
-        metas_f = metas_f[metas_f["Regiao_Coord"].isin(regioes_sel)]
-        if not emps_sel:
-            regioes_base = [r.split(" - ")[0].strip() for r in regioes_sel]
-            vendas_f = vendas_f[vendas_f["Regiao_Coord"].isin(regioes_sel) | vendas_f["Região"].isin(regioes_base)]
-        else:
-            vendas_f = vendas_f[vendas_f["Regiao_Coord"].isin(regioes_sel)]
-    
-    if emps_sel:
-        metas_f = metas_f[metas_f["Empreendimento"].isin(emps_sel)]
-        vendas_f = vendas_f[vendas_f["Empreendimento"].isin(emps_sel)]
-
-    fator_meta = 0.0
-    mask_vendas = pd.Series(False, index=vendas_f.index)
-
-    if not canais_sel or "RIO" in canais_sel:
-        fator_meta = 1.0
-        mask_vendas = pd.Series(True, index=vendas_f.index)
-    else:
-        if "DIR" in canais_sel:
-            fator_meta += 0.50
-            mask_vendas |= (vendas_f["Canal_Agrupado"] == "DV RJ")
-        if "PARC" in canais_sel and col_canal:
-            fator_meta += 0.25
-            mask_vendas |= vendas_f[col_canal].astype(str).str.upper().str.strip().apply(lambda x: x.split('-')[0].strip() == 'RJG' or x == 'RJG')
-        if "RJ" in canais_sel and col_canal:
-            fator_meta += 0.25
-            mask_vendas |= vendas_f[col_canal].astype(str).str.upper().str.strip().apply(lambda x: x.split('-')[0].strip() == 'RJ' or x == 'RJ')
-
-    fator_meta = min(1.0, factor_meta := fator_meta)
-    vendas_f = vendas_f[mask_vendas]
-
-    total_meta_qtd_base = float(metas_f["Meta_Qtd"].sum()) if not metas_f.empty else 0.0
-    total_meta_vgv_base = float(metas_f["Meta_VGV"].sum()) if not metas_f.empty else 0.0
-
-    metas_f["Meta_Qtd"] = (metas_f["Meta_Qtd"] * fator_meta).apply(math.floor)
-    metas_f["Meta_VGV"] = metas_f["Meta_VGV"] * fator_meta
-
-    total_realizado_qtd = float(vendas_f["_qtd_venda"].sum())
-    total_meta_qtd = float(metas_f["Meta_Qtd"].sum()) if not metas_f.empty else 0.0
-    total_vgv_realizado = float(vendas_f["_vgv_venda"].sum())
-    total_meta_vgv = float(metas_f["Meta_VGV"].sum()) if not metas_f.empty else 0.0
-
-    pct_qtd = (total_realizado_qtd / total_meta_qtd * 100.0) if total_meta_qtd > 0 else 0.0
-    pct_vgv = (total_vgv_realizado / total_meta_vgv * 100.0) if total_meta_vgv > 0 else 0.0
-
-    if total_realizado_qtd <= 0 and len(df_vendas) > 0:
-        n_sem_comp = int(df_vendas["_mes"].isna().sum()) if "_mes" in df_vendas.columns else 0
-        st.caption(
-            f"Filtros ativos: ano={anos_sel or 'todos'} · mês venda={meses_venda_sel or 'todos'} · "
-            f"mês meta={meses_meta_sel or 'todos'} · "
-            f"base total={len(df_vendas):,} vendas · sem mês identificado={n_sem_comp:,}".replace(",", ".")
+    tab_metas, tab_funil_emp = st.tabs(["Metas & Projeção", "Funil por Empreendimento"])
+    with tab_funil_emp:
+        render_aba_funil_empreendimentos(
+            df_metas=df_metas,
+            df_vendas=df_vendas_painel,
+            col_contrato_gerado=col_contrato_gerado,
         )
-
-    st.markdown(
-        f"""
-        <div class="vel-kpi-row" style="margin-top: 1rem;">
-            <div class="vel-kpi"><div class="lbl">Qtd Meta</div><div class="val">{int(total_meta_qtd)}</div></div>
-            <div class="vel-kpi"><div class="lbl">Qtd Realizado</div><div class="val">{fmt_qtd(total_realizado_qtd)}</div></div>
-            <div class="vel-kpi"><div class="lbl">% Qtd</div><div class="val">{pct_qtd:.1f}%</div></div>
-        </div>
-        <div class="vel-kpi-row">
-            <div class="vel-kpi"><div class="lbl">VGV Meta</div><div class="val">{fmt_br_milhoes(total_meta_vgv)}</div></div>
-            <div class="vel-kpi"><div class="lbl">VGV Realizado</div><div class="val val--red">{fmt_br_milhoes(total_vgv_realizado)}</div></div>
-            <div class="vel-kpi"><div class="lbl">% VGV</div><div class="val">{pct_vgv:.1f}%</div></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.subheader("Perfil das Vendas")
-    qtd_facilitada = float(vendas_f[vendas_f["Tipo_Venda"] == "Facilitada"]["_qtd_venda"].sum())
-    qtd_normal = float(vendas_f[vendas_f["Tipo_Venda"] == "Normal"]["_qtd_venda"].sum())
-    st.markdown(
-        f"""
-        <div class="vel-kpi-row">
-            <div class="vel-kpi"><div class="lbl">Vendas Facilitadas</div><div class="val">{fmt_qtd(qtd_facilitada)}</div></div>
-            <div class="vel-kpi"><div class="lbl">Vendas Normais</div><div class="val">{fmt_qtd(qtd_normal)}</div></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    st.subheader("Visão geral")
-    c1, c2, c3 = st.columns([1, 2, 1])
-    with c2:
-        criar_medidor("Geral — quantidade vs meta", float(total_realizado_qtd), total_meta_qtd, total_vgv_realizado, total_meta_vgv, total_realizado_qtd)
-
-    st.subheader("Por região")
-    if "Regiao_Coord" in metas_f.columns:
-        regioes_m = sorted(str(x).strip() for x in metas_f["Regiao_Coord"].dropna().unique() if str(x).strip())
-        if regioes_m:
-            cols = st.columns(min(3, len(regioes_m)) or 1)
-            for i, regiao in enumerate(regioes_m):
-                with cols[i % len(cols)]:
-                    m_reg = metas_f[metas_f["Regiao_Coord"] == regiao]
-                    v_reg = vendas_f[vendas_f["Regiao_Coord"] == regiao]
-                    criar_medidor(regiao, float(v_reg["_qtd_venda"].sum()), m_reg["Meta_Qtd"].sum(), v_reg["_vgv_venda"].sum(), m_reg["Meta_VGV"].sum(), float(v_reg["_qtd_venda"].sum()))
-
-    # -------------------------------------------------------------------------
-    # TABELAS
-    # -------------------------------------------------------------------------
-    st.subheader("Tabela Resumo: Por Região")
-    if "Regiao_Coord" in metas_f.columns:
-        vg_reg = vendas_f.groupby("Regiao_Coord", as_index=False).agg(real_qtd=("_qtd_venda", "sum"), real_vgv=("_vgv_venda", "sum")).rename(columns={"Regiao_Coord": "Região"})
-        mg_reg = metas_f.groupby("Regiao_Coord", as_index=False).agg(meta_qtd=("Meta_Qtd", "sum"), meta_vgv=("Meta_VGV", "sum")).rename(columns={"Regiao_Coord": "Região"})
-        tab_reg = vg_reg.merge(mg_reg, on="Região", how="outer").fillna(0)
-        tab_reg["% Qtd"] = tab_reg.apply(lambda r: (r["real_qtd"] / r["meta_qtd"] * 100.0) if r["meta_qtd"] > 0 else 0.0, axis=1)
-        tab_reg["% VGV"] = tab_reg.apply(lambda r: (r["real_vgv"] / r["meta_vgv"] * 100.0) if r["meta_vgv"] > 0 else 0.0, axis=1)
-        st.dataframe(tab_reg.sort_values("meta_qtd", ascending=False), use_container_width=True, hide_index=True)
-
-    # -------------------------------------------------------------------------
-    # FUNIL IDEAL E ENGENHARIA REVERSA
-    # -------------------------------------------------------------------------
-    st.markdown("<br><hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
-    st.subheader("Engenharia Reversa: Funil Ideal")
-
-    v_meta = math.floor(total_meta_qtd)
-    pa_ideal = math.ceil(v_meta / 0.64) if v_meta > 0 else 0
-    p_ideal = math.ceil(pa_ideal / 0.64) if pa_ideal > 0 else 0
-    vi_ideal = math.ceil(p_ideal / 0.25) if p_ideal > 0 else 0
-    a_ideal = math.ceil(vi_ideal / 0.50) if vi_ideal > 0 else 0
-    
-    meta_global_referencia = (total_meta_qtd / fator_meta) if fator_meta > 0 else 0
-    meta_dvrj_ref = meta_global_referencia * 0.5
-    vd_ideal = math.ceil(meta_dvrj_ref * 0.40)
-    
-    od_ideal = math.ceil(vd_ideal / 0.044) if vd_ideal > 0 else 0
-    ld_ideal = math.ceil(od_ideal / 0.50) if od_ideal > 0 else 0
-    
-    corretores_pessimista = math.ceil(v_meta / 0.15) if v_meta > 0 else 0
-    corretores_moderado = math.ceil(v_meta / 0.20) if v_meta > 0 else 0
-    corretores_otimista = math.ceil(v_meta / 0.25) if v_meta > 0 else 0
-
-    col_f_meta_espaco, col_f_meta, col_f_meta_espaco2 = st.columns([1, 2, 1])
-    with col_f_meta:
-        fig_ideal = _criar_fig_funil(
-            ['Agendamentos', 'Visitas', 'Pastas', 'Past. Aprov.', 'Vendas (Meta)'],
-            [a_ideal, vi_ideal, p_ideal, pa_ideal, v_meta],
-            cores=["#022654", "#04428f", "#1e60b3", "#cb0935", "#9e0828"],
-            altura=350,
+    with tab_metas:
+        _corpo_painel_metas(
+            df_vendas=df_vendas,
+            df_metas=df_metas,
+            df_vendas_painel=df_vendas_painel,
+            df_vendas_raw=df_vendas_raw,
+            origem_vendas_painel=origem_vendas_painel,
+            col_contrato_gerado=col_contrato_gerado,
+            col_canal=col_canal,
+            cred_fp=cred_fp,
+            sid=sid,
         )
-        st.plotly_chart(fig_ideal, use_container_width=True, config={"displayModeBar": False})
-
-    st.markdown("<br><hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
-    st.subheader("Funil de Marketing Digital")
-    
-    col_mkt_espaco, col_mkt_grafico, col_mkt_espaco2 = st.columns([1, 2, 1])
-    with col_mkt_grafico:
-        fig_mkt = _criar_fig_funil(
-            ['Leads Digitais', 'Oport. Digitais', 'Vendas Dig. (40% DV RJ)'],
-            [ld_ideal, od_ideal, vd_ideal],
-            cores=["#022654", "#1e60b3", "#cb0935"],
-            altura=300,
-        )
-        st.plotly_chart(fig_mkt, use_container_width=True, config={"displayModeBar": False})
-
-    st.markdown("<br><hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
-    st.subheader("Cenários: Corretores Ativos (Necessários para bater a meta global)")
-    st.markdown(
-        f"""
-        <div class="vel-kpi-row" style="justify-content: center; margin-top: 1rem;">
-            <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Pessimista (15% convert.)</div><div class="val">{corretores_pessimista}</div></div>
-            <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Moderado (20% convert.)</div><div class="val">{corretores_moderado}</div></div>
-            <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Otimista (25% convert.)</div><div class="val">{corretores_otimista}</div></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # -------------------------------------------------------------------------
-    # Projeção de Vendas (regressão diária — Contrato gerado em)
-    # -------------------------------------------------------------------------
-    mes_corrente = datetime.now().month
-    metas_mes_atual = metas_f[metas_f["Mes_Num"] == mes_corrente] if "Mes_Num" in metas_f.columns else metas_f.iloc[0:0]
-    if metas_mes_atual.empty and "Mes_Num" in df_metas.columns:
-        # fallback: meta do mês corrente na base completa, com mesmos filtros de região/emp e fator de canal
-        metas_mes_atual = df_metas[df_metas["Mes_Num"] == mes_corrente].copy()
-        if regioes_sel:
-            metas_mes_atual = metas_mes_atual[metas_mes_atual["Regiao_Coord"].isin(regioes_sel)]
-        if emps_sel:
-            metas_mes_atual = metas_mes_atual[metas_mes_atual["Empreendimento"].isin(emps_sel)]
-        metas_mes_atual["Meta_VGV"] = metas_mes_atual["Meta_VGV"] * fator_meta
-        if "Meta_Qtd" in metas_mes_atual.columns:
-            metas_mes_atual["Meta_Qtd"] = (metas_mes_atual["Meta_Qtd"] * fator_meta).apply(math.floor)
-    meta_vgv_proj = float(metas_mes_atual["Meta_VGV"].sum()) if not metas_mes_atual.empty else float(total_meta_vgv)
-    meta_qtd_proj = float(metas_mes_atual["Meta_Qtd"].sum()) if (not metas_mes_atual.empty and "Meta_Qtd" in metas_mes_atual.columns) else float(total_meta_qtd)
-
-    if col_contrato_gerado:
-        # Base comercial; mesmos filtros de região/emp/canal do painel (RIO = todas as vendas).
-        base_proj = df_vendas_painel.copy()
-        if regioes_sel:
-            if "Região" in base_proj.columns:
-                regioes_base = [r.split(" - ")[0].strip() for r in regioes_sel]
-                base_proj = base_proj[
-                    base_proj["Regiao_Coord"].isin(regioes_sel) | base_proj["Região"].isin(regioes_base)
-                ]
-            else:
-                base_proj = base_proj[base_proj["Regiao_Coord"].isin(regioes_sel)]
-        if emps_sel:
-            base_proj = base_proj[base_proj["Empreendimento"].isin(emps_sel)]
-
-        # Mesma regra do KPI: RIO (ou vazio) = 100% das vendas comerciais; senão, recorte por canal.
-        if canais_sel and "RIO" not in canais_sel:
-            mask_p = pd.Series(False, index=base_proj.index)
-            if "DIR" in canais_sel:
-                mask_p |= (base_proj["Canal_Agrupado"] == "DV RJ")
-            if "PARC" in canais_sel and col_canal:
-                mask_p |= base_proj[col_canal].astype(str).str.upper().str.strip().apply(
-                    lambda x: x.split("-")[0].strip() == "RJG" or x == "RJG"
-                )
-            if "RJ" in canais_sel and col_canal:
-                mask_p |= base_proj[col_canal].astype(str).str.upper().str.strip().apply(
-                    lambda x: x.split("-")[0].strip() == "RJ" or x == "RJ"
-                )
-            base_proj = base_proj[mask_p]
-
-        try:
-            proj = projetar_vendas_mes_atual(
-                base_proj, col_contrato_gerado, meta_vgv_proj, meta_qtd_mes=meta_qtd_proj
-            )
-            if proj:
-                render_projecao_vendas(proj)
-            else:
-                st.info("Dados insuficientes para treinar a projeção de vendas (janela de meses exatos).")
-
-            proj_sem_mes = projetar_vendas_mes_atual(
-                base_proj,
-                col_contrato_gerado,
-                meta_vgv_proj,
-                meta_qtd_mes=meta_qtd_proj,
-                incluir_mes=False,
-            )
-            if proj_sem_mes:
-                render_projecao_vendas(proj_sem_mes)
-
-            # Efeitos sazonais relativos a segunda / dia 1 / janeiro
-            hoje_ef = date.today()
-            ini_ef, fim_ef = janela_treino_meses_exatos(hoje_ef)
-            serie_ef = serie_diaria_contratos(base_proj, col_contrato_gerado)
-            if not serie_ef.empty:
-                treino_ef = calendario_diario(ini_ef, fim_ef, serie_ef)
-                efeitos = estimar_efeitos_sazonais(treino_ef)
-                if efeitos:
-                    render_efeitos_sazonais(efeitos)
-
-            # Projeção do funil — carrega ag/pastas sob demanda (não bloqueia KPI inicial)
-            try:
-                try:
-                    pacote_funil = carregar_funil_painel_sf()
-                    df_ag_vis_cache = pacote_funil.get("agendamentos")
-                    df_pastas_cache = pacote_funil.get("pastas")
-                    origem_ag_cache = pacote_funil.get("origem_ag", "")
-                    origem_pastas_cache = pacote_funil.get("origem_pastas", "")
-                    tf = float((pacote_funil.get("timings") or {}).get("total_s", 0.0))
-                    if tf:
-                        st.caption(f"Funil SF carregado em {tf:.1f}s")
-                except Exception as e_funil_load:
-                    st.warning(f"Não foi possível pré-carregar funil SF: {e_funil_load}")
-
-                # 1) Agendamentos / visitas
-                try:
-                    if df_ag_vis_cache is not None and not df_ag_vis_cache.empty:
-                        df_ag_vis = df_ag_vis_cache.copy()
-                        origem_ag = origem_ag_cache
-                    else:
-                        raise RuntimeError("Sem agendamentos no pacote funil.")
-                    n_ag_bruto = len(df_ag_vis)
-                    df_ag_vis = deduplicar_agendamentos_funil(df_ag_vis)
-                    st.caption(
-                        f"Agendamentos/visitas: {origem_ag} · "
-                        f"{n_ag_bruto:,} → {len(df_ag_vis):,} linhas "
-                        f"(dedup Código do agendamento)"
-                    )
-                except Exception as e_sf:
-                    st.warning(
-                        f"SF agendamentos indisponível ({e_sf}). Fallback Sheets 'Dados Únicos'."
-                    )
-                    df_ag_vis = normalizar_colunas(
-                        ler_planilha_aba_df(
-                            SPREADSHEET_FUNIL_ID, ABA_AGENDAMENTOS_VISITAS, cred_fp
-                        )
-                    )
-                    df_ag_vis = deduplicar_agendamentos_funil(df_ag_vis)
-
-                # 2) Pastas / pastas aprovadas
-                try:
-                    if df_pastas_cache is not None and not df_pastas_cache.empty:
-                        df_pastas_funil = df_pastas_cache.copy()
-                        origem_pastas = origem_pastas_cache
-                    else:
-                        raise RuntimeError("Sem pastas no pacote funil.")
-                    n_pas_bruto = len(df_pastas_funil)
-                    col_envio = achar_coluna_primeiro_envio_analise(df_pastas_funil)
-                    col_safi = achar_coluna_aprovacao_safi(df_pastas_funil)
-                    n_com_envio = 0
-                    n_com_safi = 0
-                    if col_envio:
-                        n_com_envio = int(
-                            parse_data_serie(df_pastas_funil[col_envio]).notna().sum()
-                        )
-                    if col_safi:
-                        n_com_safi = int(
-                            parse_data_serie(df_pastas_funil[col_safi]).notna().sum()
-                        )
-                    n_aprov_filt = len(deduplicar_pastas_aprovadas_funil(df_pastas_funil))
-                    df_pastas_funil = deduplicar_pastas_funil(df_pastas_funil)
-                    st.caption(
-                        f"Pastas: {origem_pastas} · "
-                        f"{n_pas_bruto:,} → {len(df_pastas_funil):,} linhas "
-                        f"(dedup Nome da Avaliação) · "
-                        f"1º envio: '{col_envio or '?'}' ({n_com_envio:,}) · "
-                        f"Aprov. SAFI: '{col_safi or '?'}' ({n_com_safi:,}) · "
-                        f"aprovadas (dedup): {n_aprov_filt:,}"
-                    )
-                except Exception as e_sf_p:
-                    st.warning(
-                        f"SF pastas indisponível ({e_sf_p}). Tentando planilha Sheets…"
-                    )
-                    sid_pastas = (SPREADSHEET_PASTAS_ID or "").strip()
-                    df_pastas_funil, origem_pastas = carregar_df_pastas_funil(
-                        SPREADSHEET_FUNIL_ID, sid, sid_pastas, cred_fp
-                    )
-                    if df_pastas_funil.empty:
-                        st.warning("Pastas não carregadas — funil sem essa etapa.")
-                    else:
-                        df_pastas_funil = deduplicar_pastas_funil(df_pastas_funil)
-                        st.caption(f"Pastas (Sheets): {origem_pastas}")
-
-                # 3) Vendas — reutiliza base do painel (já com VGV e filtros comerciais)
-                df_vendas_funil = pd.DataFrame()
-                serie_vendas_funil = None
-                try:
-                    df_vendas_funil = df_vendas_raw.copy()
-                    df_vendas_funil = normalizar_colunas(df_vendas_funil)
-                    n_ven_bruto = len(df_vendas_funil)
-                    df_vendas_funil = filtrar_vendas_comerciais(df_vendas_funil)
-                    n_ven_comercial = len(df_vendas_funil)
-                    df_vendas_funil = deduplicar_vendas_funil(df_vendas_funil)
-                    st.caption(
-                        f"Vendas (painel): {origem_vendas_painel} · "
-                        f"{n_ven_bruto:,} → {n_ven_comercial:,} comerciais → "
-                        f"{len(df_vendas_funil):,} linhas "
-                        f"(dedup ID da Oportunidade)"
-                    )
-                except Exception as e_sf_v:
-                    st.warning(
-                        f"Vendas do painel indisponíveis ({e_sf_v}). "
-                        "Usando base filtrada do painel (Contrato gerado em)."
-                    )
-                    serie_vendas_funil = serie_diaria_contratos(base_proj, col_contrato_gerado)
-
-                mapas_funil = montar_mapa_funil_diario(
-                    df_ag_vis,
-                    df_pastas_funil if df_pastas_funil is not None else pd.DataFrame(),
-                    serie_vendas=serie_vendas_funil,
-                    df_vendas=df_vendas_funil if not df_vendas_funil.empty else None,
-                )
-                proj_funil = projetar_funil_mes_atual(
-                    mapas_funil, incluir_mes=True, meta_qtd_mes=meta_qtd_proj
-                )
-                if proj_funil:
-                    render_projecao_funil(proj_funil)
-                else:
-                    st.info("Dados insuficientes para a projeção do funil comercial.")
-            except Exception as exc_funil:
-                st.warning(f"Não foi possível calcular a projeção do funil: {exc_funil}")
-        except Exception as exc:
-            st.warning(f"Não foi possível calcular a projeção de vendas: {exc}")
-    else:
-        st.warning("Coluna 'Contrato gerado em' não encontrada — seção de Projeção de Vendas indisponível.")
-
-    # -------------------------------------------------------------------------
-    # Comparativo de Vendas Eficiência Isolado (Janela Histórica: Dia 1 ao Dia Atual MTD)
-    # -------------------------------------------------------------------------
-    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
-    dia_atual_janela = datetime.now().day
-    st.subheader(f"Comparativo de Vendas (Dia 01 ao Dia {dia_atual_janela:02d} do Mês)")
-    
-    if col_contrato_gerado:
-        # Base de espelho limpa para o gráfico de eficiência temporal sem interferência de filtros de UI de competência
-        df_grafico_eficiencia = df_vendas.copy()
-        df_grafico_eficiencia["Data_Contrato_DT"] = parse_data_serie(df_grafico_eficiencia[col_contrato_gerado])
-        df_grafico_eficiencia = df_grafico_eficiencia.dropna(subset=["Data_Contrato_DT"])
-        
-        if not df_grafico_eficiencia.empty:
-            # Trava a janela da série histórica estritamente do dia 01 ao dia atual de cada mês para medição justa de ritmo MTD
-            df_parcial_janela = df_grafico_eficiencia[df_grafico_eficiencia["Data_Contrato_DT"].dt.day <= dia_atual_janela].copy()
-            
-            df_parcial_janela["_ano_c"] = df_parcial_janela["Data_Contrato_DT"].dt.year
-            df_parcial_janela["_mes_c"] = df_parcial_janela["Data_Contrato_DT"].dt.month
-            
-            df_comp = df_parcial_janela.groupby(["_ano_c", "_mes_c"], as_index=False).agg(
-                QTD=("_qtd_venda", "sum"),
-                VGV=("_vgv_venda", "sum")
-            ).sort_values(["_ano_c", "_mes_c"])
-            
-            df_comp["Periodo"] = df_comp["_mes_c"].astype(str).str.zfill(2) + "/" + df_comp["_ano_c"].astype(str)
-            df_comp["VGV_Formatado"] = df_comp["VGV"].apply(lambda x: fmt_br_milhoes(x))
-            df_comp["QTD_Formatado"] = df_comp["QTD"].apply(lambda x: fmt_qtd(x))
-            
-            fig_linha = make_subplots(specs=[[{"secondary_y": True}]])
-            
-            fig_linha.add_trace(
-                go.Scatter(
-                    x=df_comp["Periodo"], 
-                    y=df_comp["QTD"], 
-                    mode="lines+markers+text",
-                    name="QTD Vendas",
-                    line=dict(color=COR_AZUL_ESC, width=3),
-                    marker=dict(size=8, color=COR_AZUL_ESC),
-                    text=df_comp["QTD_Formatado"],
-                    textposition="top center",
-                    textfont=dict(color=COR_AZUL_ESC, size=11, family="Inter")
-                ),
-                secondary_y=False,
-            )
-            
-            fig_linha.add_trace(
-                go.Scatter(
-                    x=df_comp["Periodo"], 
-                    y=df_comp["VGV"], 
-                    mode="lines+markers+text",
-                    name="VGV Real",
-                    line=dict(color=COR_VERMELHO, width=3),
-                    marker=dict(size=8, color=COR_VERMELHO),
-                    text=df_comp["VGV_Formatado"],
-                    textposition="bottom center",
-                    textfont=dict(color=COR_VERMELHO, size=11, family="Inter")
-                ),
-                secondary_y=True,
-            )
-            
-            fig_linha.update_layout(
-                margin=dict(l=20, r=20, t=40, b=20),
-                paper_bgcolor="rgba(0,0,0,0)",
-                plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(family="Inter", color=COR_TEXTO_PRETO),
-                legend=dict(
-                    orientation="h", yanchor="bottom", y=1.08, xanchor="center", x=0.5,
-                    font=dict(color=COR_TEXTO_PRETO, family="Inter", size=12),
-                ),
-                hovermode="x unified",
-            )
-
-            fig_linha.update_xaxes(
-                title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
-                tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
-            )
-            fig_linha.update_yaxes(
-                title_text="Quantidade (Vendas)",
-                title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
-                tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
-                secondary_y=False,
-                showgrid=False,
-            )
-            fig_linha.update_yaxes(
-                title_text="VGV Real (R$)",
-                title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
-                tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
-                secondary_y=True,
-                showgrid=True,
-                gridcolor="rgba(226, 232, 240, 0.5)",
-            )
-            st.plotly_chart(fig_linha, use_container_width=True, config={"displayModeBar": False})
-        else:
-            st.info("Não há dados de vendas no período acumulado de eficiência para exibir.")
-    else:
-        st.warning("A coluna de Contrato Gerado em não foi encontrada. Impossível renderizar a linha do tempo.")
-
-    st.markdown(
-        f'<div class="footer" style="text-align:center;padding:1rem 0;color:{COR_TEXTO_PRETO};font-size:0.82rem;">'
-        f"Direcional Engenharia · Vendas — Acompanhamento de metas</div>",
-        unsafe_allow_html=True,
-    )
 
 
 if __name__ == "__main__":
