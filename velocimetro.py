@@ -1939,8 +1939,33 @@ def ceil_funil_totais(totais: Dict[str, float]) -> Dict[str, float]:
     return {e: float(math.ceil(max(0.0, float((totais or {}).get(e, 0.0))))) for e in FUNIL_ETAPAS}
 
 
-FUNIL_FONTE_TAMANHO = 18
+FUNIL_FONTE_TAMANHO = 16
 FUNIL_TEXTO_BRANCO = "#ffffff"
+
+
+def _layout_plotly_preto(fig: go.Figure, titulo: str = "", altura: int = 380, margin_r: int = 120) -> go.Figure:
+    """Layout padrão: todo texto preto (Inter)."""
+    layout: Dict[str, Any] = dict(
+        margin=dict(l=10, r=margin_r, t=50, b=20),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        height=altura,
+        font=dict(family="Inter", color=COR_TEXTO_PRETO, size=FUNIL_FONTE_TAMANHO),
+    )
+    if titulo:
+        layout["title"] = dict(
+            text=titulo,
+            font=dict(family="Inter", color=COR_TEXTO_PRETO, size=FUNIL_FONTE_TAMANHO),
+        )
+    fig.update_layout(**layout)
+    fig.update_xaxes(tickfont=dict(color=COR_TEXTO_PRETO, family="Inter", size=FUNIL_FONTE_TAMANHO))
+    fig.update_yaxes(tickfont=dict(color=COR_TEXTO_PRETO, family="Inter", size=FUNIL_FONTE_TAMANHO))
+    return fig
+
+
+def _fonte_funil_plotly() -> Dict[str, Any]:
+    """Fonte uniforme preta para rótulos do funil (dentro e fora do bloco)."""
+    return dict(size=FUNIL_FONTE_TAMANHO, color=COR_TEXTO_PRETO, family="Inter")
 
 
 def _criar_fig_funil(
@@ -1951,44 +1976,24 @@ def _criar_fig_funil(
     altura: int = 380,
 ) -> go.Figure:
     """
-    Funil Plotly com texto branco dentro do bloco.
+    Funil Plotly — rótulos sempre fora do bloco, fonte uniforme preta.
     Volumes sempre arredondados para cima (ceil).
     """
     vals = [float(math.ceil(max(0.0, float(v)))) for v in valores]
     textos = [fmt_funil_valor(v) for v in vals]
+    fonte = _fonte_funil_plotly()
     fig = go.Figure(go.Funnel(
         y=labels,
         x=vals,
         text=textos,
         textinfo="text",
-        textposition="auto",
-        insidetextfont=dict(
-            size=FUNIL_FONTE_TAMANHO,
-            color=FUNIL_TEXTO_BRANCO,
-            family="Inter",
-        ),
-        outsidetextfont=dict(
-            size=FUNIL_FONTE_TAMANHO,
-            color=COR_TEXTO_PRETO,
-            family="Inter",
-        ),
+        textposition="outside",
+        insidetextfont=fonte,
+        outsidetextfont=fonte,
         marker={"color": cores or FUNIL_CORES_NIVEIS},
         connector={"fillcolor": "rgba(4, 66, 143, 0.15)"},
     ))
-    layout: Dict[str, Any] = dict(
-        margin=dict(l=10, r=90, t=50, b=20),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        height=altura,
-        font=dict(family="Inter", color=COR_TEXTO_PRETO, size=16),
-    )
-    if titulo:
-        layout["title"] = dict(
-            text=titulo,
-            font=dict(family="Inter", color=COR_TEXTO_PRETO, size=16),
-        )
-    fig.update_layout(**layout)
-    return fig
+    return _layout_plotly_preto(fig, titulo=titulo, altura=altura, margin_r=140)
 
 
 DIAS_SEMANA_PT = {
@@ -3766,10 +3771,10 @@ def _sf_soql_vendas(sf, modo_janela: str = "producao") -> pd.DataFrame:
 
 
 def _sf_inicio_funil_empreendimento(hoje: Optional[date] = None) -> date:
-    """Desde o 1º dia do mês ou 6 dias atrás (o que for mais antigo)."""
+    """Desde o 1º dia do mês ou 29 dias atrás (cobre MTD + rolling 30d)."""
     hoje = hoje or date.today()
     ini_mes = date(hoje.year, hoje.month, 1)
-    return min(ini_mes, hoje - timedelta(days=6))
+    return min(ini_mes, hoje - timedelta(days=29))
 
 
 def _sf_soql_agendamentos_empreendimento(sf, hoje: Optional[date] = None) -> pd.DataFrame:
@@ -6486,7 +6491,7 @@ def _janelas_funil_emp(hoje: Optional[date] = None) -> Dict[str, date]:
     """
     Janelas de agregação:
       mes / 7d_mes — restritas ao mês corrente
-      7d / 3d — rolling, sem restrição de mês
+      7d / 30d — rolling, sem restrição de mês
     """
     hoje = hoje or date.today()
     ini_mes = date(hoje.year, hoje.month, 1)
@@ -6496,7 +6501,7 @@ def _janelas_funil_emp(hoje: Optional[date] = None) -> Dict[str, date]:
         "fim": hoje,
         "ini_7d_mes": max(ini_mes, hoje - timedelta(days=6)),
         "ini_7d": hoje - timedelta(days=6),
-        "ini_3d": hoje - timedelta(days=2),
+        "ini_30d": hoje - timedelta(days=29),
     }
 
 
@@ -6711,10 +6716,11 @@ def _criar_fig_funil_com_conversoes(
     altura: int = 380,
     chart_key: str = "",
 ) -> go.Figure:
-    """Funil vertical com conversão etapa→etapa abaixo de cada volume."""
+    """Funil vertical — volume + conversão fora do bloco, fonte uniforme preta."""
     labels = [FUNIL_LABELS[e] for e in FUNIL_ETAPAS]
     ceil_tot = ceil_funil_totais(totais)
     vals = [float(ceil_tot.get(e, 0.0)) for e in FUNIL_ETAPAS]
+    fonte = _fonte_funil_plotly()
     textos: List[str] = []
     for i, etapa in enumerate(FUNIL_ETAPAS):
         linha1 = fmt_funil_valor(vals[i])
@@ -6724,78 +6730,75 @@ def _criar_fig_funil_com_conversoes(
             prev = FUNIL_ETAPAS[i - 1]
             taxa = taxa_conversao(float(ceil_tot.get(prev, 0)), float(ceil_tot.get(etapa, 0)))
             linha2 = _fmt_taxa_pct(taxa)
-        textos.append(f"{linha1}<br><span style='font-size:13px'>{linha2}</span>" if linha2 else linha1)
+        textos.append(f"{linha1}<br>{linha2}" if linha2 else linha1)
     fig = go.Figure(go.Funnel(
         y=labels,
         x=vals,
         text=textos,
         textinfo="text",
-        textposition="inside",
-        insidetextfont=dict(size=16, color=FUNIL_TEXTO_BRANCO, family="Inter"),
-        outsidetextfont=dict(size=14, color=COR_TEXTO_PRETO, family="Inter"),
+        textposition="outside",
+        insidetextfont=fonte,
+        outsidetextfont=fonte,
         marker={"color": FUNIL_CORES_NIVEIS},
         connector={"fillcolor": "rgba(4, 66, 143, 0.15)"},
     ))
-    layout: Dict[str, Any] = dict(
-        margin=dict(l=10, r=100, t=50, b=20),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        height=altura,
-        font=dict(family="Inter", color=COR_TEXTO_PRETO, size=14),
-    )
-    if titulo:
-        layout["title"] = dict(text=titulo, font=dict(family="Inter", color=COR_TEXTO_PRETO, size=15))
-    fig.update_layout(**layout)
-    return fig
+    return _layout_plotly_preto(fig, titulo=titulo, altura=altura, margin_r=160)
 
 
 def _criar_fig_track_funnel(
     por_fase: Dict[str, int],
     titulo: str = "",
     altura: int = 320,
+    total_rotulo: Optional[str] = None,
 ) -> go.Figure:
-    """Barras horizontais por fase de oportunidade (% do total abaixo do número)."""
+    """
+    Track Funnel: barras horizontais cuja largura = % do total.
+    Número e % ao lado da barra, texto preto uniforme.
+    """
     items = _ordenar_fases_track(por_fase)
+    fonte = _fonte_funil_plotly()
     if not items:
         fig = go.Figure()
         fig.add_annotation(
             text="Sem oportunidades neste recorte",
             xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
-            font=dict(size=14, color=COR_TEXTO_PRETO, family="Inter"),
+            font=fonte,
         )
-        fig.update_layout(
-            title=dict(text=titulo, font=dict(family="Inter", size=14, color=COR_TEXTO_PRETO)),
-            height=180,
-            paper_bgcolor="rgba(0,0,0,0)",
-            plot_bgcolor="rgba(0,0,0,0)",
-        )
-        return fig
+        return _layout_plotly_preto(fig, titulo=titulo, altura=180, margin_r=40)
     total = max(sum(por_fase.values()), 1)
     fases = [x[0] for x in items]
     qtds = [x[1] for x in items]
     pcts = [100.0 * q / total for q in qtds]
     cores = [TRACK_FUNIL_CORES[i % len(TRACK_FUNIL_CORES)] for i in range(len(fases))]
-    textos = [f"{q}<br><span style='font-size:11px'>{p:.1f}%</span>" for q, p in zip(qtds, pcts)]
+    labels_y = [f if len(f) <= 22 else f[:21] + "…" for f in fases]
+    textos = [f"{q}  ({p:.1f}%)" for q, p in zip(qtds, pcts)]
     fig = go.Figure(go.Bar(
-        y=[f[:18] + "…" if len(f) > 19 else f for f in fases],
-        x=qtds,
+        y=labels_y,
+        x=pcts,
         orientation="h",
         text=textos,
-        textposition="inside",
-        insidetextfont=dict(color="#ffffff", size=12, family="Inter"),
-        marker=dict(color=cores),
-        hovertemplate="%{y}<br>Qtd: %{x}<br>%{customdata:.1f}%<extra></extra>",
-        customdata=pcts,
+        textposition="outside",
+        textfont=fonte,
+        cliponaxis=False,
+        marker=dict(color=cores, line=dict(color="rgba(255,255,255,0.6)", width=1)),
+        hovertemplate="%{customdata[0]}<br>Qtd: %{customdata[1]}<br>%{x:.1f}%<extra></extra>",
+        customdata=list(zip(fases, qtds)),
     ))
-    fig.update_layout(
-        title=dict(text=titulo, font=dict(family="Inter", size=14, color=COR_TEXTO_PRETO)),
-        margin=dict(l=140, r=30, t=50, b=20),
-        paper_bgcolor="rgba(0,0,0,0)",
-        plot_bgcolor="rgba(0,0,0,0)",
-        height=max(altura, 40 + len(fases) * 28),
-        xaxis=dict(title="Oportunidades", tickfont=dict(family="Inter")),
-        yaxis=dict(tickfont=dict(family="Inter", size=10), autorange="reversed"),
+    x_max = max(max(pcts) * 1.35, 10.0)
+    fig = _layout_plotly_preto(fig, titulo=titulo, altura=max(altura, 48 + len(fases) * 32), margin_r=100)
+    fig.update_xaxes(
+        title="% do total",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter", size=FUNIL_FONTE_TAMANHO),
+        range=[0, x_max],
+        ticksuffix="%",
     )
+    fig.update_yaxes(autorange="reversed")
+    if total_rotulo:
+        fig.add_annotation(
+            text=total_rotulo,
+            xref="paper", yref="paper", x=0, y=1.08, showarrow=False,
+            xanchor="left", font=fonte,
+        )
     return fig
 
 
@@ -6947,7 +6950,9 @@ def _plot_track_pair(
     with ca:
         st.caption(f"**{titulo_a}** · {total_a} opp.")
         st.plotly_chart(
-            _criar_fig_track_funnel(fases_a, titulo=titulo_a),
+            _criar_fig_track_funnel(
+                fases_a, titulo=titulo_a, total_rotulo=f"OPORTUNIDADES · {total_a}",
+            ),
             use_container_width=True,
             config={"displayModeBar": False},
             key=_plotly_key(key_prefix, "track_a", titulo_a),
@@ -6955,7 +6960,9 @@ def _plot_track_pair(
     with cb:
         st.caption(f"**{titulo_b}** · {total_b} opp.")
         st.plotly_chart(
-            _criar_fig_track_funnel(fases_b, titulo=titulo_b),
+            _criar_fig_track_funnel(
+                fases_b, titulo=titulo_b, total_rotulo=f"OPORTUNIDADES · {total_b}",
+            ),
             use_container_width=True,
             config={"displayModeBar": False},
             key=_plotly_key(key_prefix, "track_b", titulo_b),
@@ -6978,25 +6985,25 @@ def _render_secao_funil_empreendimento(
     fim = janelas["fim"]
     ini_7d_mes = janelas["ini_7d_mes"]
     ini_7d = janelas["ini_7d"]
-    ini_3d = janelas["ini_3d"]
+    ini_30d = janelas["ini_30d"]
     mes_num = hoje.month
 
     meta_qtd = _meta_qtd_empreendimento(df_metas, emp, mes_num)
     tot_mes = totais_funil_empreendimento(df_ag, df_pastas, df_ven, emp, ini_mes, fim)
     tot_7d_mes = totais_funil_empreendimento(df_ag, df_pastas, df_ven, emp, ini_7d_mes, fim)
     tot_7d = totais_funil_empreendimento(df_ag, df_pastas, df_ven, emp, ini_7d, fim)
-    tot_3d = totais_funil_empreendimento(df_ag, df_pastas, df_ven, emp, ini_3d, fim)
+    tot_30d = totais_funil_empreendimento(df_ag, df_pastas, df_ven, emp, ini_30d, fim)
     kpi = _kpi_gap_projetado(meta_qtd, tot_mes.get("vendas", 0.0), hoje)
 
     st.markdown(f"#### {emp}")
     gap_txt = f"{fmt_qtd(kpi['gap'])} abaixo do projetado" if kpi["gap"] > 0.01 else "no ritmo ou acima"
     st.markdown(
         f"""
-        <div class="vel-kpi-row">
+        <div class="vel-kpi-row aba-funil-kpi">
             <div class="vel-kpi"><div class="lbl">Meta mês</div><div class="val">{int(kpi['meta'])}</div></div>
             <div class="vel-kpi"><div class="lbl">Vendas MTD</div><div class="val">{fmt_qtd(kpi['realizado'])}</div></div>
             <div class="vel-kpi"><div class="lbl">Projetado até hoje</div><div class="val">{fmt_qtd(kpi['projetado_pace'])}</div></div>
-            <div class="vel-kpi"><div class="lbl">Gap vs projetado</div><div class="val val--red">{fmt_qtd(kpi['gap'])}</div></div>
+            <div class="vel-kpi"><div class="lbl">Gap vs projetado</div><div class="val">{fmt_qtd(kpi['gap'])}</div></div>
             <div class="vel-kpi"><div class="lbl">% meta</div><div class="val">{kpi['pct_meta']:.1f}%</div></div>
             <div class="vel-kpi"><div class="lbl">% ritmo</div><div class="val">{kpi['pct_pace']:.1f}%</div></div>
         </div>
@@ -7035,7 +7042,9 @@ def _render_secao_funil_empreendimento(
     with c1:
         st.metric("Pipeline aberto", n_pipeline)
         st.plotly_chart(
-            _criar_fig_track_funnel(fases_pipeline, titulo="Pipeline aberto"),
+            _criar_fig_track_funnel(
+                fases_pipeline, titulo="Pipeline aberto", total_rotulo=f"OPORTUNIDADES · {n_pipeline}",
+            ),
             use_container_width=True,
             config={"displayModeBar": False},
             key=_plotly_key("pipe", key_slug),
@@ -7043,7 +7052,9 @@ def _render_secao_funil_empreendimento(
     with c2:
         st.metric("No mês (MTD)", n_mes)
         st.plotly_chart(
-            _criar_fig_track_funnel(fases_mes, titulo="Movimentadas no mês"),
+            _criar_fig_track_funnel(
+                fases_mes, titulo="Movimentadas no mês", total_rotulo=f"OPORTUNIDADES · {n_mes}",
+            ),
             use_container_width=True,
             config={"displayModeBar": False},
             key=_plotly_key("fase_mes", key_slug),
@@ -7051,7 +7062,9 @@ def _render_secao_funil_empreendimento(
     with c3:
         st.metric("7d no mês", n_7d_mes)
         st.plotly_chart(
-            _criar_fig_track_funnel(fases_7d_mes, titulo="7 dias no mês"),
+            _criar_fig_track_funnel(
+                fases_7d_mes, titulo="7 dias no mês", total_rotulo=f"OPORTUNIDADES · {n_7d_mes}",
+            ),
             use_container_width=True,
             config={"displayModeBar": False},
             key=_plotly_key("fase_7d_mes", key_slug),
@@ -7059,25 +7072,25 @@ def _render_secao_funil_empreendimento(
 
     st.markdown("##### Janela rolling (sem restrição de mês)")
     st.caption(
-        f"Funil e fases nos últimos 7 dias ({ini_7d.strftime('%d/%m')}→{fim.strftime('%d/%m')}) "
-        f"e 3 dias ({ini_3d.strftime('%d/%m')}→{fim.strftime('%d/%m')})"
+        f"Funil e fases nos últimos 30 dias ({ini_30d.strftime('%d/%m')}→{fim.strftime('%d/%m')}) "
+        f"e 7 dias ({ini_7d.strftime('%d/%m')}→{fim.strftime('%d/%m')})"
     )
     _plot_funil_pair(
+        tot_30d,
+        f"30 dias ({ini_30d.strftime('%d/%m')}→{fim.strftime('%d/%m')})",
         tot_7d,
         f"7 dias ({ini_7d.strftime('%d/%m')}→{fim.strftime('%d/%m')})",
-        tot_3d,
-        f"3 dias ({ini_3d.strftime('%d/%m')}→{fim.strftime('%d/%m')})",
         _plotly_key("funil_roll", key_slug),
+    )
+    fases_30d, n_30d = contagem_fases_oportunidade(
+        df_opps, emp, ini_30d, fim, modo="periodo", apenas_digital=False,
     )
     fases_7d, n_7d = contagem_fases_oportunidade(
         df_opps, emp, ini_7d, fim, modo="periodo", apenas_digital=False,
     )
-    fases_3d, n_3d = contagem_fases_oportunidade(
-        df_opps, emp, ini_3d, fim, modo="periodo", apenas_digital=False,
-    )
     _plot_track_pair(
+        fases_30d, "30 dias rolling", n_30d,
         fases_7d, "7 dias rolling", n_7d,
-        fases_3d, "3 dias rolling", n_3d,
         _plotly_key("roll", key_slug),
     )
 
@@ -7095,13 +7108,13 @@ def _render_secao_funil_empreendimento(
         "Digital — 7d no mês",
         _plotly_key("dig_mes", key_slug),
     )
+    tot_d_30d = totais_funil_digital_oportunidades(df_opps, df_ven, emp, ini_30d, fim)
     tot_d_7d = totais_funil_digital_oportunidades(df_opps, df_ven, emp, ini_7d, fim)
-    tot_d_3d = totais_funil_digital_oportunidades(df_opps, df_ven, emp, ini_3d, fim)
     _plot_funil_pair(
+        tot_d_30d,
+        "Digital — 30d rolling",
         tot_d_7d,
         "Digital — 7d rolling",
-        tot_d_3d,
-        "Digital — 3d rolling",
         _plotly_key("dig_roll", key_slug),
     )
     fp_d, n_fp_d = contagem_fases_oportunidade(
@@ -7127,9 +7140,29 @@ def render_aba_funil_empreendimentos(
     st.subheader("Funil por Empreendimento — Direcional · RJ")
     st.caption(
         "Uma consulta Salesforce · vendas comerciais · "
-        "MTD + 7d no mês · rolling 7d/3d · pipeline aberto por fase · núcleo digital"
+        "MTD + 7d no mês · rolling 30d/7d · pipeline aberto por fase · núcleo digital"
     )
     janelas = _janelas_funil_emp(date.today())
+    st.markdown(
+        f"""
+        <style>
+        .stTabs [data-baseweb="tab-panel"]:nth-of-type(2),
+        .stTabs [data-baseweb="tab-panel"]:nth-of-type(2) [data-testid="stCaptionContainer"],
+        .stTabs [data-baseweb="tab-panel"]:nth-of-type(2) [data-testid="stCaptionContainer"] p,
+        .stTabs [data-baseweb="tab-panel"]:nth-of-type(2) [data-testid="stHeader"],
+        .stTabs [data-baseweb="tab-panel"]:nth-of-type(2) [data-testid="stMarkdownContainer"] h4,
+        .stTabs [data-baseweb="tab-panel"]:nth-of-type(2) [data-testid="stMarkdownContainer"] h5,
+        .stTabs [data-baseweb="tab-panel"]:nth-of-type(2) [data-testid="stExpander"] label,
+        .stTabs [data-baseweb="tab-panel"]:nth-of-type(2) [data-testid="stExpander"] p,
+        .stTabs [data-baseweb="tab-panel"]:nth-of-type(2) [data-testid="stMetricLabel"],
+        .stTabs [data-baseweb="tab-panel"]:nth-of-type(2) [data-testid="stMetricValue"],
+        .aba-funil-kpi .vel-kpi .val, .aba-funil-kpi .vel-kpi .lbl {{
+            color: {COR_TEXTO_PRETO} !important;
+        }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
 
     try:
         pacote = carregar_funil_empreendimento_sf()
