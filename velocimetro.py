@@ -6457,6 +6457,13 @@ def _distribuir_vendas_coordenador(
     return out
 
 
+def _coalesce_df(val: Any) -> pd.DataFrame:
+    """Evita `df or pd.DataFrame()` — DataFrame vazio levanta ambiguous truth value."""
+    if val is None or not isinstance(val, pd.DataFrame):
+        return pd.DataFrame()
+    return val
+
+
 def _limpar_emp(val: Any) -> str:
     if val is None or (isinstance(val, float) and pd.isna(val)):
         return ""
@@ -6755,7 +6762,8 @@ def totais_funil_digital_oportunidades(
     out = {e: 0.0 for e in FUNIL_ETAPAS}
     if df_opps is not None and not df_opps.empty:
         base = _filtrar_df_emp(_filtrar_df_periodo(df_opps, ALIASES_DATA_CRIACAO, ini, fim), empreendimento)
-        base = base.loc[base.apply(_is_oportunidade_nucleo_digital, axis=1)].copy()
+        if not base.empty:
+            base = base.loc[base.apply(_is_oportunidade_nucleo_digital, axis=1)].copy()
         col_id = achar_coluna(base, ALIASES_ID_OPORTUNIDADE) or "ID da Oportunidade"
         col_fase = achar_coluna(base, ["Fase", "StageName"]) or "Fase"
         if not base.empty:
@@ -6793,10 +6801,10 @@ def render_aba_funil_empreendimentos(
 
     try:
         pacote = carregar_funil_empreendimento_sf()
-        df_ag = pacote.get("agendamentos") or pd.DataFrame()
-        df_pastas = pacote.get("pastas") or pd.DataFrame()
-        df_opps = pacote.get("oportunidades") or pd.DataFrame()
-        df_ven_funil = pacote.get("vendas") or pd.DataFrame()
+        df_ag = _coalesce_df(pacote.get("agendamentos"))
+        df_pastas = _coalesce_df(pacote.get("pastas"))
+        df_opps = _coalesce_df(pacote.get("oportunidades"))
+        df_ven_funil = _coalesce_df(pacote.get("vendas"))
         t_sf = float((pacote.get("timings") or {}).get("total_s", 0.0))
         st.caption(
             f"Janela SF desde {pacote.get('inicio_janela', '?')}"
