@@ -908,6 +908,13 @@ ORIGENS_NUCLEO_DIGITAL = frozenset({
     "Agendar visita", "Fale conosco", "Fale com o consultor", "Google Meu Negócio",
     "DV ON", "RVON", "RV ON", "Squad Dire", "Origem SDR",
 })
+ORIGENS_NUCLEO_DIGITAL_NORM = frozenset(x.lower() for x in ORIGENS_NUCLEO_DIGITAL)
+ALIASES_FASE_OPORTUNIDADE = ["Fase", "StageName"]
+ALIASES_OPP_FECHADA = ["Fechada", "IsClosed"]
+ALIASES_OPP_MUDANCA_FASE = [
+    "Data mudança fase", "Data mudanca fase", "LastStageChangeDate",
+    "Data da última mudança de fase",
+]
 ALIASES_EMPREENDIMENTO = [
     "Empreendimento", "Obra", "Nome do Empreendimento", "Nome do empreendimento",
 ]
@@ -3716,7 +3723,7 @@ def _sf_soql_vendas(sf, modo_janela: str = "producao") -> pd.DataFrame:
         "Valor_Real_de_Venda__c, Owner.Name, DirecionalVendas__c, ContratoGeradoEm__c, "
         "DataVenda__c, Termo_de_reserva__c, Ranking__c, M_s_Venda__c, Ano_da_Venda__c, "
         "Imobiliaria__r.Name, Contato_Corretor_Proprietario1__r.Name, Gerente_regional__c, "
-        "Regional__c, OrigemConta__c, LeadSource "
+        "Regional__c, OrigemConta__c, LeadSource, AtribuicaoDigital__c, UltimaEntradaDigital__c "
         "FROM Opportunity "
         "WHERE DirecionalVendas__c = true "
         "AND Empreendimento__r.Regional__c = 'RJ' "
@@ -3752,16 +3759,17 @@ def _sf_soql_vendas(sf, modo_janela: str = "producao") -> pd.DataFrame:
             "Regional": r.get("Regional__c"),
             "Origem da Conta": r.get("OrigemConta__c"),
             "Origem do lead": r.get("LeadSource"),
+            "Atribuição Digital": r.get("AtribuicaoDigital__c"),
+            "Última entrada Digital": r.get("UltimaEntradaDigital__c"),
         })
     return pd.DataFrame(rows)
 
 
 def _sf_inicio_funil_empreendimento(hoje: Optional[date] = None) -> date:
-    """Desde o 1º dia do mês ou 6 dias atrás (cobre MTD + últimos 7 dias)."""
+    """Desde o 1º dia do mês ou 6 dias atrás (o que for mais antigo)."""
     hoje = hoje or date.today()
     ini_mes = date(hoje.year, hoje.month, 1)
-    ini_7d = hoje - timedelta(days=6)
-    return min(ini_mes, ini_7d)
+    return min(ini_mes, hoje - timedelta(days=6))
 
 
 def _sf_soql_agendamentos_empreendimento(sf, hoje: Optional[date] = None) -> pd.DataFrame:
@@ -3829,7 +3837,7 @@ def _sf_soql_pastas_empreendimento(sf, hoje: Optional[date] = None) -> pd.DataFr
 
 
 def _sf_soql_oportunidades_empreendimento(sf, hoje: Optional[date] = None) -> pd.DataFrame:
-    """Oportunidades abertas + movimentadas no período (Track Funnel por fase)."""
+    """Oportunidades abertas (pipeline) + criadas/movimentadas na janela rolling 7d."""
     hoje = hoje or date.today()
     ini = _sf_inicio_funil_empreendimento(hoje)
     desde = f"{ini.isoformat()}T00:00:00Z"
@@ -3840,7 +3848,8 @@ def _sf_soql_oportunidades_empreendimento(sf, hoje: Optional[date] = None) -> pd
         "FROM Opportunity "
         "WHERE Empreendimento__r.Regional__c = 'RJ' "
         "AND Empreendimento__r.UnidadeDeNegocio__c = 'Direcional' "
-        f"AND (CreatedDate >= {desde} OR LastStageChangeDate >= {desde})"
+        "AND Empreendimento__c != null "
+        f"AND (IsClosed = false OR CreatedDate >= {desde} OR LastStageChangeDate >= {desde})"
     )
     res = sf.query_all(soql)
     rows = []
@@ -6473,12 +6482,65 @@ def _limpar_emp(val: Any) -> str:
     return s
 
 
-def _janelas_funil_emp(hoje: Optional[date] = None) -> Tuple[date, date, date, date]:
-    """Retorna (ini_mes, fim, ini_7d, fim) — fim = hoje."""
+def _janelas_funil_emp(hoje: Optional[date] = None) -> Dict[str, date]:
+    """
+    Janelas de agregação:
+      mes / 7d_mes — restritas ao mês corrente
+      7d / 3d — rolling, sem restrição de mês
+    """
     hoje = hoje or date.today()
     ini_mes = date(hoje.year, hoje.month, 1)
-    ini_7d = hoje - timedelta(days=6)
-    return ini_mes, hoje, ini_7d, hoje
+    return {
+        "hoje": hoje,
+        "ini_mes": ini_mes,
+        "fim": hoje,
+        "ini_7d_mes": max(ini_mes, hoje - timedelta(days=6)),
+        "ini_7d": hoje - timedelta(days=6),
+        "ini_3d": hoje - timedelta(days=2),
+    }
+
+
+def _sf_bool(val: Any) -> bool:
+    if val is True:
+        return True
+    if isinstance(val, (int, float)) and not pd.isna(val) and int(val) == 1:
+        return True
+    return str(val or "").strip().upper() in ("TRUE", "1", "SIM", "YES")
+
+
+def _origem_e_digital(val: Any) -> bool:
+    return _limpar_emp(val).lower() in ORIGENS_NUCLEO_DIGITAL_NORM
+
+
+def _is_nucleo_digital_row(row: pd.Series) -> bool:
+    """Núcleo digital: Atribuição Digital, Última entrada Digital ou origem digital."""
+    if _sf_bool(row.get("Atribuição Digital")):
+        return True
+    ult = row.get("Última entrada Digital")
+    if ult is not None and not (isinstance(ult, float) and pd.isna(ult)):
+        if str(ult).strip().lower() not in ("", "nan", "none", "nat"):
+            return True
+    if _origem_e_digital(row.get("Origem da Conta")):
+        return True
+    if _origem_e_digital(row.get("Origem do lead")):
+        return True
+    return False
+
+
+def _filtrar_nucleo_digital(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    return df.loc[df.apply(_is_nucleo_digital_row, axis=1)].copy()
+
+
+def _filtrar_opps_abertas(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    col = achar_coluna(df, ALIASES_OPP_FECHADA)
+    if not col:
+        return df.copy()
+    fechada = df[col].map(_sf_bool)
+    return df.loc[~fechada].copy()
 
 
 def _filtrar_df_periodo(
@@ -6493,8 +6555,35 @@ def _filtrar_df_periodo(
     if not col:
         return pd.DataFrame()
     dt = parse_data_serie(df[col])
-    mask = dt.notna() & (dt.dt.date >= ini) & (dt.dt.date <= fim)
+    ini_ts = pd.Timestamp(ini)
+    fim_ts = pd.Timestamp(fim) + pd.Timedelta(hours=23, minutes=59, seconds=59)
+    mask = dt.notna() & (dt >= ini_ts) & (dt <= fim_ts)
     return df.loc[mask].copy()
+
+
+def _filtrar_df_periodo_ou(
+    df: pd.DataFrame,
+    listas_aliases: List[List[str]],
+    ini: date,
+    fim: date,
+) -> pd.DataFrame:
+    """Mantém linhas com qualquer coluna de data dentro de [ini, fim]."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    ini_ts = pd.Timestamp(ini)
+    fim_ts = pd.Timestamp(fim) + pd.Timedelta(hours=23, minutes=59, seconds=59)
+    mask_total = pd.Series(False, index=df.index)
+    achou_col = False
+    for aliases in listas_aliases:
+        col = achar_coluna(df, aliases)
+        if not col:
+            continue
+        achou_col = True
+        dt = parse_data_serie(df[col])
+        mask_total |= dt.notna() & (dt >= ini_ts) & (dt <= fim_ts)
+    if not achou_col:
+        return pd.DataFrame()
+    return df.loc[mask_total].copy()
 
 
 def _filtrar_df_emp(df: pd.DataFrame, empreendimento: str) -> pd.DataFrame:
@@ -6562,37 +6651,50 @@ def totais_funil_empreendimento(
 
 
 def _is_oportunidade_nucleo_digital(row: pd.Series) -> bool:
-    ad = row.get("Atribuição Digital")
-    if ad is True or str(ad).strip().upper() in ("TRUE", "1", "SIM"):
-        return True
-    if pd.notna(row.get("Última entrada Digital")) and str(row.get("Última entrada Digital")).strip():
-        return True
-    origem = _limpar_emp(row.get("Origem da Conta") or row.get("Origem do lead"))
-    return origem in ORIGENS_NUCLEO_DIGITAL
+    return _is_nucleo_digital_row(row)
 
 
 def contagem_fases_oportunidade(
     df_opps: pd.DataFrame,
     empreendimento: str,
-    ini: date,
-    fim: date,
+    ini: Optional[date] = None,
+    fim: Optional[date] = None,
     apenas_digital: bool = False,
+    modo: str = "pipeline",
 ) -> Tuple[Dict[str, int], int]:
-    """Oportunidades criadas no período, agrupadas pela fase atual."""
+    """
+    Agrupa oportunidades por fase (StageName).
+    - pipeline: oportunidades abertas (snapshot atual)
+    - periodo: criadas ou com mudança de fase em [ini, fim]
+    """
     if df_opps is None or df_opps.empty:
         return {}, 0
     base = _filtrar_df_emp(df_opps, empreendimento)
-    base = _filtrar_df_periodo(base, ALIASES_DATA_CRIACAO, ini, fim)
+    if base.empty:
+        return {}, 0
+    if modo == "pipeline":
+        base = _filtrar_opps_abertas(base)
+    elif ini is not None and fim is not None:
+        base = _filtrar_df_periodo_ou(
+            base,
+            [ALIASES_DATA_CRIACAO, ALIASES_OPP_MUDANCA_FASE],
+            ini,
+            fim,
+        )
     if base.empty:
         return {}, 0
     if apenas_digital:
-        base = base.loc[base.apply(_is_oportunidade_nucleo_digital, axis=1)].copy()
+        base = _filtrar_nucleo_digital(base)
     if base.empty:
         return {}, 0
-    base = base.drop_duplicates(subset=[achar_coluna(base, ALIASES_ID_OPORTUNIDADE) or "ID da Oportunidade"])
-    col_fase = achar_coluna(base, ["Fase", "StageName"]) or "Fase"
-    vc = base[col_fase].fillna("Sem fase").astype(str).value_counts()
-    por_fase = {str(k): int(v) for k, v in vc.items()}
+    col_id = achar_coluna(base, ALIASES_ID_OPORTUNIDADE) or "ID da Oportunidade"
+    if col_id in base.columns:
+        base = base.drop_duplicates(subset=[col_id])
+    col_fase = achar_coluna(base, ALIASES_FASE_OPORTUNIDADE) or "Fase"
+    if col_fase not in base.columns:
+        return {}, 0
+    vc = base[col_fase].fillna("Sem fase").astype(str).str.strip().value_counts()
+    por_fase = {str(k): int(v) for k, v in vc.items() if str(k).strip()}
     return por_fase, int(sum(por_fase.values()))
 
 
@@ -6656,7 +6758,17 @@ def _criar_fig_track_funnel(
     items = _ordenar_fases_track(por_fase)
     if not items:
         fig = go.Figure()
-        fig.update_layout(title=titulo or "Track Funnel", height=200)
+        fig.add_annotation(
+            text="Sem oportunidades neste recorte",
+            xref="paper", yref="paper", x=0.5, y=0.5, showarrow=False,
+            font=dict(size=14, color=COR_TEXTO_PRETO, family="Inter"),
+        )
+        fig.update_layout(
+            title=dict(text=titulo, font=dict(family="Inter", size=14, color=COR_TEXTO_PRETO)),
+            height=180,
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+        )
         return fig
     total = max(sum(por_fase.values()), 1)
     fases = [x[0] for x in items]
@@ -6717,6 +6829,7 @@ def _empreendimentos_rj_direcional(
     df_vendas: pd.DataFrame,
     df_ag: pd.DataFrame,
     df_pastas: pd.DataFrame,
+    df_opps: Optional[pd.DataFrame] = None,
 ) -> List[str]:
     emps: set = set()
     if df_metas is not None and not df_metas.empty and "Empreendimento" in df_metas.columns:
@@ -6724,7 +6837,7 @@ def _empreendimentos_rj_direcional(
             s = _limpar_emp(e)
             if s and s.lower() not in ("total", "geral"):
                 emps.add(s)
-    for df in (df_vendas, df_ag, df_pastas):
+    for df in (df_vendas, df_ag, df_pastas, df_opps):
         if df is None or df.empty:
             continue
         col = achar_coluna(df, ALIASES_EMPREENDIMENTO)
@@ -6761,12 +6874,17 @@ def totais_funil_digital_oportunidades(
     """Funil digital via oportunidades (núcleo digital) + vendas com origem digital."""
     out = {e: 0.0 for e in FUNIL_ETAPAS}
     if df_opps is not None and not df_opps.empty:
-        base = _filtrar_df_emp(_filtrar_df_periodo(df_opps, ALIASES_DATA_CRIACAO, ini, fim), empreendimento)
+        base = _filtrar_df_emp(_filtrar_df_periodo_ou(
+            df_opps,
+            [ALIASES_DATA_CRIACAO, ALIASES_OPP_MUDANCA_FASE],
+            ini,
+            fim,
+        ), empreendimento)
         if not base.empty:
-            base = base.loc[base.apply(_is_oportunidade_nucleo_digital, axis=1)].copy()
+            base = _filtrar_nucleo_digital(base)
         col_id = achar_coluna(base, ALIASES_ID_OPORTUNIDADE) or "ID da Oportunidade"
-        col_fase = achar_coluna(base, ["Fase", "StageName"]) or "Fase"
-        if not base.empty:
+        col_fase = achar_coluna(base, ALIASES_FASE_OPORTUNIDADE) or "Fase"
+        if not base.empty and col_fase in base.columns:
             base = base.drop_duplicates(subset=[col_id])
             out["agendamentos"] = float(len(base))
             for _, row in base.iterrows():
@@ -6775,13 +6893,229 @@ def totais_funil_digital_oportunidades(
                     out[etapa] += 1.0
     df_ven_d = df_vendas.copy() if df_vendas is not None else pd.DataFrame()
     if not df_ven_d.empty:
-        col_orig = achar_coluna(df_ven_d, ["Origem da Conta", "Origem do lead"])
-        if col_orig:
-            df_ven_d = df_ven_d.loc[df_ven_d[col_orig].map(_limpar_emp).isin(ORIGENS_NUCLEO_DIGITAL)].copy()
+        df_ven_d = _filtrar_nucleo_digital(df_ven_d)
         ven = _filtrar_df_emp(_filtrar_df_periodo(df_ven_d, ALIASES_CONTRATO_GERADO, ini, fim), empreendimento)
         ven_d = deduplicar_vendas_funil(filtrar_vendas_comerciais(ven)) if not ven.empty else ven
         out["vendas"] = max(out["vendas"], float(len(ven_d)) if ven_d is not None and not ven_d.empty else 0.0)
     return out
+
+
+def _meta_qtd_empreendimento(df_metas: pd.DataFrame, emp: str, mes_num: int) -> float:
+    if df_metas is None or df_metas.empty or "Mes_Num" not in df_metas.columns:
+        return 0.0
+    m = df_metas[
+        (df_metas["Empreendimento"].map(_limpar_emp) == emp)
+        & (df_metas["Mes_Num"] == mes_num)
+    ]
+    return float(m["Meta_Qtd"].sum()) if not m.empty and "Meta_Qtd" in m.columns else 0.0
+
+
+def _plot_funil_pair(
+    tot_a: Dict[str, float],
+    titulo_a: str,
+    tot_b: Dict[str, float],
+    titulo_b: str,
+    key_prefix: str,
+) -> None:
+    ca, cb = st.columns(2)
+    with ca:
+        st.plotly_chart(
+            _criar_fig_funil_com_conversoes(tot_a, titulo=titulo_a),
+            use_container_width=True,
+            config={"displayModeBar": False},
+            key=_plotly_key(key_prefix, "a", titulo_a),
+        )
+    with cb:
+        st.plotly_chart(
+            _criar_fig_funil_com_conversoes(tot_b, titulo=titulo_b),
+            use_container_width=True,
+            config={"displayModeBar": False},
+            key=_plotly_key(key_prefix, "b", titulo_b),
+        )
+
+
+def _plot_track_pair(
+    fases_a: Dict[str, int],
+    titulo_a: str,
+    total_a: int,
+    fases_b: Dict[str, int],
+    titulo_b: str,
+    total_b: int,
+    key_prefix: str,
+) -> None:
+    ca, cb = st.columns(2)
+    with ca:
+        st.caption(f"**{titulo_a}** · {total_a} opp.")
+        st.plotly_chart(
+            _criar_fig_track_funnel(fases_a, titulo=titulo_a),
+            use_container_width=True,
+            config={"displayModeBar": False},
+            key=_plotly_key(key_prefix, "track_a", titulo_a),
+        )
+    with cb:
+        st.caption(f"**{titulo_b}** · {total_b} opp.")
+        st.plotly_chart(
+            _criar_fig_track_funnel(fases_b, titulo=titulo_b),
+            use_container_width=True,
+            config={"displayModeBar": False},
+            key=_plotly_key(key_prefix, "track_b", titulo_b),
+        )
+
+
+def _render_secao_funil_empreendimento(
+    emp: str,
+    df_metas: pd.DataFrame,
+    df_ag: pd.DataFrame,
+    df_pastas: pd.DataFrame,
+    df_opps: pd.DataFrame,
+    df_ven: pd.DataFrame,
+    janelas: Dict[str, date],
+    key_slug: str,
+) -> None:
+    """Uma seção completa por empreendimento (sem nova consulta SOQL)."""
+    hoje = janelas["hoje"]
+    ini_mes = janelas["ini_mes"]
+    fim = janelas["fim"]
+    ini_7d_mes = janelas["ini_7d_mes"]
+    ini_7d = janelas["ini_7d"]
+    ini_3d = janelas["ini_3d"]
+    mes_num = hoje.month
+
+    meta_qtd = _meta_qtd_empreendimento(df_metas, emp, mes_num)
+    tot_mes = totais_funil_empreendimento(df_ag, df_pastas, df_ven, emp, ini_mes, fim)
+    tot_7d_mes = totais_funil_empreendimento(df_ag, df_pastas, df_ven, emp, ini_7d_mes, fim)
+    tot_7d = totais_funil_empreendimento(df_ag, df_pastas, df_ven, emp, ini_7d, fim)
+    tot_3d = totais_funil_empreendimento(df_ag, df_pastas, df_ven, emp, ini_3d, fim)
+    kpi = _kpi_gap_projetado(meta_qtd, tot_mes.get("vendas", 0.0), hoje)
+
+    st.markdown(f"#### {emp}")
+    gap_txt = f"{fmt_qtd(kpi['gap'])} abaixo do projetado" if kpi["gap"] > 0.01 else "no ritmo ou acima"
+    st.markdown(
+        f"""
+        <div class="vel-kpi-row">
+            <div class="vel-kpi"><div class="lbl">Meta mês</div><div class="val">{int(kpi['meta'])}</div></div>
+            <div class="vel-kpi"><div class="lbl">Vendas MTD</div><div class="val">{fmt_qtd(kpi['realizado'])}</div></div>
+            <div class="vel-kpi"><div class="lbl">Projetado até hoje</div><div class="val">{fmt_qtd(kpi['projetado_pace'])}</div></div>
+            <div class="vel-kpi"><div class="lbl">Gap vs projetado</div><div class="val val--red">{fmt_qtd(kpi['gap'])}</div></div>
+            <div class="vel-kpi"><div class="lbl">% meta</div><div class="val">{kpi['pct_meta']:.1f}%</div></div>
+            <div class="vel-kpi"><div class="lbl">% ritmo</div><div class="val">{kpi['pct_pace']:.1f}%</div></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    st.caption(f"Ritmo: {gap_txt} · projeção linear ao dia {hoje.day}.")
+
+    st.markdown("##### Mês corrente (MTD)")
+    st.caption(
+        f"Funil comercial restrito a {ini_mes.strftime('%d/%m')}–{fim.strftime('%d/%m')} · "
+        f"7 dias do mês = {ini_7d_mes.strftime('%d/%m')}–{fim.strftime('%d/%m')}"
+    )
+    _plot_funil_pair(
+        tot_mes,
+        f"MTD ({ini_mes.strftime('%d/%m')}→{fim.strftime('%d/%m')})",
+        tot_7d_mes,
+        f"7d no mês ({ini_7d_mes.strftime('%d/%m')}→{fim.strftime('%d/%m')})",
+        _plotly_key("funil_mes", key_slug),
+    )
+
+    fases_pipeline, n_pipeline = contagem_fases_oportunidade(
+        df_opps, emp, modo="pipeline", apenas_digital=False,
+    )
+    fases_mes, n_mes = contagem_fases_oportunidade(
+        df_opps, emp, ini_mes, fim, modo="periodo", apenas_digital=False,
+    )
+    fases_7d_mes, n_7d_mes = contagem_fases_oportunidade(
+        df_opps, emp, ini_7d_mes, fim, modo="periodo", apenas_digital=False,
+    )
+    st.markdown("##### Oportunidades por fase — mês corrente")
+    st.caption(
+        "Pipeline aberto (fase atual) · criadas/movimentadas no MTD · criadas/movimentadas nos 7d do mês"
+    )
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.metric("Pipeline aberto", n_pipeline)
+        st.plotly_chart(
+            _criar_fig_track_funnel(fases_pipeline, titulo="Pipeline aberto"),
+            use_container_width=True,
+            config={"displayModeBar": False},
+            key=_plotly_key("pipe", key_slug),
+        )
+    with c2:
+        st.metric("No mês (MTD)", n_mes)
+        st.plotly_chart(
+            _criar_fig_track_funnel(fases_mes, titulo="Movimentadas no mês"),
+            use_container_width=True,
+            config={"displayModeBar": False},
+            key=_plotly_key("fase_mes", key_slug),
+        )
+    with c3:
+        st.metric("7d no mês", n_7d_mes)
+        st.plotly_chart(
+            _criar_fig_track_funnel(fases_7d_mes, titulo="7 dias no mês"),
+            use_container_width=True,
+            config={"displayModeBar": False},
+            key=_plotly_key("fase_7d_mes", key_slug),
+        )
+
+    st.markdown("##### Janela rolling (sem restrição de mês)")
+    st.caption(
+        f"Funil e fases nos últimos 7 dias ({ini_7d.strftime('%d/%m')}→{fim.strftime('%d/%m')}) "
+        f"e 3 dias ({ini_3d.strftime('%d/%m')}→{fim.strftime('%d/%m')})"
+    )
+    _plot_funil_pair(
+        tot_7d,
+        f"7 dias ({ini_7d.strftime('%d/%m')}→{fim.strftime('%d/%m')})",
+        tot_3d,
+        f"3 dias ({ini_3d.strftime('%d/%m')}→{fim.strftime('%d/%m')})",
+        _plotly_key("funil_roll", key_slug),
+    )
+    fases_7d, n_7d = contagem_fases_oportunidade(
+        df_opps, emp, ini_7d, fim, modo="periodo", apenas_digital=False,
+    )
+    fases_3d, n_3d = contagem_fases_oportunidade(
+        df_opps, emp, ini_3d, fim, modo="periodo", apenas_digital=False,
+    )
+    _plot_track_pair(
+        fases_7d, "7 dias rolling", n_7d,
+        fases_3d, "3 dias rolling", n_3d,
+        _plotly_key("roll", key_slug),
+    )
+
+    st.markdown("##### Marketing digital (núcleo digital)")
+    st.caption(
+        "Atribuição Digital · Última entrada Digital · origem digital "
+        f"({len(ORIGENS_NUCLEO_DIGITAL)} canais mapeados)"
+    )
+    tot_d_mes = totais_funil_digital_oportunidades(df_opps, df_ven, emp, ini_mes, fim)
+    tot_d_7d_mes = totais_funil_digital_oportunidades(df_opps, df_ven, emp, ini_7d_mes, fim)
+    _plot_funil_pair(
+        tot_d_mes,
+        "Digital — MTD",
+        tot_d_7d_mes,
+        "Digital — 7d no mês",
+        _plotly_key("dig_mes", key_slug),
+    )
+    tot_d_7d = totais_funil_digital_oportunidades(df_opps, df_ven, emp, ini_7d, fim)
+    tot_d_3d = totais_funil_digital_oportunidades(df_opps, df_ven, emp, ini_3d, fim)
+    _plot_funil_pair(
+        tot_d_7d,
+        "Digital — 7d rolling",
+        tot_d_3d,
+        "Digital — 3d rolling",
+        _plotly_key("dig_roll", key_slug),
+    )
+    fp_d, n_fp_d = contagem_fases_oportunidade(
+        df_opps, emp, modo="pipeline", apenas_digital=True,
+    )
+    fases_d_mes, n_d_mes = contagem_fases_oportunidade(
+        df_opps, emp, ini_mes, fim, modo="periodo", apenas_digital=True,
+    )
+    _plot_track_pair(
+        fp_d, "Digital pipeline aberto", n_fp_d,
+        fases_d_mes, "Digital no mês", n_d_mes,
+        _plotly_key("dig_fase", key_slug),
+    )
+    st.markdown("---")
 
 
 def render_aba_funil_empreendimentos(
@@ -6789,15 +7123,13 @@ def render_aba_funil_empreendimentos(
     df_vendas: pd.DataFrame,
     col_contrato_gerado: Optional[str],
 ) -> None:
-    """Aba: funil MTD e 7d por empreendimento + marketing digital + gap vs projetado."""
+    """Aba: todos os empreendimentos · uma carga SOQL · seções empilhadas."""
     st.subheader("Funil por Empreendimento — Direcional · RJ")
     st.caption(
-        "Vendas comerciais · funil do mês (MTD) e últimos 7 dias · "
-        "conversões abaixo de cada etapa · oportunidades por fase · núcleo digital"
+        "Uma consulta Salesforce · vendas comerciais · "
+        "MTD + 7d no mês · rolling 7d/3d · pipeline aberto por fase · núcleo digital"
     )
-    hoje = date.today()
-    ini_mes, fim, ini_7d, _ = _janelas_funil_emp(hoje)
-    mes_num = hoje.month
+    janelas = _janelas_funil_emp(date.today())
 
     try:
         pacote = carregar_funil_empreendimento_sf()
@@ -6809,139 +7141,45 @@ def render_aba_funil_empreendimentos(
         st.caption(
             f"Janela SF desde {pacote.get('inicio_janela', '?')}"
             + (f" · carregado em {t_sf:.1f}s" if t_sf else "")
-            + f" · ag {len(df_ag):,} · pas {len(df_pastas):,} · opp {len(df_opps):,} · ven {len(df_ven_funil):,}".replace(",", ".")
+            + f" · ag {len(df_ag):,} · pas {len(df_pastas):,} · "
+            f"opp {len(df_opps):,} · ven {len(df_ven_funil):,}".replace(",", ".")
+            + " · dados reutilizados em todos os empreendimentos abaixo"
         )
     except Exception as exc:
         st.error(f"Não foi possível carregar dados do funil por empreendimento: {exc}")
         return
 
-    empreendimentos = _empreendimentos_rj_direcional(df_metas, df_ven_funil, df_ag, df_pastas)
+    empreendimentos = _empreendimentos_rj_direcional(
+        df_metas, df_ven_funil, df_ag, df_pastas, df_opps,
+    )
     if not empreendimentos:
         st.info("Nenhum empreendimento encontrado para Direcional · RJ.")
         return
 
-    emp_sel = st.selectbox("Empreendimento", empreendimentos, key="funil_emp_select")
+    # Ordena por vendas MTD (maior primeiro)
+    ini_mes = janelas["ini_mes"]
+    fim = janelas["fim"]
 
-    metas_emp = df_metas[
-        (df_metas["Empreendimento"].map(_limpar_emp) == emp_sel)
-        & (df_metas["Mes_Num"] == mes_num)
-    ] if (df_metas is not None and not df_metas.empty and "Mes_Num" in df_metas.columns) else pd.DataFrame()
-    meta_qtd = float(metas_emp["Meta_Qtd"].sum()) if not metas_emp.empty else 0.0
+    def _score_emp(e: str) -> float:
+        t = totais_funil_empreendimento(df_ag, df_pastas, df_ven_funil, e, ini_mes, fim)
+        return float(t.get("vendas", 0)) * 1000 + sum(float(t.get(k, 0)) for k in FUNIL_ETAPAS)
 
-    tot_mes = totais_funil_empreendimento(df_ag, df_pastas, df_ven_funil, emp_sel, ini_mes, fim)
-    tot_7d = totais_funil_empreendimento(df_ag, df_pastas, df_ven_funil, emp_sel, ini_7d, fim)
-    kpi = _kpi_gap_projetado(meta_qtd, tot_mes.get("vendas", 0.0), hoje)
+    empreendimentos = sorted(empreendimentos, key=_score_emp, reverse=True)
+    st.info(f"{len(empreendimentos)} empreendimentos · exibidos em seções (sem filtro interativo).")
 
-    st.markdown("##### Ritmo vs meta (mês corrente)")
-    gap_txt = f"{fmt_qtd(kpi['gap'])} abaixo do projetado" if kpi["gap"] > 0.01 else "no ritmo ou acima"
-    st.markdown(
-        f"""
-        <div class="vel-kpi-row">
-            <div class="vel-kpi"><div class="lbl">Meta mês</div><div class="val">{int(kpi['meta'])}</div></div>
-            <div class="vel-kpi"><div class="lbl">Vendas MTD</div><div class="val">{fmt_qtd(kpi['realizado'])}</div></div>
-            <div class="vel-kpi"><div class="lbl">Projetado até hoje</div><div class="val">{fmt_qtd(kpi['projetado_pace'])}</div></div>
-            <div class="vel-kpi"><div class="lbl">Gap vs projetado</div><div class="val val--red">{fmt_qtd(kpi['gap'])}</div></div>
-            <div class="vel-kpi"><div class="lbl">% da meta</div><div class="val">{kpi['pct_meta']:.1f}%</div></div>
-            <div class="vel-kpi"><div class="lbl">% do ritmo</div><div class="val">{kpi['pct_pace']:.1f}%</div></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
-    st.caption(f"Indicador de ritmo: {gap_txt} (projeção linear da meta ao dia {hoje.day}).")
-
-    st.markdown("##### Funil comercial")
-    c_mes, c_7d = st.columns(2)
-    with c_mes:
-        fig_m = _criar_fig_funil_com_conversoes(
-            tot_mes,
-            titulo=f"Mês ({ini_mes.strftime('%d/%m')} → {fim.strftime('%d/%m')})",
-            chart_key=_plotly_key("funil_emp_mes", emp_sel),
-        )
-        st.plotly_chart(
-            fig_m,
-            use_container_width=True,
-            config={"displayModeBar": False},
-            key=_plotly_key("chart_funil_emp_mes", emp_sel),
-        )
-    with c_7d:
-        fig_7 = _criar_fig_funil_com_conversoes(
-            tot_7d,
-            titulo=f"Últimos 7 dias ({ini_7d.strftime('%d/%m')} → {fim.strftime('%d/%m')})",
-            chart_key=_plotly_key("funil_emp_7d", emp_sel),
-        )
-        st.plotly_chart(
-            fig_7,
-            use_container_width=True,
-            config={"displayModeBar": False},
-            key=_plotly_key("chart_funil_emp_7d", emp_sel),
-        )
-
-    fases_mes, total_mes = contagem_fases_oportunidade(df_opps, emp_sel, ini_mes, fim, apenas_digital=False)
-    fases_7d, total_7d = contagem_fases_oportunidade(df_opps, emp_sel, ini_7d, fim, apenas_digital=False)
-
-    st.markdown("##### Oportunidades por fase (Track Funnel)")
-    st.caption("Oportunidades criadas no período · fase atual · % abaixo do total em cada barra")
-    cf1, cf2 = st.columns([1, 3])
-    with cf1:
-        st.metric("Oportunidades (mês)", total_mes)
-    with cf2:
-        st.plotly_chart(
-            _criar_fig_track_funnel(fases_mes, titulo="Mês corrente"),
-            use_container_width=True,
-            config={"displayModeBar": False},
-            key=_plotly_key("track_mes", emp_sel),
-        )
-    cf3, cf4 = st.columns([1, 3])
-    with cf3:
-        st.metric("Oportunidades (7 dias)", total_7d)
-    with cf4:
-        st.plotly_chart(
-            _criar_fig_track_funnel(fases_7d, titulo="Últimos 7 dias"),
-            use_container_width=True,
-            config={"displayModeBar": False},
-            key=_plotly_key("track_7d", emp_sel),
-        )
-
-    st.markdown("##### Marketing digital (núcleo digital)")
-    st.caption(
-        "Filtro: Atribuição Digital, Última entrada Digital ou origem digital "
-        "(Lead ADS, WhatsApp, Portal Vertical, simuladores, LPs etc.) · "
-        "funil = oportunidades digitais por fase + vendas com origem digital"
-    )
-
-    tot_mes_dig = totais_funil_digital_oportunidades(df_opps, df_ven_funil, emp_sel, ini_mes, fim)
-    tot_7d_dig = totais_funil_digital_oportunidades(df_opps, df_ven_funil, emp_sel, ini_7d, fim)
-    fases_mes_d, total_mes_d = contagem_fases_oportunidade(df_opps, emp_sel, ini_mes, fim, apenas_digital=True)
-    fases_7d_d, total_7d_d = contagem_fases_oportunidade(df_opps, emp_sel, ini_7d, fim, apenas_digital=True)
-
-    cd1, cd2 = st.columns(2)
-    with cd1:
-        st.plotly_chart(
-            _criar_fig_funil_com_conversoes(tot_mes_dig, titulo="Funil digital — mês"),
-            use_container_width=True,
-            config={"displayModeBar": False},
-            key=_plotly_key("funil_dig_mes", emp_sel),
-        )
-        st.plotly_chart(
-            _criar_fig_track_funnel(fases_mes_d, titulo=f"Fases digitais — mês ({total_mes_d} opp.)"),
-            use_container_width=True,
-            config={"displayModeBar": False},
-            key=_plotly_key("track_dig_mes", emp_sel),
-        )
-    with cd2:
-        st.plotly_chart(
-            _criar_fig_funil_com_conversoes(tot_7d_dig, titulo="Funil digital — 7 dias"),
-            use_container_width=True,
-            config={"displayModeBar": False},
-            key=_plotly_key("funil_dig_7d", emp_sel),
-        )
-        st.plotly_chart(
-            _criar_fig_track_funnel(fases_7d_d, titulo=f"Fases digitais — 7 dias ({total_7d_d} opp.)"),
-            use_container_width=True,
-            config={"displayModeBar": False},
-            key=_plotly_key("track_dig_7d", emp_sel),
-        )
-
+    for emp in empreendimentos:
+        key_slug = _plotly_key("emp", emp)
+        with st.expander(emp, expanded=False):
+            _render_secao_funil_empreendimento(
+                emp,
+                df_metas,
+                df_ag,
+                df_pastas,
+                df_opps,
+                df_ven_funil,
+                janelas,
+                key_slug,
+            )
 
 
 def _corpo_painel_metas(
