@@ -4,9 +4,10 @@ Acompanhamento de vendas — metas vs realizado (Direcional).
 Planilha: BD Vendas Completa + Metas.
 Design: Gaps Style (Transparência, Blur, Inter/Montserrat).
 Funcionalidade: Engenharia Reversa, Comparativo MTD e Pesos de Coordenadores.
-"""
-from __future__ import annotations
 
+Arquivo único e autossuficiente — painel v2, dashboard comercial, poder de compra
+e tempos de funil estão inline (sem imports de outros .py locais).
+"""
 import base64
 import calendar
 import copy
@@ -34,6 +35,12 @@ SPREADSHEET_ID = "1wpuNQvksot9CLhGgQRe7JlyDeRISEh_sc3-6VRDyQYk"
 WS_VENDAS = "BD Vendas Completa"
 WS_METAS = "Metas"
 
+# Metas v2 (coordenadores + canal IVAN)
+SPREADSHEET_METAS_COORD_ID = "1rmurZkYIeQzDKhMB-4awn3rXBACiowX5kG2-c-zK6AM"
+WS_METAS_COORD = "Metas Coordenadores Comerciais"
+SPREADSHEET_BASES_IVAN_ID = "1cExor3vbUZWEeu8iaX7M0oNpjY3b-MssJBwkVhGKt5c"
+WS_CANAL = "Canal"
+
 # Funil comercial
 SPREADSHEET_FUNIL_ID = "1ckdfpUr7qhr9YHnlfJ_rYrs6c6ZFugqYG0zrZDI9bck"
 # Pastas / pastas aprovadas (aba BASE)
@@ -42,6 +49,18 @@ SPREADSHEET_PASTAS_ID: Optional[str] = "1wnJgJyrVM2k9SfQ8PCxFRr9odh75DEOg0tjtkPf
 SF_REPORT_AGENDAMENTOS_ID = "00OU600000AcFGPMA3"
 SF_REPORT_PASTAS_ID = "00OU600000FEOoDMAX"
 SF_REPORT_VENDAS_ID = "00O3Z000005ZsPmUAK"
+SF_REPORT_ESTOQUE_ID = "00OU600000FbbMXMAZ"
+# Status de unidade (Produto__c) — alinhado ao relatório de estoque SF
+ESTOQUE_STATUS_VENDAVEL = frozenset({"Disponível", "Mirror"})
+ESTOQUE_STATUS_TODOS = (
+    "Disponível",
+    "Mirror",
+    "Fora de venda",
+    "Fora de Venda - Comercial",
+)
+ALIASES_STATUS_UNIDADE = [
+    "StatusUnidade__c", "Status da Unidade", "Status_da_Unidade__c", "Status",
+]
 ABA_AGENDAMENTOS_VISITAS = "Dados Únicos"  # fallback Sheets se SF falhar
 ABA_PASTAS_CANDIDATAS = (
     "BASE",
@@ -60,6 +79,19 @@ FUNIL_LABELS = {
     "pastas_aprovadas": "Pastas aprovadas",
     "vendas": "Vendas",
 }
+FUNIL_DIGITAL_ETAPAS = (
+    "leads",
+    "agendamentos",
+    "visitas",
+    "pastas",
+    "pastas_aprovadas",
+    "vendas",
+)
+FUNIL_DIGITAL_LABELS = {
+    "leads": "Leads",
+    **FUNIL_LABELS,
+}
+FUNIL_DIGITAL_CORES = ["#011a3d", "#022654", "#04428f", "#1e60b3", "#cb0935", "#9e0828"]
 # Conversões etapa → etapa seguinte
 FUNIL_PARES_ETAPA = (
     ("agendamentos", "visitas"),
@@ -2688,6 +2720,8 @@ def projetar_vendas_mes_atual(
         "ritmo_meta_acum_medias": ritmo_med_a,
         "comparativo_diario_reg": pd.DataFrame(comp_reg),
         "comparativo_diario_medias": pd.DataFrame(comp_med),
+        "pred_reg_mes": pred_reg_mes,
+        "modelo": modelo,
     }
 
 
@@ -3665,7 +3699,8 @@ def _sf_soql_agendamentos(sf, modo_janela: str = "producao") -> pd.DataFrame:
         else f"CreatedDate >= {desde}"
     )
     soql = (
-        "SELECT Codigo_do_agendamento__c, CreatedDate, Data_da_Visita__c "
+        "SELECT Codigo_do_agendamento__c, CreatedDate, Data_da_Visita__c, "
+        "Nome_do_empreendimento__c, WhatId, AccountId "
         "FROM Event "
         "WHERE Unidade_de_negocio__c = 'Direcional' "
         "AND Regional__c = 'RJ' "
@@ -3681,10 +3716,22 @@ def _sf_soql_agendamentos(sf, modo_janela: str = "producao") -> pd.DataFrame:
             "Código do agendamento": r.get("Codigo_do_agendamento__c"),
             "Data de criação": r.get("CreatedDate"),
             "Data da visita": r.get("Data_da_Visita__c"),
+            "Empreendimento": (r.get("Nome_do_empreendimento__c") or "").strip(),
+            "WhatId": r.get("WhatId"),
+            "AccountId": r.get("AccountId"),
         }
         for r in (res.get("records") or [])
     ]
     return pd.DataFrame(rows)
+
+
+_PASTAS_PC_CAMPOS = (
+    "Name, CreatedDate, dataPrimeiroEnvioAnalise__c, dataAprovacaoSAFI__c, "
+    "Empreendimento__r.Name, Tipo__c, Oportunidade__c, Conta__c, "
+    "Renda__c, Valor_da_Renda__c, RendaApurada__c, "
+    "Valor_FGTS__c, FGTS_apurado__c, "
+    "Valor_Financiamento__c, Subsidio__c, valor_do_subsidio__c, Valor_de_Subsidio__c"
+)
 
 
 def _sf_soql_pastas(sf, modo_janela: str = "producao") -> pd.DataFrame:
@@ -3698,7 +3745,7 @@ def _sf_soql_pastas(sf, modo_janela: str = "producao") -> pd.DataFrame:
         else f"CreatedDate >= {desde}"
     )
     soql = (
-        "SELECT Name, CreatedDate, dataPrimeiroEnvioAnalise__c, dataAprovacaoSAFI__c "
+        f"SELECT {_PASTAS_PC_CAMPOS} "
         "FROM Avaliacao_credito__c "
         "WHERE Empreendimento__r.Regional__c = 'RJ' "
         "AND Empreendimento__r.UnidadeDeNegocio__c = 'Direcional' "
@@ -3711,6 +3758,19 @@ def _sf_soql_pastas(sf, modo_janela: str = "producao") -> pd.DataFrame:
             "Data de criação": r.get("CreatedDate"),
             "Data Primeiro Envio Análise": r.get("dataPrimeiroEnvioAnalise__c"),
             "Data Aprovação SAFI": r.get("dataAprovacaoSAFI__c"),
+            "Empreendimento": _sf_rel_name(r.get("Empreendimento__r")),
+            "Tipo": r.get("Tipo__c"),
+            "Oportunidade": r.get("Oportunidade__c"),
+            "Conta": r.get("Conta__c"),
+            "Renda": r.get("Renda__c"),
+            "Valor da Renda": r.get("Valor_da_Renda__c"),
+            "Renda Apurada": r.get("RendaApurada__c"),
+            "Valor FGTS": r.get("Valor_FGTS__c"),
+            "FGTS apurado": r.get("FGTS_apurado__c"),
+            "Valor do Financiamento": r.get("Valor_Financiamento__c"),
+            "Subsídio": r.get("Subsidio__c"),
+            "Valor do Subsidio": r.get("valor_do_subsidio__c"),
+            "Valor de Subsidio": r.get("Valor_de_Subsidio__c"),
         }
         for r in (res.get("records") or [])
     ]
@@ -3728,7 +3788,8 @@ def _sf_soql_vendas(sf, modo_janela: str = "producao") -> pd.DataFrame:
         "Valor_Real_de_Venda__c, Owner.Name, DirecionalVendas__c, ContratoGeradoEm__c, "
         "DataVenda__c, Termo_de_reserva__c, Ranking__c, M_s_Venda__c, Ano_da_Venda__c, "
         "Imobiliaria__r.Name, Contato_Corretor_Proprietario1__r.Name, Gerente_regional__c, "
-        "Regional__c, OrigemConta__c, LeadSource, AtribuicaoDigital__c, UltimaEntradaDigital__c "
+        "Diretor_de_vendas__c, Regional__c, OrigemConta__c, LeadSource, AtribuicaoDigital__c, "
+        "UltimaEntradaDigital__c, VendaFutura__c, VendaComunicadaAutomaticamente__c "
         "FROM Opportunity "
         "WHERE DirecionalVendas__c = true "
         "AND Empreendimento__r.Regional__c = 'RJ' "
@@ -3761,11 +3822,87 @@ def _sf_soql_vendas(sf, modo_janela: str = "producao") -> pd.DataFrame:
             ),
             "Contrato gerado em": r.get("ContratoGeradoEm__c"),
             "Gerente regional": r.get("Gerente_regional__c"),
+            "Diretor de vendas": r.get("Diretor_de_vendas__c"),
             "Regional": r.get("Regional__c"),
             "Origem da Conta": r.get("OrigemConta__c"),
             "Origem do lead": r.get("LeadSource"),
             "Atribuição Digital": r.get("AtribuicaoDigital__c"),
             "Última entrada Digital": r.get("UltimaEntradaDigital__c"),
+            "Venda futura": r.get("VendaFutura__c"),
+            "Venda comunicada": r.get("VendaComunicadaAutomaticamente__c"),
+        })
+    return pd.DataFrame(rows)
+
+
+def _sf_soql_cotacoes(sf, modo_janela: str = "producao") -> pd.DataFrame:
+    """Cotações (pro soluto, VCX) vinculadas a oportunidades RJ."""
+    desde = _sf_soql_desde(modo_janela)[:10]
+    soql = (
+        "SELECT Id, OpportunityId, Opportunity.Empreendimento__r.Name, "
+        "VoltaAoCaixa__c, PercentualdoProSoluto__c, TemProSoluto__c, CreatedDate "
+        "FROM Quote "
+        "WHERE Opportunity.Empreendimento__r.Regional__c = 'RJ' "
+        "AND Opportunity.Empreendimento__r.UnidadeDeNegocio__c = 'Direcional' "
+        f"AND CreatedDate >= {desde}T00:00:00Z"
+    )
+    try:
+        res = sf.query_all(soql)
+    except Exception:
+        return pd.DataFrame()
+    rows = []
+    for r in res.get("records") or []:
+        opp = r.get("Opportunity") if isinstance(r.get("Opportunity"), dict) else {}
+        emp = _sf_rel_name((opp or {}).get("Empreendimento__r"))
+        rows.append({
+            "ID Cotação": r.get("Id"),
+            "ID da Oportunidade": r.get("OpportunityId"),
+            "Empreendimento": emp,
+            "Volta ao caixa": r.get("VoltaAoCaixa__c"),
+            "Percentual Pro Soluto": r.get("PercentualdoProSoluto__c"),
+            "Tem Pro Soluto": r.get("TemProSoluto__c"),
+            "Data de criação": r.get("CreatedDate"),
+        })
+    return pd.DataFrame(rows)
+
+
+def _sf_soql_estoque_empreendimento(sf) -> pd.DataFrame:
+    """
+    Estoque por unidade (Produto__c) — equivalente ao relatório SF_REPORT_ESTOQUE_ID.
+    Status: Disponível, Mirror, Fora de venda, Fora de Venda - Comercial.
+    """
+    statuses = ", ".join(f"'{s}'" for s in ESTOQUE_STATUS_TODOS)
+    soql = (
+        "SELECT Id, StatusUnidade__c, Empreendimento__r.Name, NomeEmpreendimento__c, "
+        "Identificador__c, ValorFinalComKit__c, Valor_de_Avalia_o_Banc_ria__c, "
+        "Valor_Folga__c, B_nus_Adimpl_ncia__c, Area__c, Habite_se__c, "
+        "Possui_Investidor__c, Tipologia__c, "
+        "Empreendimento__r.DataExpedicaoHabitese__c "
+        "FROM Produto__c "
+        "WHERE Empreendimento__r.Regional__c = 'RJ' "
+        "AND Empreendimento__r.UnidadeDeNegocio__c = 'Direcional' "
+        f"AND StatusUnidade__c IN ({statuses})"
+    )
+    res = sf.query_all(soql)
+    rows = []
+    for r in res.get("records") or []:
+        emp = _sf_rel_name(r.get("Empreendimento__r"))
+        emp_rel = r.get("Empreendimento__r") if isinstance(r.get("Empreendimento__r"), dict) else {}
+        if not emp:
+            emp = str(r.get("NomeEmpreendimento__c") or "").strip()
+        hab_emp = emp_rel.get("DataExpedicaoHabitese__c") if emp_rel else None
+        rows.append({
+            "ID da Unidade": r.get("Id"),
+            "StatusUnidade__c": r.get("StatusUnidade__c"),
+            "Empreendimento": emp,
+            "Identificador": r.get("Identificador__c"),
+            "Valor Final com Kit": r.get("ValorFinalComKit__c"),
+            "Valor de Avaliação Bancária": r.get("Valor_de_Avalia_o_Banc_ria__c"),
+            "Valor Folga": r.get("Valor_Folga__c"),
+            "Bônus Adimplência": r.get("B_nus_Adimpl_ncia__c"),
+            "Area": r.get("Area__c"),
+            "Habite-se": r.get("Habite_se__c") or hab_emp,
+            "Tipologia": r.get("Tipologia__c"),
+            "Possui Investidor": r.get("Possui_Investidor__c"),
         })
     return pd.DataFrame(rows)
 
@@ -3820,8 +3957,7 @@ def _sf_soql_pastas_empreendimento(sf, hoje: Optional[date] = None) -> pd.DataFr
         f"OR dataAprovacaoSAFI__c >= {desde_date})"
     )
     soql = (
-        "SELECT Name, CreatedDate, dataPrimeiroEnvioAnalise__c, dataAprovacaoSAFI__c, "
-        "Empreendimento__r.Name "
+        f"SELECT {_PASTAS_PC_CAMPOS} "
         "FROM Avaliacao_credito__c "
         "WHERE Empreendimento__r.Regional__c = 'RJ' "
         "AND Empreendimento__r.UnidadeDeNegocio__c = 'Direcional' "
@@ -3837,6 +3973,46 @@ def _sf_soql_pastas_empreendimento(sf, hoje: Optional[date] = None) -> pd.DataFr
             "Data Primeiro Envio Análise": r.get("dataPrimeiroEnvioAnalise__c"),
             "Data Aprovação SAFI": r.get("dataAprovacaoSAFI__c"),
             "Empreendimento": emp,
+            "Tipo": r.get("Tipo__c"),
+            "Oportunidade": r.get("Oportunidade__c"),
+            "Conta": r.get("Conta__c"),
+            "Renda": r.get("Renda__c"),
+            "Valor da Renda": r.get("Valor_da_Renda__c"),
+            "Renda Apurada": r.get("RendaApurada__c"),
+            "Valor FGTS": r.get("Valor_FGTS__c"),
+            "FGTS apurado": r.get("FGTS_apurado__c"),
+            "Valor do Financiamento": r.get("Valor_Financiamento__c"),
+            "Subsídio": r.get("Subsidio__c"),
+            "Valor do Subsidio": r.get("valor_do_subsidio__c"),
+            "Valor de Subsidio": r.get("Valor_de_Subsidio__c"),
+        })
+    return pd.DataFrame(rows)
+
+
+def _sf_soql_tabela_comprometimento(sf, modo_janela: str = "painel") -> pd.DataFrame:
+    """Tabela Comprometimento de Renda — pro soluto máximo por oportunidade."""
+    desde = _sf_soql_desde(modo_janela)[:10]
+    soql = (
+        "SELECT Oportunidade__c, Renda__c, ProSoluto__c, ComprometimentoDeRenda__c, "
+        "ComprometimentoDeRendaParcial__c, numParcelas__c "
+        "FROM TabelaComprometimentoDeRenda__c "
+        "WHERE Oportunidade__r.Empreendimento__r.Regional__c = 'RJ' "
+        "AND Oportunidade__r.Empreendimento__r.UnidadeDeNegocio__c = 'Direcional' "
+        f"AND CreatedDate >= {desde}T00:00:00Z"
+    )
+    try:
+        res = sf.query_all(soql)
+    except Exception:
+        return pd.DataFrame()
+    rows = []
+    for r in res.get("records") or []:
+        rows.append({
+            "Oportunidade__c": r.get("Oportunidade__c"),
+            "ProSoluto__c": r.get("ProSoluto__c"),
+            "Renda__c": r.get("Renda__c"),
+            "ComprometimentoDeRenda__c": r.get("ComprometimentoDeRenda__c"),
+            "ComprometimentoDeRendaParcial__c": r.get("ComprometimentoDeRendaParcial__c"),
+            "numParcelas__c": r.get("numParcelas__c"),
         })
     return pd.DataFrame(rows)
 
@@ -3885,6 +4061,7 @@ def carregar_funil_empreendimento_sf() -> Dict[str, Any]:
     df_pas = normalizar_colunas(_sf_soql_pastas_empreendimento(sf, hoje))
     df_opps = normalizar_colunas(_sf_soql_oportunidades_empreendimento(sf, hoje))
     df_ven = normalizar_colunas(_sf_soql_vendas(sf, modo_janela="producao"))
+    df_est = normalizar_colunas(_sf_soql_estoque_empreendimento(sf))
     df_ven = filtrar_vendas_comerciais(df_ven)
     ini = _sf_inicio_funil_empreendimento(hoje)
     if not df_ven.empty:
@@ -3898,6 +4075,7 @@ def carregar_funil_empreendimento_sf() -> Dict[str, Any]:
         "pastas": df_pas if df_pas is not None else pd.DataFrame(),
         "oportunidades": df_opps if df_opps is not None else pd.DataFrame(),
         "vendas": df_ven if df_ven is not None else pd.DataFrame(),
+        "estoque": df_est if df_est is not None else pd.DataFrame(),
         "inicio_janela": ini.isoformat(),
         "timings": {"total_s": t_total},
     }
@@ -3973,6 +4151,34 @@ def carregar_vendas_painel_sf() -> Dict[str, Any]:
     }
 
 
+@st.cache_data(ttl=3600, show_spinner="Carregando pastas aprovadas (poder de compra)…")
+def carregar_pacote_poder_compra_sf() -> Dict[str, Any]:
+    """Pastas aprovadas + tabela comprometimento de renda."""
+    sf = _cliente_salesforce_cache()
+    df_pas = normalizar_colunas(_sf_soql_pastas(sf, modo_janela="painel"))
+    df_pas = deduplicar_pastas_aprovadas_funil(df_pas) if not df_pas.empty else df_pas
+    df_tab = normalizar_colunas(_sf_soql_tabela_comprometimento(sf, modo_janela="painel"))
+    return {
+        "pastas_aprovadas": df_pas,
+        "tabela_comprometimento": df_tab,
+    }
+
+
+@st.cache_data(ttl=3600, show_spinner="Carregando cotações Salesforce…")
+def carregar_cotacoes_painel_sf() -> pd.DataFrame:
+    sf = _cliente_salesforce_cache()
+    df = _sf_soql_cotacoes(sf, modo_janela="painel")
+    return normalizar_colunas(df) if df is not None and not df.empty else pd.DataFrame()
+
+
+@st.cache_data(ttl=3600, show_spinner="Carregando estoque Salesforce…")
+def carregar_estoque_painel_sf() -> pd.DataFrame:
+    """Estoque Produto__c (RJ · Direcional) para KPI e tabela analítica."""
+    sf = _cliente_salesforce_cache()
+    df = _sf_soql_estoque_empreendimento(sf)
+    return normalizar_colunas(df) if df is not None and not df.empty else pd.DataFrame()
+
+
 @st.cache_data(ttl=3600, show_spinner="Carregando funil (agendamentos + pastas)…")
 def carregar_funil_painel_sf() -> Dict[str, Any]:
     """Agendamentos + pastas — janela produção (~2 meses). Carrega ao abrir projeção."""
@@ -3998,6 +4204,22 @@ def carregar_funil_painel_sf() -> Dict[str, Any]:
             f"Salesforce SOQL · Avaliacao_credito__c · pastas (produção) · "
             f"{n_p:,} linhas".replace(",", ".")
         ),
+    }
+
+
+@st.cache_data(ttl=3600, show_spinner="Carregando histórico funil (24m)…")
+def carregar_funil_historico_painel_sf() -> Dict[str, Any]:
+    """Agendamentos + pastas — janela painel (24m) para comparativos MTD."""
+    t0 = time.perf_counter()
+    sf = _cliente_salesforce_cache()
+    df_ag = _sf_soql_agendamentos(sf, modo_janela="painel")
+    df_pastas = _sf_soql_pastas(sf, modo_janela="painel")
+    df_ag = normalizar_colunas(df_ag) if df_ag is not None and not df_ag.empty else pd.DataFrame()
+    df_pastas = normalizar_colunas(df_pastas) if df_pastas is not None and not df_pastas.empty else pd.DataFrame()
+    return {
+        "agendamentos": df_ag,
+        "pastas": df_pastas,
+        "timings": {"total_s": time.perf_counter() - t0},
     }
 
 
@@ -5773,6 +5995,270 @@ def _plot_funil_etapa_comparativo(etapa: str, df: pd.DataFrame, ultimo_dia: int,
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
+ALIASES_DATA_VISITA = [
+    "Data da visita", "Data da Visita", "Data visita", "Data Visita",
+    "Activity Date", "Data da Atividade", "Data do agendamento",
+    "Data Agendamento", "Start Date Time", "Data/Hora",
+]
+
+
+def _montar_df_comparativo_mtd_parcial(
+    df: pd.DataFrame,
+    col_data: str,
+    dia_atual: int,
+    col_qtd: Optional[str] = None,
+) -> pd.DataFrame:
+    """Soma eventos do dia 1 ao dia_atual de cada mês (janela MTD parcial)."""
+    if df is None or df.empty or not col_data or col_data not in df.columns:
+        return pd.DataFrame()
+    base = df.copy()
+    base["_dt"] = parse_data_serie(base[col_data])
+    base = base.dropna(subset=["_dt"])
+    if base.empty:
+        return pd.DataFrame()
+    base = base.loc[base["_dt"].dt.day <= int(dia_atual)]
+    if col_qtd and col_qtd in base.columns:
+        base["_qtd"] = pd.to_numeric(base[col_qtd], errors="coerce").fillna(0.0)
+    else:
+        base["_qtd"] = 1.0
+    base["_ano_c"] = base["_dt"].dt.year
+    base["_mes_c"] = base["_dt"].dt.month
+    df_comp = base.groupby(["_ano_c", "_mes_c"], as_index=False).agg(QTD=("_qtd", "sum"))
+    df_comp = df_comp.sort_values(["_ano_c", "_mes_c"])
+    df_comp["Periodo"] = (
+        df_comp["_mes_c"].astype(str).str.zfill(2) + "/" + df_comp["_ano_c"].astype(str)
+    )
+    df_comp["QTD_Formatado"] = df_comp["QTD"].apply(lambda x: fmt_qtd(x))
+    return df_comp
+
+
+def _plot_comparativo_mtd_qtd_linha(
+    df_comp: pd.DataFrame,
+    titulo: str,
+    cor: str = COR_AZUL_ESC,
+    chart_key: str = "",
+) -> None:
+    """Gráfico de linha: quantidade acumulada MTD parcial por período."""
+    st.markdown(f"##### {titulo}")
+    if df_comp is None or df_comp.empty:
+        st.info(f"Sem dados para {titulo}.")
+        return
+    fig = go.Figure()
+    fig.add_trace(
+        go.Scatter(
+            x=df_comp["Periodo"],
+            y=df_comp["QTD"],
+            mode="lines+markers+text",
+            name="Quantidade",
+            line=dict(color=cor, width=3),
+            marker=dict(size=8, color=cor),
+            text=df_comp["QTD_Formatado"],
+            textposition="top center",
+            textfont=dict(color=cor, size=11, family="Inter"),
+        )
+    )
+    fig.update_layout(
+        margin=dict(l=20, r=20, t=40, b=20),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter", color=COR_TEXTO_PRETO),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.08, xanchor="center", x=0.5,
+            font=dict(color=COR_TEXTO_PRETO, family="Inter", size=12),
+        ),
+        hovermode="x unified",
+        height=380,
+    )
+    fig.update_xaxes(
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+    )
+    fig.update_yaxes(
+        title_text="Quantidade",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        showgrid=True,
+        gridcolor="rgba(226, 232, 240, 0.5)",
+    )
+    st.plotly_chart(
+        fig,
+        use_container_width=True,
+        config={"displayModeBar": False},
+        key=chart_key or None,
+    )
+
+
+def _plot_comparativo_mtd_vendas_vgv(
+    df_vendas: pd.DataFrame,
+    col_contrato: str,
+    dia_atual: int,
+) -> None:
+    """Comparativo MTD parcial de vendas (QTD + VGV), dia 1 ao dia atual."""
+    df_grafico = df_vendas.copy()
+    df_grafico["Data_Contrato_DT"] = parse_data_serie(df_grafico[col_contrato])
+    df_grafico = df_grafico.dropna(subset=["Data_Contrato_DT"])
+    if df_grafico.empty:
+        st.info("Não há dados de vendas no período acumulado de eficiência para exibir.")
+        return
+    df_parcial = df_grafico.loc[df_grafico["Data_Contrato_DT"].dt.day <= dia_atual].copy()
+    df_parcial["_ano_c"] = df_parcial["Data_Contrato_DT"].dt.year
+    df_parcial["_mes_c"] = df_parcial["Data_Contrato_DT"].dt.month
+    df_comp = df_parcial.groupby(["_ano_c", "_mes_c"], as_index=False).agg(
+        QTD=("_qtd_venda", "sum"),
+        VGV=("_vgv_venda", "sum"),
+    ).sort_values(["_ano_c", "_mes_c"])
+    df_comp["Periodo"] = (
+        df_comp["_mes_c"].astype(str).str.zfill(2) + "/" + df_comp["_ano_c"].astype(str)
+    )
+    df_comp["VGV_Formatado"] = df_comp["VGV"].apply(lambda x: fmt_br_milhoes(x))
+    df_comp["QTD_Formatado"] = df_comp["QTD"].apply(lambda x: fmt_qtd(x))
+
+    fig_linha = make_subplots(specs=[[{"secondary_y": True}]])
+    fig_linha.add_trace(
+        go.Scatter(
+            x=df_comp["Periodo"],
+            y=df_comp["QTD"],
+            mode="lines+markers+text",
+            name="QTD Vendas",
+            line=dict(color=COR_AZUL_ESC, width=3),
+            marker=dict(size=8, color=COR_AZUL_ESC),
+            text=df_comp["QTD_Formatado"],
+            textposition="top center",
+            textfont=dict(color=COR_AZUL_ESC, size=11, family="Inter"),
+        ),
+        secondary_y=False,
+    )
+    fig_linha.add_trace(
+        go.Scatter(
+            x=df_comp["Periodo"],
+            y=df_comp["VGV"],
+            mode="lines+markers+text",
+            name="VGV Real",
+            line=dict(color=COR_VERMELHO, width=3),
+            marker=dict(size=8, color=COR_VERMELHO),
+            text=df_comp["VGV_Formatado"],
+            textposition="bottom center",
+            textfont=dict(color=COR_VERMELHO, size=11, family="Inter"),
+        ),
+        secondary_y=True,
+    )
+    fig_linha.update_layout(
+        margin=dict(l=20, r=20, t=40, b=20),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter", color=COR_TEXTO_PRETO),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.08, xanchor="center", x=0.5,
+            font=dict(color=COR_TEXTO_PRETO, family="Inter", size=12),
+        ),
+        hovermode="x unified",
+    )
+    fig_linha.update_xaxes(
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+    )
+    fig_linha.update_yaxes(
+        title_text="Quantidade (Vendas)",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        secondary_y=False,
+        showgrid=False,
+    )
+    fig_linha.update_yaxes(
+        title_text="VGV Real (R$)",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        secondary_y=True,
+        showgrid=True,
+        gridcolor="rgba(226, 232, 240, 0.5)",
+    )
+    st.plotly_chart(fig_linha, use_container_width=True, config={"displayModeBar": False})
+
+
+def render_comparativos_mtd_funil(
+    df_vendas: pd.DataFrame,
+    col_contrato_gerado: Optional[str],
+) -> None:
+    """Comparativos MTD parciais (dia 1 ao dia atual): vendas + etapas do funil."""
+    dia_atual = datetime.now().day
+    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
+    st.subheader(f"Comparativos MTD (Dia 01 ao Dia {dia_atual:02d} do Mês)")
+    st.caption(
+        "Cada ponto soma apenas eventos do dia 1 até o dia atual de cada mês — "
+        "comparação justa de ritmo entre períodos."
+    )
+
+    if col_contrato_gerado:
+        st.markdown(f"##### Vendas")
+        _plot_comparativo_mtd_vendas_vgv(df_vendas, col_contrato_gerado, dia_atual)
+    else:
+        st.warning("Coluna 'Contrato gerado em' não encontrada — comparativo de vendas indisponível.")
+
+    try:
+        pacote = carregar_funil_historico_painel_sf()
+        df_ag = deduplicar_agendamentos_funil(_coalesce_df(pacote.get("agendamentos")))
+        df_pas_raw = _coalesce_df(pacote.get("pastas"))
+        df_pas = deduplicar_pastas_funil(df_pas_raw)
+        df_pas_aprov = deduplicar_pastas_aprovadas_funil(df_pas_raw)
+        t_sf = float((pacote.get("timings") or {}).get("total_s", 0.0))
+        if t_sf:
+            st.caption(f"Funil histórico SF ({PAINEL_MESES_VENDAS}m) carregado em {t_sf:.1f}s")
+
+        col_ag = achar_coluna(df_ag, ALIASES_DATA_CRIACAO)
+        col_vis = achar_coluna(df_ag, ALIASES_DATA_VISITA)
+        col_envio = achar_coluna_primeiro_envio_analise(df_pas)
+        col_safi = achar_coluna_aprovacao_safi(df_pas_aprov)
+
+        comparativos = [
+            ("Agendamentos", df_ag, col_ag, COR_AZUL_ESC),
+            ("Visitas", df_ag, col_vis, "#1e60b3"),
+            ("Pastas", df_pas, col_envio, "#0f766e"),
+            ("Pastas aprovadas", df_pas_aprov, col_safi, "#b45309"),
+        ]
+        for titulo, df_etapa, col_data, cor in comparativos:
+            if not col_data:
+                st.markdown(f"##### {titulo}")
+                st.info(f"Coluna de data não encontrada para {titulo}.")
+                continue
+            df_comp = _montar_df_comparativo_mtd_parcial(df_etapa, col_data, dia_atual)
+            _plot_comparativo_mtd_qtd_linha(
+                df_comp,
+                titulo,
+                cor=cor,
+                chart_key=f"comp_mtd_{titulo.lower().replace(' ', '_')}",
+            )
+    except Exception as exc:
+        st.warning(f"Não foi possível carregar comparativos do funil: {exc}")
+
+    try:
+        df_est = carregar_estoque_painel_sf()
+        _, enr = agregar_estoque(df_est)
+        resumo = resumo_estoque_por_emp(enr)
+        if col_contrato_gerado and not resumo.empty:
+            st.markdown("##### Preço médio venda vs tabela (MTD parcial)")
+            hoje = date.today()
+            ini_mes = date(hoje.year, hoje.month, 1)
+            rows_preco = []
+            for emp in resumo["Empreendimento"].head(40):
+                ven_emp = df_vendas.copy()
+                if "Empreendimento" in ven_emp.columns:
+                    ven_emp = ven_emp[ven_emp["Empreendimento"].map(_limpar_emp) == emp]
+                ven_emp = _filtrar_df_periodo(ven_emp, col_contrato_gerado, ini_mes, hoje)
+                col_val = achar_coluna(ven_emp, ["Valor Real de Venda", "Valor Real", "Valor"])
+                preco_v = float(ven_emp[col_val].map(_parse_num_br).mean()) if col_val and not ven_emp.empty else 0.0
+                preco_t = float(resumo.loc[resumo["Empreendimento"] == emp, "Preco_Medio_Tabela"].iloc[0]) if emp in resumo["Empreendimento"].values else 0.0
+                rows_preco.append({
+                    "Empreendimento": emp,
+                    "Preço médio venda MTD": preco_v,
+                    "Preço médio tabela": preco_t,
+                    "Gap %": ((preco_v - preco_t) / preco_t * 100.0) if preco_t > 0 else 0.0,
+                })
+            if rows_preco:
+                st.dataframe(pd.DataFrame(rows_preco), use_container_width=True, hide_index=True)
+    except Exception as exc_p:
+        st.caption(f"Comparativo preço venda vs tabela indisponível: {exc_p}")
+
+
 def _render_kpi_cards(items: List[Dict[str, str]]) -> None:
     """
     Cards KPI em colunas Streamlit (evita HTML indentado virar bloco de código no markdown).
@@ -6383,7 +6869,15 @@ def render_efeitos_lags_sobre_vendas(
     st.plotly_chart(fig_c, use_container_width=True, config={"displayModeBar": False})
 
 
-def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_vgv: float, vendas_qtd: float) -> None:
+def criar_medidor(
+    titulo: str,
+    realizado: float,
+    meta: float,
+    vgv: float,
+    meta_vgv: float,
+    vendas_qtd: float,
+    mostrar_vgv: bool = True,
+) -> None:
     meta_f = float(meta) if meta and meta > 0 else 0.0
     true_perc = (realizado / meta_f * 100.0) if meta_f > 0 else 0.0
     axis_max = 100
@@ -6445,11 +6939,16 @@ def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_v
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
+    vgv_linha = (
+        f"<strong>VGV:</strong> {fmt_br_milhoes(float(vgv))} / {fmt_br_milhoes(float(meta_vgv))}"
+        if mostrar_vgv and float(meta_vgv) > 0
+        else ""
+    )
     st.markdown(
         f"""
         <div style="text-align:center;font-size:0.85rem;color:{COR_TEXTO_PRETO};margin-top:-8px;line-height:1.4;">
             <strong>Qtd:</strong> {fmt_qtd(vendas_qtd)} / {fmt_qtd(meta_f)} <br/>
-            <strong>VGV:</strong> {fmt_br_milhoes(float(vgv))} / {fmt_br_milhoes(float(meta_vgv))}
+            {vgv_linha}
         </div>
         """,
         unsafe_allow_html=True,
@@ -6715,19 +7214,23 @@ def _criar_fig_funil_com_conversoes(
     titulo: str = "",
     altura: int = 380,
     chart_key: str = "",
+    etapas: Tuple[str, ...] = FUNIL_ETAPAS,
+    labels_map: Optional[Dict[str, str]] = None,
+    cores: Optional[List[str]] = None,
 ) -> go.Figure:
     """Funil vertical — volume + conversão fora do bloco, fonte uniforme preta."""
-    labels = [FUNIL_LABELS[e] for e in FUNIL_ETAPAS]
-    ceil_tot = ceil_funil_totais(totais)
-    vals = [float(ceil_tot.get(e, 0.0)) for e in FUNIL_ETAPAS]
+    labels_map = labels_map or FUNIL_LABELS
+    labels = [labels_map.get(e, e) for e in etapas]
+    ceil_tot = {e: float(math.ceil(max(0.0, float((totais or {}).get(e, 0.0))))) for e in etapas}
+    vals = [float(ceil_tot.get(e, 0.0)) for e in etapas]
     fonte = _fonte_funil_plotly()
     textos: List[str] = []
-    for i, etapa in enumerate(FUNIL_ETAPAS):
+    for i, etapa in enumerate(etapas):
         linha1 = fmt_funil_valor(vals[i])
         if i == 0:
             linha2 = ""
         else:
-            prev = FUNIL_ETAPAS[i - 1]
+            prev = etapas[i - 1]
             taxa = taxa_conversao(float(ceil_tot.get(prev, 0)), float(ceil_tot.get(etapa, 0)))
             linha2 = _fmt_taxa_pct(taxa)
         textos.append(f"{linha1}<br>{linha2}" if linha2 else linha1)
@@ -6739,7 +7242,7 @@ def _criar_fig_funil_com_conversoes(
         textposition="outside",
         insidetextfont=fonte,
         outsidetextfont=fonte,
-        marker={"color": FUNIL_CORES_NIVEIS},
+        marker={"color": cores or FUNIL_CORES_NIVEIS},
         connector={"fillcolor": "rgba(4, 66, 143, 0.15)"},
     ))
     return _layout_plotly_preto(fig, titulo=titulo, altura=altura, margin_r=160)
@@ -6875,7 +7378,7 @@ def totais_funil_digital_oportunidades(
     fim: date,
 ) -> Dict[str, float]:
     """Funil digital via oportunidades (núcleo digital) + vendas com origem digital."""
-    out = {e: 0.0 for e in FUNIL_ETAPAS}
+    out = {e: 0.0 for e in FUNIL_DIGITAL_ETAPAS}
     if df_opps is not None and not df_opps.empty:
         base = _filtrar_df_emp(_filtrar_df_periodo_ou(
             df_opps,
@@ -6889,10 +7392,10 @@ def totais_funil_digital_oportunidades(
         col_fase = achar_coluna(base, ALIASES_FASE_OPORTUNIDADE) or "Fase"
         if not base.empty and col_fase in base.columns:
             base = base.drop_duplicates(subset=[col_id])
-            out["agendamentos"] = float(len(base))
+            out["leads"] = float(len(base))
             for _, row in base.iterrows():
                 etapa = _mapear_fase_funil(str(row.get(col_fase, "")))
-                if etapa and etapa != "agendamentos":
+                if etapa:
                     out[etapa] += 1.0
     df_ven_d = df_vendas.copy() if df_vendas is not None else pd.DataFrame()
     if not df_ven_d.empty:
@@ -6913,24 +7416,234 @@ def _meta_qtd_empreendimento(df_metas: pd.DataFrame, emp: str, mes_num: int) -> 
     return float(m["Meta_Qtd"].sum()) if not m.empty and "Meta_Qtd" in m.columns else 0.0
 
 
+def _classificar_status_estoque(status: Any) -> str:
+    """Retorna chave interna: disponivel | mirror | fora_venda | fora_comercial | outro."""
+    s = str(status or "").strip()
+    if not s:
+        return "outro"
+    if s in ESTOQUE_STATUS_VENDAVEL:
+        return "mirror" if s == "Mirror" else "disponivel"
+    s_low = s.lower()
+    if "fora de venda - comercial" in s_low:
+        return "fora_comercial"
+    if "fora de venda" in s_low:
+        return "fora_venda"
+    return "outro"
+
+
+def resumo_estoque_empreendimentos(df_estoque: pd.DataFrame) -> Dict[str, Dict[str, int]]:
+    """Agrega unidades por empreendimento (status do relatório de estoque)."""
+    out: Dict[str, Dict[str, int]] = {}
+    if df_estoque is None or df_estoque.empty:
+        return out
+    col_emp = achar_coluna(df_estoque, ALIASES_EMPREENDIMENTO) or "Empreendimento"
+    col_st = achar_coluna(df_estoque, ALIASES_STATUS_UNIDADE) or "StatusUnidade__c"
+    for _, row in df_estoque.iterrows():
+        emp = _limpar_emp(row.get(col_emp))
+        if not emp:
+            continue
+        bucket = out.setdefault(
+            emp,
+            {
+                "disponivel": 0,
+                "mirror": 0,
+                "fora_venda": 0,
+                "fora_comercial": 0,
+                "vendavel": 0,
+                "total_status": 0,
+            },
+        )
+        bucket["total_status"] += 1
+        cls = _classificar_status_estoque(row.get(col_st))
+        if cls == "disponivel":
+            bucket["disponivel"] += 1
+            bucket["vendavel"] += 1
+        elif cls == "mirror":
+            bucket["mirror"] += 1
+            bucket["vendavel"] += 1
+        elif cls == "fora_venda":
+            bucket["fora_venda"] += 1
+        elif cls == "fora_comercial":
+            bucket["fora_comercial"] += 1
+    return out
+
+
+def _media_mensal_vendas_emp(
+    df_vendas: pd.DataFrame,
+    empreendimento: str,
+    col_contrato: str,
+    hoje: Optional[date] = None,
+    meses: int = 6,
+) -> float:
+    """Média de vendas/mês nos meses completos anteriores ao mês corrente."""
+    hoje = hoje or date.today()
+    ven = _filtrar_df_emp(filtrar_vendas_comerciais(df_vendas), empreendimento)
+    if ven.empty or not col_contrato or col_contrato not in ven.columns:
+        return 0.0
+    ven = ven.copy()
+    ven["_dt"] = parse_data_serie(ven[col_contrato])
+    ven = ven.dropna(subset=["_dt"])
+    if ven.empty:
+        return 0.0
+    ini_mes_atual = date(hoje.year, hoje.month, 1)
+    ven = ven.loc[ven["_dt"].dt.date < ini_mes_atual]
+    if ven.empty:
+        return 0.0
+    ven["_mes"] = ven["_dt"].dt.to_period("M")
+    por_mes = ven.groupby("_mes").size()
+    if por_mes.empty:
+        return 0.0
+    ultimos = por_mes.sort_index().tail(meses)
+    return float(ultimos.mean()) if len(ultimos) else 0.0
+
+
+def calcular_meta_qtd_empreendimento(
+    df_vendas_hist: pd.DataFrame,
+    empreendimento: str,
+    col_contrato: Optional[str],
+    estoque: Optional[Dict[str, int]],
+    vendas_mtd: float,
+    df_metas: pd.DataFrame,
+    mes_num: int,
+    hoje: Optional[date] = None,
+    incluir_mes: bool = True,
+) -> Dict[str, Any]:
+    """
+    Meta mensal por empreendimento:
+      1) Regressão OLS sobre histórico de vendas (mesma lógica do painel geral)
+      2) Teto por estoque vendável (Disponível + Mirror): vendas MTD + estoque restante
+    Fallback: média mensal recente ou meta da planilha.
+    """
+    hoje = hoje or date.today()
+    tem_estoque = estoque is not None
+    est = estoque or {}
+    estoque_vendavel = int(est.get("vendavel", 0)) if tem_estoque else None
+    meta_planilha = _meta_qtd_empreendimento(df_metas, empreendimento, mes_num)
+    vendas_mtd = max(float(vendas_mtd or 0.0), 0.0)
+    meta_cap_estoque = (
+        vendas_mtd + int(estoque_vendavel)
+        if tem_estoque and estoque_vendavel is not None
+        else None
+    )
+    meta_reg = 0.0
+    origem = "planilha"
+    r2 = None
+
+    col_c = col_contrato or achar_coluna(df_vendas_hist, ALIASES_CONTRATO_GERADO)
+    ven_emp = _filtrar_df_emp(filtrar_vendas_comerciais(df_vendas_hist), empreendimento)
+
+    if col_c and not ven_emp.empty:
+        serie = serie_diaria_contratos(ven_emp, col_c)
+        inicio, fim_treino = janela_treino_meses_exatos(hoje)
+        treino = calendario_diario(inicio, fim_treino, serie)
+        if len(treino) >= 30 and float(treino["qtd"].sum()) > 0:
+            modelo = treinar_regressao_vendas_diarias(treino, incluir_mes=incluir_mes)
+            r2 = _r2_treino(treino, modelo, incluir_mes=incluir_mes)
+            ultimo_dia = calendar.monthrange(hoje.year, hoje.month)[1]
+            dias_mes = [date(hoje.year, hoje.month, d) for d in range(1, ultimo_dia + 1)]
+            pred_reg_mes = prever_qtd_dias(modelo, dias_mes, incluir_mes=incluir_mes)
+            intensidades_fim = calcular_intensidades_fim_mes(treino, janelas=JANELAS_FIM_MES)
+            pred_reg_mes = aplicar_sazonalidade_fim_mes(
+                pred_reg_mes, dias_mes, ultimo_dia, intensidades_fim,
+            )
+            meta_reg = float(np.sum(pred_reg_mes))
+            origem = "regressao"
+        else:
+            media_m = _media_mensal_vendas_emp(ven_emp, empreendimento, col_c, hoje)
+            if media_m > 0:
+                meta_reg = media_m
+                origem = "media_mensal"
+
+    if meta_reg <= 0:
+        if meta_planilha > 0:
+            meta_reg = meta_planilha
+            origem = "planilha"
+        else:
+            media_m = _media_mensal_vendas_emp(ven_emp, empreendimento, col_c or "", hoje) if col_c else 0.0
+            if media_m > 0:
+                meta_reg = media_m
+                origem = "media_mensal"
+
+    limitado_estoque = False
+    if meta_cap_estoque is not None and meta_reg > meta_cap_estoque + 1e-9:
+        meta_final = meta_cap_estoque
+        limitado_estoque = True
+    else:
+        meta_final = meta_reg
+
+    meta_final = max(meta_final, vendas_mtd)
+    ev = int(estoque_vendavel or 0)
+    meses_estoque = (
+        ev / (meta_reg / 30.0)
+        if meta_reg > 1e-9 and ev > 0
+        else None
+    )
+
+    return {
+        "meta_final": float(math.ceil(max(0.0, meta_final))),
+        "meta_regressao": float(math.ceil(max(0.0, meta_reg))),
+        "meta_planilha": float(meta_planilha),
+        "meta_cap_estoque": float(meta_cap_estoque) if meta_cap_estoque is not None else None,
+        "estoque_vendavel": ev if tem_estoque else None,
+        "estoque_disponivel": int(est.get("disponivel", 0)),
+        "estoque_mirror": int(est.get("mirror", 0)),
+        "estoque_fora_venda": int(est.get("fora_venda", 0)),
+        "estoque_fora_comercial": int(est.get("fora_comercial", 0)),
+        "limitado_estoque": limitado_estoque,
+        "meses_estoque_restante": meses_estoque,
+        "origem": origem,
+        "r2_treino": r2,
+        "vendas_mtd": vendas_mtd,
+    }
+
+
+def _caption_meta_empreendimento(meta_info: Dict[str, Any]) -> str:
+    """Texto explicativo da meta (regressão × estoque)."""
+    origem = meta_info.get("origem", "?")
+    meta_reg = meta_info.get("meta_regressao", 0)
+    est_v = meta_info.get("estoque_vendavel")
+    disp = meta_info.get("estoque_disponivel", 0)
+    mir = meta_info.get("estoque_mirror", 0)
+    parts = [f"Meta = regressão histórica ({fmt_qtd(meta_reg)})"]
+    if est_v is not None:
+        parts.append(f"estoque vendável {est_v} (Disp {disp} · Mirror {mir})")
+    else:
+        parts.append("estoque: sem dados SF para este empreendimento")
+    if meta_info.get("limitado_estoque"):
+        parts.append(f"limitada a {fmt_qtd(meta_info.get('meta_cap_estoque', 0))} (MTD + estoque)")
+    meses_est = meta_info.get("meses_estoque_restante")
+    if meses_est is not None and est_v is not None and est_v > 0:
+        parts.append(f"~{meses_est:.1f} meses de estoque ao ritmo projetado")
+    r2 = meta_info.get("r2_treino")
+    if r2 is not None and origem == "regressao":
+        parts.append(f"R² treino {r2:.2f}")
+    if origem != "regressao":
+        parts.append(f"fallback: {origem}")
+    return " · ".join(parts)
+
+
 def _plot_funil_pair(
     tot_a: Dict[str, float],
     titulo_a: str,
     tot_b: Dict[str, float],
     titulo_b: str,
     key_prefix: str,
+    etapas: Tuple[str, ...] = FUNIL_ETAPAS,
+    labels_map: Optional[Dict[str, str]] = None,
+    cores: Optional[List[str]] = None,
 ) -> None:
     ca, cb = st.columns(2)
+    kwargs = {"etapas": etapas, "labels_map": labels_map, "cores": cores}
     with ca:
         st.plotly_chart(
-            _criar_fig_funil_com_conversoes(tot_a, titulo=titulo_a),
+            _criar_fig_funil_com_conversoes(tot_a, titulo=titulo_a, **kwargs),
             use_container_width=True,
             config={"displayModeBar": False},
             key=_plotly_key(key_prefix, "a", titulo_a),
         )
     with cb:
         st.plotly_chart(
-            _criar_fig_funil_com_conversoes(tot_b, titulo=titulo_b),
+            _criar_fig_funil_com_conversoes(tot_b, titulo=titulo_b, **kwargs),
             use_container_width=True,
             config={"displayModeBar": False},
             key=_plotly_key(key_prefix, "b", titulo_b),
@@ -6978,6 +7691,9 @@ def _render_secao_funil_empreendimento(
     df_ven: pd.DataFrame,
     janelas: Dict[str, date],
     key_slug: str,
+    df_vendas_hist: Optional[pd.DataFrame] = None,
+    col_contrato: Optional[str] = None,
+    estoque_emp: Optional[Dict[str, int]] = None,
 ) -> None:
     """Uma seção completa por empreendimento (sem nova consulta SOQL)."""
     hoje = janelas["hoje"]
@@ -6988,8 +7704,19 @@ def _render_secao_funil_empreendimento(
     ini_30d = janelas["ini_30d"]
     mes_num = hoje.month
 
-    meta_qtd = _meta_qtd_empreendimento(df_metas, emp, mes_num)
     tot_mes = totais_funil_empreendimento(df_ag, df_pastas, df_ven, emp, ini_mes, fim)
+    vendas_mtd = float(tot_mes.get("vendas", 0.0))
+    meta_info = calcular_meta_qtd_empreendimento(
+        df_vendas_hist if df_vendas_hist is not None else df_ven,
+        emp,
+        col_contrato,
+        estoque_emp,
+        vendas_mtd,
+        df_metas,
+        mes_num,
+        hoje=hoje,
+    )
+    meta_qtd = float(meta_info.get("meta_final", 0.0))
     tot_7d_mes = totais_funil_empreendimento(df_ag, df_pastas, df_ven, emp, ini_7d_mes, fim)
     tot_7d = totais_funil_empreendimento(df_ag, df_pastas, df_ven, emp, ini_7d, fim)
     tot_30d = totais_funil_empreendimento(df_ag, df_pastas, df_ven, emp, ini_30d, fim)
@@ -7001,6 +7728,10 @@ def _render_secao_funil_empreendimento(
         f"""
         <div class="vel-kpi-row aba-funil-kpi">
             <div class="vel-kpi"><div class="lbl">Meta mês</div><div class="val">{int(kpi['meta'])}</div></div>
+            <div class="vel-kpi"><div class="lbl">Meta regressão</div><div class="val">{int(meta_info.get('meta_regressao', 0))}</div></div>
+            <div class="vel-kpi"><div class="lbl">Estoque vendável</div><div class="val">{
+                int(meta_info['estoque_vendavel']) if meta_info.get('estoque_vendavel') is not None else '—'
+            }</div></div>
             <div class="vel-kpi"><div class="lbl">Vendas MTD</div><div class="val">{fmt_qtd(kpi['realizado'])}</div></div>
             <div class="vel-kpi"><div class="lbl">Projetado até hoje</div><div class="val">{fmt_qtd(kpi['projetado_pace'])}</div></div>
             <div class="vel-kpi"><div class="lbl">Gap vs projetado</div><div class="val">{fmt_qtd(kpi['gap'])}</div></div>
@@ -7011,6 +7742,7 @@ def _render_secao_funil_empreendimento(
         unsafe_allow_html=True,
     )
     st.caption(f"Ritmo: {gap_txt} · projeção linear ao dia {hoje.day}.")
+    st.caption(_caption_meta_empreendimento(meta_info))
 
     st.markdown("##### Mês corrente (MTD)")
     st.caption(
@@ -7107,6 +7839,9 @@ def _render_secao_funil_empreendimento(
         tot_d_7d_mes,
         "Digital — 7d no mês",
         _plotly_key("dig_mes", key_slug),
+        etapas=FUNIL_DIGITAL_ETAPAS,
+        labels_map=FUNIL_DIGITAL_LABELS,
+        cores=FUNIL_DIGITAL_CORES,
     )
     tot_d_30d = totais_funil_digital_oportunidades(df_opps, df_ven, emp, ini_30d, fim)
     tot_d_7d = totais_funil_digital_oportunidades(df_opps, df_ven, emp, ini_7d, fim)
@@ -7116,6 +7851,9 @@ def _render_secao_funil_empreendimento(
         tot_d_7d,
         "Digital — 7d rolling",
         _plotly_key("dig_roll", key_slug),
+        etapas=FUNIL_DIGITAL_ETAPAS,
+        labels_map=FUNIL_DIGITAL_LABELS,
+        cores=FUNIL_DIGITAL_CORES,
     )
     fp_d, n_fp_d = contagem_fases_oportunidade(
         df_opps, emp, modo="pipeline", apenas_digital=True,
@@ -7140,6 +7878,7 @@ def render_aba_funil_empreendimentos(
     st.subheader("Funil por Empreendimento — Direcional · RJ")
     st.caption(
         "Uma consulta Salesforce · vendas comerciais · "
+        "meta por regressão histórica + teto de estoque (Disp/Mirror) · "
         "MTD + 7d no mês · rolling 30d/7d · pipeline aberto por fase · núcleo digital"
     )
     janelas = _janelas_funil_emp(date.today())
@@ -7170,12 +7909,13 @@ def render_aba_funil_empreendimentos(
         df_pastas = _coalesce_df(pacote.get("pastas"))
         df_opps = _coalesce_df(pacote.get("oportunidades"))
         df_ven_funil = _coalesce_df(pacote.get("vendas"))
+        df_estoque = _coalesce_df(pacote.get("estoque"))
         t_sf = float((pacote.get("timings") or {}).get("total_s", 0.0))
         st.caption(
             f"Janela SF desde {pacote.get('inicio_janela', '?')}"
             + (f" · carregado em {t_sf:.1f}s" if t_sf else "")
             + f" · ag {len(df_ag):,} · pas {len(df_pastas):,} · "
-            f"opp {len(df_opps):,} · ven {len(df_ven_funil):,}".replace(",", ".")
+            f"opp {len(df_opps):,} · ven {len(df_ven_funil):,} · est {len(df_estoque):,}".replace(",", ".")
             + " · dados reutilizados em todos os empreendimentos abaixo"
         )
     except Exception as exc:
@@ -7198,11 +7938,98 @@ def render_aba_funil_empreendimentos(
         return float(t.get("vendas", 0)) * 1000 + sum(float(t.get(k, 0)) for k in FUNIL_ETAPAS)
 
     empreendimentos = sorted(empreendimentos, key=_score_emp, reverse=True)
-    st.info(f"{len(empreendimentos)} empreendimentos · exibidos em seções (sem filtro interativo).")
+    estoque_map = resumo_estoque_empreendimentos(df_estoque)
+    col_c_hist = col_contrato_gerado or achar_coluna(df_vendas, ALIASES_CONTRATO_GERADO)
 
-    for emp in empreendimentos:
-        key_slug = _plotly_key("emp", emp)
-        with st.expander(emp, expanded=False):
+    # Mapa empreendimento → canal (derivado das vendas SF)
+    mapa_emp_canal: Dict[str, str] = {}
+    if not df_ven_funil.empty and "Empreendimento" in df_ven_funil.columns:
+        col_ca = achar_coluna(df_ven_funil, ["Canal", "Imobiliária", "Imobiliaria"])
+        for emp_n in empreendimentos:
+            sub = df_ven_funil[df_ven_funil["Empreendimento"].map(_limpar_emp) == _limpar_emp(emp_n)]
+            if sub.empty:
+                continue
+            if "Canal_Agrupado" in sub.columns:
+                ca = sub["Canal_Agrupado"].mode()
+                mapa_emp_canal[emp_n] = str(ca.iloc[0]) if not ca.empty else "RIO"
+            elif col_ca and col_ca in sub.columns:
+                ca = sub[col_ca].astype(str).str.upper().str.strip().mode()
+                mapa_emp_canal[emp_n] = str(ca.iloc[0]) if not ca.empty else "RIO"
+
+    canais_disp = sorted(set(mapa_emp_canal.values()) | {"RIO", "DIR", "PARC", "RJ"})
+    default_emps = empreendimentos[: min(10, len(empreendimentos))]
+
+    st.markdown("#### Filtros")
+    fc1, fc2, fc3, fc4 = st.columns(4)
+    with fc1:
+        emps_sel = st.multiselect(
+            "Empreendimento",
+            empreendimentos,
+            default=default_emps,
+            key="funil_emp_sel",
+        )
+    with fc2:
+        canais_sel = st.multiselect(
+            "Canal",
+            canais_disp,
+            default=[],
+            key="funil_canal_sel",
+        )
+    with fc3:
+        data_ini = st.date_input(
+            "Data inicial análise",
+            value=janelas["ini_mes"],
+            key="funil_data_ini",
+        )
+    with fc4:
+        data_fim = st.date_input(
+            "Data final análise",
+            value=janelas["fim"],
+            key="funil_data_fim",
+        )
+
+    if canais_sel:
+        emps_sel = [
+            e for e in (emps_sel or empreendimentos)
+            if mapa_emp_canal.get(e, "RIO") in canais_sel
+        ]
+    emps_render = emps_sel or default_emps
+    if not emps_render:
+        st.info("Nenhum empreendimento corresponde aos filtros selecionados.")
+        return
+
+    janelas = _janelas_funil_emp(date.today())
+    janelas["ini_mes"] = data_ini
+    janelas["fim"] = data_fim
+    janelas["ini_7d_mes"] = max(data_ini, data_fim - timedelta(days=6))
+
+    st.info(
+        f"{len(emps_render)} empreendimento(s) · meta = regressão ({PAINEL_MESES_VENDAS}m vendas) "
+        f"limitada por estoque vendável (relatório {SF_REPORT_ESTOQUE_ID})."
+    )
+
+    if len(emps_render) <= 2:
+        cols_emp = st.columns(len(emps_render))
+        for col, emp in zip(cols_emp, emps_render):
+            with col:
+                key_slug = _plotly_key("emp", emp)
+                _render_secao_funil_empreendimento(
+                    emp,
+                    df_metas,
+                    df_ag,
+                    df_pastas,
+                    df_opps,
+                    df_ven_funil,
+                    janelas,
+                    key_slug,
+                    df_vendas_hist=df_vendas,
+                    col_contrato=col_c_hist,
+                    estoque_emp=estoque_map.get(_limpar_emp(emp)) or estoque_map.get(emp),
+                )
+    else:
+        for emp in emps_render:
+            key_slug = _plotly_key("emp", emp)
+            st.markdown(f"#### {emp}")
             _render_secao_funil_empreendimento(
                 emp,
                 df_metas,
@@ -7212,9 +8039,2754 @@ def render_aba_funil_empreendimentos(
                 df_ven_funil,
                 janelas,
                 key_slug,
+                df_vendas_hist=df_vendas,
+                col_contrato=col_c_hist,
+                estoque_emp=estoque_map.get(_limpar_emp(emp)) or estoque_map.get(emp),
+            )
+            st.divider()
+
+
+
+
+
+
+# Referência ao próprio módulo (substitui import velocimetro nos blocos inline)
+def _v_self():
+    import sys
+    return sys.modules[__name__]
+
+
+def _v():
+    return _v_self()
+
+# =============================================================================
+# PAINEL V2 (inline — ex-velocimetro_painel_v2.py)
+# =============================================================================
+
+# -*- coding: utf-8 -*-
+"""
+Painel v2 — metas Coordenadores + Canal, estoque analítico, velocímetros por coordenador.
+"""
+import calendar
+import html
+import math
+import re
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+# -----------------------------------------------------------------------------
+# Planilhas (somente metas)
+# -----------------------------------------------------------------------------
+
+FATORES_CANAL = {"RIO": 1.0, "DIR": 0.5, "PARC": 0.25, "RJ": 0.25, "TRI": 0.0}
+CANAIS_META = ["RIO", "DIR", "PARC", "RJ", "TRI"]
+TIPOS_INDICADOR = ("vendas", "agendamentos", "visitas")
+TIPOS_META_COL = ("Desafio", "BP", "BP 70%")
+
+COL_META_MAP = {
+    ("vendas", "Desafio"): "Meta Vendas Desafio",
+    ("vendas", "BP"): "Meta Vendas BP",
+    ("vendas", "BP 70%"): "Meta Vendas BP 70%",
+    ("agendamentos", "Desafio"): "Meta Agendamentos Desafio",
+    ("agendamentos", "BP"): "Meta Agendamentos BP",
+    ("agendamentos", "BP 70%"): "Meta Agendamentos BP 70%",
+    ("visitas", "Desafio"): "Meta Visitas Desafio",
+    ("visitas", "BP"): "Meta Visitas BP",
+    ("visitas", "BP 70%"): "Meta Visitas BP 70%",
+}
+
+ALIASES_ESTOQUE_VFK = ["Valor Final com Kit", "ValorFinalComKit__c", "Valor Final Com Kit"]
+ALIASES_ESTOQUE_AVAL = ["Valor de Avaliação Bancária", "Valor de Avaliação", "Valor_de_Avalia_o_Banc_ria__c"]
+ALIASES_ESTOQUE_FOLGA = ["Valor Folga", "Valor_Folga__c", "Folga Comercial", "Folga_Comercial__c"]
+ALIASES_ESTOQUE_BA = ["Bônus Adimplência", "Bonus Adimplencia", "B_nus_Adimpl_ncia__c"]
+ALIASES_ESTOQUE_IDENT = ["Identificador", "Identificador__c"]
+ALIASES_ESTOQUE_AREA = ["Area", "Área", "Area__c", "AreaComercial__c"]
+ALIASES_ESTOQUE_HABITE = [
+    "Habite-se", "Habite_se__c", "Previsão de expedição do habite-se",
+    "DataExpedicaoHabitese__c", "Data Expedição Habite-se",
+]
+ALIASES_ESTOQUE_TIPOLOGIA = ["Tipologia__c", "Tipologia"]
+
+
+def parse_identificador_unidade(ident: Any) -> Dict[str, str]:
+    import re
+    s = str(ident or "").strip().upper()
+    bloco = ""
+    m = re.search(r"BL\s*0*(\d+)", s)
+    if m:
+        bloco = m.group(1)
+    elif "-" in s:
+        bloco = s.split("-")[0].replace("BL", "").strip()
+    andar = s[-4:-2] if len(s) >= 4 else ""
+    return {"identificador": s, "bloco": bloco, "andar": andar}
+
+
+@dataclass
+class FiltrosPainelV2:
+    data_ini: date
+    data_fim: date
+    mes_meta: int
+    ano_meta: int
+    tipo_indicador: str
+    tipo_meta_col: str
+    canal_meta: str
+    coordenadores_sel: List[str]
+    emps_sel: List[str]
+
+
+
+
+def _parse_num_br(val: Any) -> float:
+    v = _v()
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return 0.0
+    if isinstance(val, (int, float)):
+        return float(val)
+    return float(v.parse_valor_br(val))
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def carregar_metas_coordenadores(_cred_fp: str) -> pd.DataFrame:
+    v = _v()
+    df = v.ler_planilha_aba_df(SPREADSHEET_METAS_COORD_ID, WS_METAS_COORD, _cred_fp)
+    df = v.normalizar_colunas(df)
+    if df.empty:
+        return df
+    ren = {}
+    for c in df.columns:
+        cl = c.strip().lower()
+        if cl in ("empreendimento", "obra"):
+            ren[c] = "Empreendimento"
+        elif cl == "coordenador":
+            ren[c] = "Coordenador"
+        elif cl in ("mês", "mes"):
+            ren[c] = "Mes"
+        elif cl == "ano":
+            ren[c] = "Ano"
+    df = df.rename(columns=ren)
+    for col in df.columns:
+        if col.startswith("Meta ") or col.startswith("Premiação") or col.startswith("Premiacao"):
+            df[col] = df[col].map(_parse_num_br)
+    if "Mes" in df.columns:
+        df["Mes_Num"] = pd.to_numeric(df["Mes"], errors="coerce").fillna(0).astype(int)
+    if "Ano" in df.columns:
+        df["Ano_Num"] = pd.to_numeric(df["Ano"], errors="coerce").fillna(0).astype(int)
+    return df
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def carregar_metas_canal(_cred_fp: str) -> pd.DataFrame:
+    v = _v()
+    df = v.ler_planilha_aba_df(SPREADSHEET_BASES_IVAN_ID, WS_CANAL, _cred_fp)
+    df = v.normalizar_colunas(df)
+    if df.empty:
+        return df
+    ren = {}
+    for c in df.columns:
+        cl = c.strip().lower()
+        if cl in ("mês", "mes"):
+            ren[c] = "Mes"
+        elif cl == "ano":
+            ren[c] = "Ano"
+        elif cl == "canal":
+            ren[c] = "Canal"
+        elif cl == "vgv":
+            ren[c] = "VGV"
+        elif cl == "vendas":
+            ren[c] = "Vendas"
+        elif "vgv real" in cl:
+            ren[c] = "VGV_Real"
+    df = df.rename(columns=ren)
+    for col in ("VGV", "Vendas", "VGV_Real"):
+        if col in df.columns:
+            df[col] = df[col].map(_parse_num_br)
+    if "Mes" in df.columns:
+        df["Mes_Num"] = pd.to_numeric(df["Mes"], errors="coerce").fillna(0).astype(int)
+    if "Ano" in df.columns:
+        df["Ano_Num"] = pd.to_numeric(df["Ano"], errors="coerce").fillna(0).astype(int)
+    if "Canal" in df.columns:
+        df["Canal"] = df["Canal"].astype(str).str.strip().str.upper()
+    return df
+
+
+def coluna_meta_coord(tipo_indicador: str, tipo_meta_col: str) -> str:
+    return COL_META_MAP.get((tipo_indicador, tipo_meta_col), "")
+
+
+def mapa_emp_coordenador(df_metas: pd.DataFrame, mes: int, ano: int) -> Dict[str, str]:
+    if df_metas is None or df_metas.empty:
+        return {}
+    m = df_metas.copy()
+    if "Mes_Num" in m.columns:
+        m = m[m["Mes_Num"] == mes]
+    if "Ano_Num" in m.columns:
+        m = m[m["Ano_Num"] == ano]
+    out: Dict[str, str] = {}
+    v = _v()
+    for _, row in m.iterrows():
+        emp = v._limpar_emp(row.get("Empreendimento"))
+        coord = str(row.get("Coordenador") or "").strip()
+        if emp and coord:
+            out[emp] = coord
+    return out
+
+
+def meta_canal_vgv_vendas(
+    df_canal: pd.DataFrame,
+    mes: int,
+    ano: int,
+    canal: str,
+) -> Tuple[float, float]:
+    """Retorna (meta_vgv, meta_vendas) escalados pelo fator do canal sobre linha RIO."""
+    if df_canal is None or df_canal.empty:
+        return 0.0, 0.0
+    base = df_canal.copy()
+    if "Mes_Num" in base.columns:
+        base = base[base["Mes_Num"] == mes]
+    if "Ano_Num" in base.columns:
+        base = base[base["Ano_Num"] == ano]
+    if base.empty or "Canal" not in base.columns:
+        return 0.0, 0.0
+    rio = base[base["Canal"].astype(str).str.strip().str.upper() == "RIO"]
+    if rio.empty:
+        return 0.0, 0.0
+    vgv_rio = float(rio["VGV"].sum()) if "VGV" in rio.columns else 0.0
+    ven_rio = float(rio["Vendas"].sum()) if "Vendas" in rio.columns else 0.0
+    fator = FATORES_CANAL.get((canal or "RIO").strip().upper(), 0.0)
+    return vgv_rio * fator, ven_rio * fator
+
+
+def soma_meta_coord(
+    df_metas: pd.DataFrame,
+    mes: int,
+    ano: int,
+    tipo_indicador: str,
+    tipo_meta_col: str,
+    coordenadores: Optional[List[str]] = None,
+    empreendimentos: Optional[List[str]] = None,
+) -> float:
+    col = coluna_meta_coord(tipo_indicador, tipo_meta_col)
+    if not col or df_metas is None or df_metas.empty or col not in df_metas.columns:
+        return 0.0
+    m = df_metas.copy()
+    if "Mes_Num" in m.columns:
+        m = m[m["Mes_Num"] == mes]
+    if "Ano_Num" in m.columns:
+        m = m[m["Ano_Num"] == ano]
+    if coordenadores:
+        m = m[m["Coordenador"].astype(str).str.strip().isin(coordenadores)]
+    if empreendimentos:
+        v = _v()
+        emps_norm = {v._limpar_emp(e) for e in empreendimentos}
+        m = m[m["Empreendimento"].map(lambda x: v._limpar_emp(x) in emps_norm)]
+    return float(pd.to_numeric(m[col], errors="coerce").fillna(0.0).sum())
+
+
+def escala_meta_regressao(
+    proj: Optional[Dict[str, Any]],
+    meta_mes: float,
+    hoje: Optional[date] = None,
+) -> Dict[str, float]:
+    """Meta dia/semana/mês usando curva da regressão de vendas."""
+    hoje = hoje or date.today()
+    dias_mes = calendar.monthrange(hoje.year, hoje.month)[1]
+    meta_mes = max(float(meta_mes), 0.0)
+    linear_pace = meta_mes * hoje.day / dias_mes if dias_mes else 0.0
+    if not proj or meta_mes <= 0:
+        return {
+            "meta_mes": meta_mes,
+            "meta_dia": meta_mes / dias_mes if dias_mes else 0.0,
+            "meta_semana": meta_mes * min(7, hoje.day) / dias_mes if dias_mes else 0.0,
+            "meta_acum_hoje": linear_pace,
+            "frac_hoje": hoje.day / dias_mes if dias_mes else 0.0,
+        }
+    pred_raw = proj.get("pred_reg_mes")
+    if pred_raw is not None:
+        pred = np.maximum(np.asarray(pred_raw, dtype=float), 0.0)
+    else:
+        ano, mes = hoje.year, hoje.month
+        dias = [date(ano, mes, d) for d in range(1, dias_mes + 1)]
+        v = _v()
+        modelo = proj.get("modelo") or {}
+        pred = np.maximum(
+            np.asarray(v.prever_qtd_dias(modelo, dias, incluir_mes=proj.get("incluir_mes", True)), dtype=float),
+            0.0,
+        )
+    total = float(pred.sum())
+    if total <= 1e-9:
+        frac = hoje.day / dias_mes if dias_mes else 0.0
+    else:
+        frac = float(pred[: hoje.day].sum()) / total
+    meta_acum = meta_mes * frac
+    pesos = pred / total if total > 1e-9 else np.ones(dias_mes) / max(dias_mes, 1)
+    meta_dia = meta_mes * float(pesos[hoje.day - 1]) if hoje.day <= len(pesos) else 0.0
+    ini_sem = max(1, hoje.day - hoje.weekday())
+    meta_semana = meta_mes * float(pesos[ini_sem - 1 : hoje.day].sum())
+    return {
+        "meta_mes": meta_mes,
+        "meta_dia": meta_dia,
+        "meta_semana": meta_semana,
+        "meta_acum_hoje": meta_acum,
+        "frac_hoje": frac,
+    }
+
+
+def filtrar_vendas_painel_v2(
+    df_vendas: pd.DataFrame,
+    filtros: FiltrosPainelV2,
+    col_contrato: str,
+    col_canal: Optional[str] = None,
+    aplicar_periodo: bool = True,
+) -> pd.DataFrame:
+    """Recorte de vendas alinhado aos filtros v2 (período, emp, canal)."""
+    v = _v()
+    base = df_vendas.copy()
+    if filtros.emps_sel and "Empreendimento" in base.columns:
+        emps = {v._limpar_emp(e) for e in filtros.emps_sel}
+        base = base[base["Empreendimento"].map(v._limpar_emp).isin(emps)]
+    if aplicar_periodo and col_contrato and col_contrato in base.columns:
+        base = _filtrar_df_periodo(base, col_contrato, filtros.data_ini, filtros.data_fim)
+    canal = (filtros.canal_meta or "RIO").strip().upper()
+    if canal != "RIO" and not base.empty:
+        mask = pd.Series(False, index=base.index)
+        if canal == "DIR":
+            mask |= base.get("Canal_Agrupado", pd.Series("", index=base.index)) == "DV RJ"
+        elif canal == "PARC" and col_canal:
+            mask |= base[col_canal].astype(str).str.upper().str.strip().apply(
+                lambda x: x.split("-")[0].strip() == "RJG" or x == "RJG"
+            )
+        elif canal == "RJ" and col_canal:
+            mask |= base[col_canal].astype(str).str.upper().str.strip().apply(
+                lambda x: x.split("-")[0].strip() == "RJ" or x == "RJ"
+            )
+        elif canal == "TRI":
+            mask = pd.Series(False, index=base.index)
+        base = base[mask]
+    return base
+
+
+def _filtrar_df_periodo(df: pd.DataFrame, col: str, ini: date, fim: date) -> pd.DataFrame:
+    v = _v()
+    if df is None or df.empty or not col or col not in df.columns:
+        return df.iloc[0:0].copy() if df is not None else pd.DataFrame()
+    out = df.copy()
+    out["_dt"] = v.parse_data_serie(out[col])
+    out = out.dropna(subset=["_dt"])
+    return out.loc[(out["_dt"].dt.date >= ini) & (out["_dt"].dt.date <= fim)]
+
+
+def empreendimentos_de_coord(
+    mapa: Dict[str, str],
+    coordenadores: List[str],
+) -> List[str]:
+    coords = {c.strip() for c in coordenadores}
+    return sorted(emp for emp, c in mapa.items() if c in coords)
+
+
+def realizado_vendas_periodo(
+    df_vendas: pd.DataFrame,
+    col_contrato: str,
+    ini: date,
+    fim: date,
+    empreendimentos: Optional[List[str]] = None,
+) -> Tuple[float, float]:
+    v = _v()
+    base = _filtrar_df_periodo(df_vendas, col_contrato, ini, fim)
+    if empreendimentos and "Empreendimento" in base.columns:
+        emps = {v._limpar_emp(e) for e in empreendimentos}
+        base = base[base["Empreendimento"].map(v._limpar_emp).isin(emps)]
+    qtd = float(base["_qtd_venda"].sum()) if "_qtd_venda" in base.columns else float(len(base))
+    vgv = float(base["_vgv_venda"].sum()) if "_vgv_venda" in base.columns else 0.0
+    return qtd, vgv
+
+
+def realizado_funil_periodo(
+    df_ag: pd.DataFrame,
+    df_pastas: pd.DataFrame,
+    df_vendas: pd.DataFrame,
+    emp: str,
+    ini: date,
+    fim: date,
+) -> Dict[str, float]:
+    v = _v()
+    return v.totais_funil_empreendimento(df_ag, df_pastas, df_vendas, emp, ini, fim)
+
+
+def _preco_tabela_row(row: pd.Series, v) -> float:
+    vfk = _parse_num_br(row.get(v.achar_coluna(pd.DataFrame([row]), ALIASES_ESTOQUE_VFK) or ""))
+    if vfk <= 0:
+        for a in ALIASES_ESTOQUE_VFK:
+            if a in row.index:
+                vfk = _parse_num_br(row.get(a))
+                break
+    ba = 0.0
+    folga = 0.0
+    for a in ALIASES_ESTOQUE_BA:
+        if a in row.index:
+            ba = _parse_num_br(row.get(a))
+            break
+    for a in ALIASES_ESTOQUE_FOLGA:
+        if a in row.index:
+            folga = _parse_num_br(row.get(a))
+            break
+    if vfk <= 0:
+        cols = list(row.index)
+        vfk = _parse_num_br(row.get(v.achar_coluna(pd.DataFrame(columns=cols), ALIASES_ESTOQUE_VFK) or ""))
+    return max(vfk - ba - folga, 0.0)
+
+
+def is_garden(identificador: Any) -> bool:
+    s = str(identificador or "").strip().upper()
+    if not s or len(s) < 4:
+        return False
+    andar = s[-4:-2] if len(s) >= 4 else ""
+    return andar == "01"
+
+
+def agregar_estoque(df_est: pd.DataFrame) -> Tuple[Dict[str, Any], pd.DataFrame]:
+    """KPI global + dataframe enriquecido por unidade."""
+    v = _v()
+    if df_est is None or df_est.empty:
+        return {"unidades": 0, "vgv": 0.0, "ticket": 0.0}, pd.DataFrame()
+    df = df_est.copy()
+    col_vfk = v.achar_coluna(df, ALIASES_ESTOQUE_VFK)
+    col_av = v.achar_coluna(df, ALIASES_ESTOQUE_AVAL)
+    col_folga = v.achar_coluna(df, ALIASES_ESTOQUE_FOLGA)
+    col_ba = v.achar_coluna(df, ALIASES_ESTOQUE_BA)
+    col_tip = v.achar_coluna(df, ALIASES_ESTOQUE_TIPOLOGIA)
+    col_id = v.achar_coluna(df, ALIASES_ESTOQUE_IDENT)
+    col_area = v.achar_coluna(df, ALIASES_ESTOQUE_AREA)
+    col_hab = v.achar_coluna(df, ALIASES_ESTOQUE_HABITE)
+    col_emp = v.achar_coluna(df, v.ALIASES_EMPREENDIMENTO) or "Empreendimento"
+
+    def _col_val(row, col):
+        return _parse_num_br(row.get(col)) if col and col in row.index else 0.0
+
+    rows = []
+    for _, r in df.iterrows():
+        vfk = _col_val(r, col_vfk)
+        ba = _col_val(r, col_ba)
+        folga = _col_val(r, col_folga)
+        aval = _col_val(r, col_av)
+        preco_tab = max(vfk - ba - folga, 0.0)
+        area = _col_val(r, col_area)
+        ident = r.get(col_id) if col_id else ""
+        parsed = parse_identificador_unidade(ident) if ident else {"identificador": "", "bloco": "", "andar": ""}
+        tipologia = str(r.get(col_tip) or "").strip() if col_tip else ""
+        hab = r.get(col_hab) if col_hab else None
+        rows.append({
+            "Empreendimento": v._limpar_emp(r.get(col_emp)),
+            "Identificador": ident,
+            "Bloco": parsed.get("bloco", ""),
+            "Andar": parsed.get("andar", ""),
+            "Tipologia": tipologia,
+            "VFK": vfk,
+            "BA": ba,
+            "Folga": folga,
+            "Avaliacao": aval,
+            "PrecoTabela": preco_tab,
+            "Area": area,
+            "HabiteSe": hab,
+            "Garden": is_garden(ident),
+            "Desenquadrado": aval > preco_tab if preco_tab > 0 and aval > 0 else False,
+            "AtoNecessario": max(0.0, preco_tab - 0.8 * aval) if aval > 0 else 0.0,
+            "Investidor": str(r.get("Possui Investidor") or r.get("Possui_Investidor__c") or "").strip().upper()
+            in ("TRUE", "1", "SIM", "YES"),
+        })
+    enr = pd.DataFrame(rows)
+    vgv = float(enr["PrecoTabela"].sum()) if not enr.empty else 0.0
+    n = len(enr)
+    kpi = {"unidades": n, "vgv": vgv, "ticket": (vgv / n if n else 0.0)}
+    return kpi, enr
+
+
+def resumo_estoque_por_emp(enr: pd.DataFrame, hoje: Optional[date] = None) -> pd.DataFrame:
+    v = _v()
+    hoje = hoje or date.today()
+    if enr is None or enr.empty:
+        return pd.DataFrame()
+    out_rows = []
+    for emp, g in enr.groupby("Empreendimento"):
+        n = len(g)
+        gardens = int(g["Garden"].sum())
+        pct_garden = gardens / n * 100.0 if n else 0.0
+        hab_dates = []
+        for h in g["HabiteSe"].dropna():
+            dt = v.parse_data_serie(pd.Series([h])).iloc[0] if h is not None else pd.NaT
+            if pd.notna(dt):
+                hab_dates.append(dt.date() if hasattr(dt, "date") else dt)
+        if hab_dates:
+            hab_ref = min(hab_dates)
+            if hab_ref <= hoje:
+                hab_txt = "Pronto"
+                meses_hab = 0.0
+            else:
+                hab_txt = f"{(hab_ref - hoje).days / 30.4:.1f} meses"
+                meses_hab = (hab_ref - hoje).days / 30.4
+        else:
+            hab_txt = "—"
+            meses_hab = 0.0
+        vendas_mes_nec = (n / meses_hab) if meses_hab > 0.1 else 0.0
+        desenq = float(g["Desenquadrado"].mean() * 100.0) if n else 0.0
+        n_inv = int(g["Investidor"].sum()) if "Investidor" in g.columns else 0
+        pct_inv = n_inv / n * 100.0 if n else 0.0
+        out_rows.append({
+            "Empreendimento": emp,
+            "Unidades": n,
+            "Diff_Avaliacao": float(g["Avaliacao"].sum() - g["PrecoTabela"].sum()),
+            "m2_Total": float(g["Area"].sum()),
+            "VGV_Tabela": float(g["PrecoTabela"].sum()),
+            "m2_Medio": float(g["Area"].mean()) if n else 0.0,
+            "Preco_m2_Medio": float(g["PrecoTabela"].sum() / g["Area"].sum()) if g["Area"].sum() > 0 else 0.0,
+            "Pct_Garden": pct_garden,
+            "HabiteSe": hab_txt,
+            "Vendas_Mes_Necessarias": vendas_mes_nec,
+            "Desenquadramento_Pct": desenq,
+            "Ato_Necessario": float(g["AtoNecessario"].sum()),
+            "Preco_Medio_Tabela": float(g["PrecoTabela"].mean()) if n else 0.0,
+            "Pct_Tabela_Investidor": pct_inv,
+            "Pct_Tabela_Direta": 100.0 - pct_inv,
+        })
+    return pd.DataFrame(out_rows)
+
+
+def _metricas_vendas_avancadas(
+    df_vendas: pd.DataFrame,
+    emp: str,
+    ini: date,
+    fim: date,
+    col_contrato: str,
+) -> Dict[str, float]:
+    v = _v()
+    base = _filtrar_df_periodo(df_vendas, col_contrato, ini, fim)
+    if base.empty or "Empreendimento" not in base.columns:
+        return {"vendas_futuras": 0.0, "vendas_comunicadas": 0.0}
+    base = base[base["Empreendimento"].map(v._limpar_emp) == v._limpar_emp(emp)]
+    vf = 0.0
+    vc = 0.0
+    for col in ("Venda futura", "VendaFutura__c"):
+        if col in base.columns:
+            vf = float(base[col].astype(str).str.upper().isin(("TRUE", "1", "SIM", "YES")).sum())
+            break
+    for col in ("Venda comunicada", "VendaComunicadaAutomaticamente__c"):
+        if col in base.columns:
+            vc = float(base[col].astype(str).str.upper().isin(("TRUE", "1", "SIM", "YES")).sum())
+            break
+    return {"vendas_futuras": vf, "vendas_comunicadas": vc}
+
+
+def _metricas_renda_90d(
+    df_pastas: pd.DataFrame,
+    emp: str,
+    fim: date,
+) -> float:
+    v = _v()
+    if df_pastas is None or df_pastas.empty:
+        return 0.0
+    ini = fim - timedelta(days=90)
+    col_e = v.achar_coluna(df_pastas, v.ALIASES_EMPREENDIMENTO)
+    col_d = v.achar_coluna_primeiro_envio_analise(df_pastas) or v.achar_coluna(
+        df_pastas, v.ALIASES_DATA_CRIACAO
+    )
+    if not col_e or not col_d:
+        return 0.0
+    sub = _filtrar_df_periodo(df_pastas, col_d, ini, fim)
+    sub = sub[sub[col_e].map(v._limpar_emp) == v._limpar_emp(emp)]
+    col_renda = None
+    for c in ("Valor da Renda", "Renda", "Valor_da_Renda__c", "Renda__c"):
+        if c in sub.columns:
+            col_renda = c
+            break
+    if not col_renda or sub.empty:
+        return 0.0
+    vals = sub[col_renda].map(_parse_num_br)
+    vals = vals[vals > 0]
+    return float(vals.mean()) if not vals.empty else 0.0
+
+
+def _metricas_cotacoes_emp(
+    df_cot: pd.DataFrame,
+    emp: str,
+    ini: date,
+    fim: date,
+) -> Dict[str, float]:
+    v = _v()
+    if df_cot is None or df_cot.empty:
+        return {"vcx": 0.0, "pct_pro_soluto": 0.0, "pct_fluxo_escalonado": 0.0}
+    col_e = v.achar_coluna(df_cot, v.ALIASES_EMPREENDIMENTO)
+    col_d = v.achar_coluna(df_cot, v.ALIASES_DATA_CRIACAO)
+    if not col_e:
+        return {"vcx": 0.0, "pct_pro_soluto": 0.0, "pct_fluxo_escalonado": 0.0}
+    sub = df_cot[df_cot[col_e].map(v._limpar_emp) == v._limpar_emp(emp)]
+    if col_d:
+        sub = _filtrar_df_periodo(sub, col_d, ini, fim)
+    vcx = 0.0
+    for col in ("Volta ao caixa", "VoltaAoCaixa__c"):
+        if col in sub.columns:
+            vcx = float(sub[col].astype(str).str.upper().isin(("TRUE", "1", "SIM", "YES")).sum())
+            break
+    pct_ps = 0.0
+    col_ps = None
+    for col in ("Percentual Pro Soluto", "PercentualdoProSoluto__c"):
+        if col in sub.columns:
+            col_ps = col
+            break
+    if col_ps and not sub.empty:
+        pct_ps = float(sub[col_ps].map(_parse_num_br).mean())
+    tem_ps = 0.0
+    for col in ("Tem Pro Soluto", "TemProSoluto__c"):
+        if col in sub.columns and not sub.empty:
+            tem_ps = float(sub[col].astype(str).str.upper().isin(("TRUE", "1", "SIM", "YES")).mean() * 100.0)
+            break
+    return {"vcx": vcx, "pct_pro_soluto": pct_ps, "pct_fluxo_escalonado": tem_ps}
+
+
+def montar_tabela_analitica(
+    empreendimentos: List[str],
+    df_est_enr: pd.DataFrame,
+    resumo_est: pd.DataFrame,
+    df_vendas: pd.DataFrame,
+    df_ag: pd.DataFrame,
+    df_pastas: pd.DataFrame,
+    df_metas_coord: pd.DataFrame,
+    filtros: FiltrosPainelV2,
+    col_contrato: str,
+    proj: Optional[Dict[str, Any]],
+    df_cotacoes: Optional[pd.DataFrame] = None,
+    df_pastas_aprov: Optional[pd.DataFrame] = None,
+    df_tabela_comp: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
+    v = _v()
+    rows = []
+    mapa_coord = mapa_emp_coordenador(df_metas_coord, filtros.mes_meta, filtros.ano_meta)
+    for emp in empreendimentos:
+        emp_c = v._limpar_emp(emp)
+        meta_m = soma_meta_coord(
+            df_metas_coord, filtros.mes_meta, filtros.ano_meta,
+            filtros.tipo_indicador, filtros.tipo_meta_col,
+            empreendimentos=[emp_c],
+        )
+        esc = escala_meta_regressao(proj, meta_m)
+        funil = realizado_funil_periodo(
+            df_ag, df_pastas, df_vendas, emp_c,
+            filtros.data_ini, filtros.data_fim,
+        )
+        ven_qtd, ven_vgv = realizado_vendas_periodo(
+            df_vendas, col_contrato, filtros.data_ini, filtros.data_fim, [emp_c],
+        )
+        res_est = resumo_est.loc[resumo_est["Empreendimento"] == emp_c] if not resumo_est.empty else pd.DataFrame()
+        base_est = res_est.iloc[0].to_dict() if not res_est.empty else {}
+        conv_ag_vis = v.taxa_conversao(funil.get("agendamentos", 0), funil.get("visitas", 0))
+        conv_vis_pas = v.taxa_conversao(funil.get("visitas", 0), funil.get("pastas", 0))
+        conv_pas_ap = v.taxa_conversao(funil.get("pastas", 0), funil.get("pastas_aprovadas", 0))
+        conv_ap_ven = v.taxa_conversao(funil.get("pastas_aprovadas", 0), funil.get("vendas", 0))
+        preco_venda = 0.0
+        ven_emp = _filtrar_df_periodo(df_vendas, col_contrato, filtros.data_ini, filtros.data_fim)
+        if not ven_emp.empty and "Empreendimento" in ven_emp.columns:
+            ve = ven_emp[ven_emp["Empreendimento"].map(v._limpar_emp) == emp_c]
+            col_val = v.achar_coluna(ve, ["Valor Real de Venda", "Valor Real", "Valor"])
+            if col_val and not ve.empty:
+                preco_venda = float(ve[col_val].map(_parse_num_br).mean())
+        meta_ano = soma_meta_coord(
+            df_metas_coord, filtros.mes_meta, filtros.ano_meta,
+            "vendas", filtros.tipo_meta_col, empreendimentos=[emp_c],
+        )
+        meta_ano *= 12 / max(filtros.mes_meta, 1)
+        ven_ano_ini = date(filtros.ano_meta, 1, 1)
+        ven_ano_fim = date(filtros.ano_meta, 12, 31)
+        ven_ano, _ = realizado_vendas_periodo(df_vendas, col_contrato, ven_ano_ini, ven_ano_fim, [emp_c])
+        ven_adv = _metricas_vendas_avancadas(df_vendas, emp_c, filtros.data_ini, filtros.data_fim, col_contrato)
+        renda_90 = _metricas_renda_90d(df_pastas, emp_c, filtros.data_fim)
+        cot = _metricas_cotacoes_emp(df_cotacoes, emp_c, filtros.data_ini, filtros.data_fim)
+        res_pc = calcular_resumo_ineficiencia_emp(
+            df_pastas_aprov if df_pastas_aprov is not None else pd.DataFrame(),
+            df_est_enr,
+            df_vendas,
+            df_tabela_comp if df_tabela_comp is not None else pd.DataFrame(),
+            emp_c,
+        )
+        row = {
+            "Empreendimento": emp_c,
+            "Coordenador": mapa_coord.get(emp_c, ""),
+            "Unidades_Estoque": base_est.get("Unidades", 0),
+            "Diff_Avaliacao": base_est.get("Diff_Avaliacao", 0),
+            "VGV_Estoque": base_est.get("VGV_Tabela", 0),
+            "Pct_Garden": base_est.get("Pct_Garden", 0),
+            "HabiteSe": base_est.get("HabiteSe", "—"),
+            "Vendas_Mes_Nec": base_est.get("Vendas_Mes_Necessarias", 0),
+            "Desenquadramento_Pct": base_est.get("Desenquadramento_Pct", 0),
+            "Ato_Necessario": base_est.get("Ato_Necessario", 0),
+            "Pct_Tabela_Direta": base_est.get("Pct_Tabela_Direta", 0),
+            "Pct_Tabela_Investidor": base_est.get("Pct_Tabela_Investidor", 0),
+            "Vendas_Realizadas": ven_qtd,
+            "Vendas_Futuras": ven_adv["vendas_futuras"],
+            "Vendas_Comunicadas": ven_adv["vendas_comunicadas"],
+            "VCX": cot["vcx"],
+            "Pct_Pro_Soluto": cot["pct_pro_soluto"],
+            "Pct_Fluxo_Escalonado": cot["pct_fluxo_escalonado"],
+            "Renda_Media_90d": renda_90,
+            "Pastas_Aprovadas": res_pc.pastas_aprovadas,
+            "Pastas_PC_Suficiente": res_pc.pastas_pc_suficiente,
+            "Ineficiencia_Qtd": res_pc.ineficiencia_qtd,
+            "Ineficiencia_Pct": res_pc.ineficiencia_pct,
+            "Meta_Dia": esc["meta_dia"],
+            "Meta_Semana": esc["meta_semana"],
+            "Meta_Mes": meta_m,
+            "Pct_Meta_Dia": (ven_qtd / esc["meta_dia"] * 100) if esc["meta_dia"] > 0 else 0,
+            "Pct_Meta_Semana": (ven_qtd / esc["meta_semana"] * 100) if esc["meta_semana"] > 0 else 0,
+            "Pct_Meta_Mes": (ven_qtd / meta_m * 100) if meta_m > 0 else 0,
+            "Agendamentos": funil.get("agendamentos", 0),
+            "Visitas": funil.get("visitas", 0),
+            "Pastas": funil.get("pastas", 0),
+            "Pastas_Aprov": funil.get("pastas_aprovadas", 0),
+            "Conv_Ag_Vis": conv_ag_vis,
+            "Conv_Vis_Pas": conv_vis_pas,
+            "Conv_Pas_Ap": conv_pas_ap,
+            "Conv_Ap_Ven": conv_ap_ven,
+            "Preco_Medio_Venda": preco_venda,
+            "Preco_Medio_Tabela": base_est.get("Preco_Medio_Tabela", 0),
+            "Meta_Ano": meta_ano,
+            "Vendido_Ano": ven_ano,
+        }
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def render_filtros_painel_v2(
+    df_metas_coord: pd.DataFrame,
+    cred_fp: str,
+) -> FiltrosPainelV2:
+    hoje = date.today()
+    ini_mes = date(hoje.year, hoje.month, 1)
+    coords = sorted(
+        str(c).strip()
+        for c in (df_metas_coord.get("Coordenador") or pd.Series()).dropna().unique()
+        if str(c).strip()
+    )
+    emps = sorted(
+        str(e).strip()
+        for e in (df_metas_coord.get("Empreendimento") or pd.Series()).dropna().unique()
+        if str(e).strip()
+    )
+    st.markdown("#### Filtros de análise")
+    c1, c2, c3, c4 = st.columns(4)
+    with c1:
+        data_ini = st.date_input("Data inicial", value=ini_mes, key="v2_data_ini")
+    with c2:
+        data_fim = st.date_input("Data final", value=hoje, key="v2_data_fim")
+    with c3:
+        mes_meta = st.selectbox("Mês meta", list(range(1, 13)), index=hoje.month - 1, key="v2_mes_meta")
+    with c4:
+        ano_meta = st.number_input("Ano meta", min_value=2020, max_value=2035, value=hoje.year, key="v2_ano_meta")
+    c5, c6, c7, c8 = st.columns(4)
+    with c5:
+        tipo_indicador = st.selectbox("Indicador", TIPOS_INDICADOR, key="v2_tipo_ind")
+    with c6:
+        tipo_meta_col = st.selectbox("Tipo meta", TIPOS_META_COL, key="v2_tipo_meta")
+    with c7:
+        canal_meta = st.selectbox("Canal (velocímetro principal)", CANAIS_META, key="v2_canal")
+    with c8:
+        coords_sel = st.multiselect("Coordenadores", coords, default=coords, key="v2_coords")
+    emps_sel = st.multiselect("Empreendimentos (opcional)", emps, default=[], key="v2_emps")
+    return FiltrosPainelV2(
+        data_ini=data_ini,
+        data_fim=data_fim,
+        mes_meta=int(mes_meta),
+        ano_meta=int(ano_meta),
+        tipo_indicador=tipo_indicador,
+        tipo_meta_col=tipo_meta_col,
+        canal_meta=canal_meta,
+        coordenadores_sel=coords_sel,
+        emps_sel=emps_sel,
+    )
+
+
+def render_kpi_estoque(kpi: Dict[str, Any]) -> None:
+    v = _v()
+    st.markdown(
+        f"""
+        <div class="vel-kpi-row">
+            <div class="vel-kpi"><div class="lbl">Unidades em estoque (RJ)</div>
+            <div class="val">{int(kpi.get('unidades', 0))}</div></div>
+            <div class="vel-kpi"><div class="lbl">VGV em estoque</div>
+            <div class="val">{v.fmt_br_milhoes(float(kpi.get('vgv', 0)))}</div></div>
+            <div class="vel-kpi"><div class="lbl">Ticket médio estoque</div>
+            <div class="val">{v.fmt_br_milhoes(float(kpi.get('ticket', 0)))}</div></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_velocimetro_principal(
+    filtros: FiltrosPainelV2,
+    df_canal: pd.DataFrame,
+    df_metas_coord: pd.DataFrame,
+    realizado_qtd: float,
+    realizado_vgv: float,
+    meta_qtd: float,
+    meta_vgv: float,
+    esc: Dict[str, float],
+) -> None:
+    v = _v()
+    st.subheader("Velocímetro principal")
+    titulo = f"{filtros.canal_meta} · {filtros.tipo_indicador.title()} · {filtros.tipo_meta_col}"
+    if filtros.tipo_indicador == "vendas":
+        c1, c2, c3 = st.columns([1, 2, 1])
+        with c2:
+            v.criar_medidor(
+                titulo, realizado_qtd, meta_qtd, realizado_vgv, meta_vgv, realizado_qtd,
+                mostrar_vgv=True,
+            )
+    else:
+        c1, c2, c3 = st.columns([1, 2, 1])
+        with c2:
+            v.criar_medidor(
+                titulo, realizado_qtd, meta_qtd, 0.0, 0.0, realizado_qtd,
+                mostrar_vgv=False,
+            )
+    st.caption(
+        f"Meta acumulada (regressão): {v.fmt_qtd(esc['meta_acum_hoje'])} · "
+        f"Meta dia: {v.fmt_qtd(esc['meta_dia'])} · "
+        f"Meta semana: {v.fmt_qtd(esc['meta_semana'])}"
+    )
+
+
+def render_velocimetros_coordenador(
+    filtros: FiltrosPainelV2,
+    df_metas_coord: pd.DataFrame,
+    df_vendas: pd.DataFrame,
+    df_ag: pd.DataFrame,
+    df_pastas: pd.DataFrame,
+    col_contrato: str,
+    mapa_coord: Dict[str, str],
+) -> None:
+    v = _v()
+    st.subheader("Por coordenador")
+    coords = filtros.coordenadores_sel or sorted(set(mapa_coord.values()))
+    if not coords:
+        st.info("Nenhum coordenador na planilha de metas.")
+        return
+    cols = st.columns(min(3, len(coords)) or 1)
+    for i, coord in enumerate(coords):
+        emps = empreendimentos_de_coord(mapa_coord, [coord])
+        if filtros.emps_sel:
+            emps = [e for e in emps if e in {v._limpar_emp(x) for x in filtros.emps_sel}]
+        meta = soma_meta_coord(
+            df_metas_coord, filtros.mes_meta, filtros.ano_meta,
+            filtros.tipo_indicador, filtros.tipo_meta_col,
+            coordenadores=[coord], empreendimentos=emps or None,
+        )
+        if filtros.tipo_indicador == "vendas":
+            qtd, vgv = realizado_vendas_periodo(
+                df_vendas, col_contrato, filtros.data_ini, filtros.data_fim, emps or None,
+            )
+            with cols[i % len(cols)]:
+                v.criar_medidor(coord, qtd, meta, vgv, 0.0, qtd, mostrar_vgv=filtros.tipo_indicador == "vendas")
+        else:
+            tot = 0.0
+            for emp in (emps or []):
+                f = realizado_funil_periodo(
+                    df_ag, df_pastas, df_vendas, emp,
+                    filtros.data_ini, filtros.data_fim,
+                )
+                tot += float(f.get(filtros.tipo_indicador, 0))
+            with cols[i % len(cols)]:
+                v.criar_medidor(coord, tot, meta, 0.0, 0.0, tot, mostrar_vgv=False)
+
+
+def render_tabela_analitica(df: pd.DataFrame) -> None:
+    v = _v()
+    st.subheader("Analítico por empreendimento")
+    if df is None or df.empty:
+        st.info("Sem dados para a tabela analítica.")
+        return
+
+    def _style_desenq(val):
+        try:
+            if float(val) > 50:
+                return "color: #cb0935; font-weight: bold"
+        except (TypeError, ValueError):
+            pass
+        return ""
+
+    sty = df.style.map(_style_desenq, subset=["Desenquadramento_Pct"])
+    st.dataframe(sty, use_container_width=True, hide_index=True)
+
+
+def render_comparativo_mtd_por_emp(
+    df_vendas: pd.DataFrame,
+    df_ag: pd.DataFrame,
+    df_pastas: pd.DataFrame,
+    col_contrato: str,
+    empreendimentos: List[str],
+    resumo_est: Optional[pd.DataFrame] = None,
+) -> None:
+    v = _v()
+    dia_atual = datetime.now().day
+    st.markdown("##### Comparativo MTD por empreendimento (dia 01 → dia atual)")
+    if not empreendimentos:
+        st.info("Selecione empreendimentos ou use filtros para ver a tabela.")
+        return
+    rows = []
+    indicadores = [
+        ("Vendas", df_vendas, col_contrato),
+        ("Agendamentos", df_ag, v.achar_coluna(df_ag, v.ALIASES_DATA_CRIACAO)),
+        ("Visitas", df_ag, v.achar_coluna(df_ag, getattr(v, "ALIASES_DATA_VISITA", ["Data da visita"]))),
+        ("Pastas", df_pastas, v.achar_coluna_primeiro_envio_analise(df_pastas)),
+    ]
+    df_pas_ap = v.deduplicar_pastas_aprovadas_funil(df_pastas)
+    col_safi = v.achar_coluna_aprovacao_safi(df_pas_ap)
+    indicadores.append(("Pastas Aprov", df_pas_ap, col_safi))
+    for emp in empreendimentos[:50]:
+        emp_c = v._limpar_emp(emp)
+        for nome, dff, col_d in indicadores:
+            if dff is None or dff.empty or not col_d:
+                continue
+            sub = dff.copy()
+            col_e = v.achar_coluna(sub, v.ALIASES_EMPREENDIMENTO)
+            if col_e:
+                sub = sub[sub[col_e].map(v._limpar_emp) == emp_c]
+            comp = v._montar_df_comparativo_mtd_parcial(sub, col_d, dia_atual)
+            if comp.empty:
+                continue
+            ult = comp.iloc[-1]
+            rows.append({
+                "Empreendimento": emp_c,
+                "Indicador": nome,
+                "Ultimo_Periodo": ult.get("Periodo", ""),
+                "QTD_MTD_Parcial": ult.get("QTD", 0),
+            })
+        if resumo_est is not None and not resumo_est.empty and col_contrato:
+            hoje = date.today()
+            ini_mes = date(hoje.year, hoje.month, 1)
+            ven_emp = _filtrar_df_periodo(df_vendas, col_contrato, ini_mes, hoje)
+            if not ven_emp.empty and "Empreendimento" in ven_emp.columns:
+                ve = ven_emp[ven_emp["Empreendimento"].map(v._limpar_emp) == emp_c]
+                col_val = v.achar_coluna(ve, ["Valor Real de Venda", "Valor Real", "Valor"])
+                preco_v = float(ve[col_val].map(_parse_num_br).mean()) if col_val and not ve.empty else 0.0
+                rs = resumo_est.loc[resumo_est["Empreendimento"] == emp_c]
+                preco_t = float(rs["Preco_Medio_Tabela"].iloc[0]) if not rs.empty else 0.0
+                rows.append({
+                    "Empreendimento": emp_c,
+                    "Indicador": "Preço venda vs tabela",
+                    "Ultimo_Periodo": hoje.strftime("%m/%Y"),
+                    "QTD_MTD_Parcial": preco_v,
+                    "Preco_Medio_Tabela": preco_t,
+                })
+    if rows:
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
+
+def render_painel_metas_v2(
+    df_vendas: pd.DataFrame,
+    df_vendas_painel: pd.DataFrame,
+    col_contrato_gerado: Optional[str],
+    cred_fp: str,
+    df_estoque: Optional[pd.DataFrame] = None,
+    df_ag: Optional[pd.DataFrame] = None,
+    df_pastas: Optional[pd.DataFrame] = None,
+    df_cotacoes: Optional[pd.DataFrame] = None,
+    df_pastas_aprov: Optional[pd.DataFrame] = None,
+    df_tabela_comp: Optional[pd.DataFrame] = None,
+    proj: Optional[Dict[str, Any]] = None,
+) -> FiltrosPainelV2:
+    """Renderiza seção v2: estoque, velocímetros, tabela analítica."""
+    v = _v()
+    try:
+        df_metas_coord = carregar_metas_coordenadores(cred_fp)
+        df_canal = carregar_metas_canal(cred_fp)
+    except Exception as exc:
+        st.error(f"Erro ao carregar planilhas de meta: {exc}")
+        return FiltrosPainelV2(
+            date.today().replace(day=1), date.today(),
+            date.today().month, date.today().year,
+            "vendas", "Desafio", "RIO", [], [],
+        )
+
+    filtros = render_filtros_painel_v2(df_metas_coord, cred_fp)
+    mapa_coord = mapa_emp_coordenador(df_metas_coord, filtros.mes_meta, filtros.ano_meta)
+
+    kpi_est, enr = agregar_estoque(df_estoque if df_estoque is not None else pd.DataFrame())
+    render_kpi_estoque(kpi_est)
+    resumo_est = resumo_estoque_por_emp(enr)
+
+    if filtros.tipo_indicador == "vendas":
+        meta_vgv, meta_qtd = meta_canal_vgv_vendas(
+            df_canal, filtros.mes_meta, filtros.ano_meta, filtros.canal_meta,
+        )
+        if meta_qtd <= 0:
+            meta_qtd = soma_meta_coord(
+                df_metas_coord, filtros.mes_meta, filtros.ano_meta,
+                "vendas", filtros.tipo_meta_col,
+            )
+        real_qtd, real_vgv = realizado_vendas_periodo(
+            df_vendas, col_contrato_gerado or "", filtros.data_ini, filtros.data_fim,
+            filtros.emps_sel or None,
+        )
+    else:
+        meta_vgv = 0.0
+        meta_qtd = soma_meta_coord(
+            df_metas_coord, filtros.mes_meta, filtros.ano_meta,
+            filtros.tipo_indicador, filtros.tipo_meta_col,
+            filtros.emps_sel or None,
+        )
+        real_qtd = 0.0
+        real_vgv = 0.0
+        emps_calc = filtros.emps_sel or list(mapa_coord.keys())
+        df_ag_u = df_ag if df_ag is not None else pd.DataFrame()
+        df_pas_u = df_pastas if df_pastas is not None else pd.DataFrame()
+        for emp in emps_calc:
+            f = realizado_funil_periodo(
+                df_ag_u, df_pas_u, df_vendas, v._limpar_emp(emp),
+                filtros.data_ini, filtros.data_fim,
+            )
+            real_qtd += float(f.get(filtros.tipo_indicador, 0))
+
+    render_velocimetro_principal(
+        filtros, df_canal, df_metas_coord,
+        real_qtd, real_vgv, meta_qtd, meta_vgv,
+        escala_meta_regressao(proj, meta_qtd),
+    )
+    render_velocimetros_coordenador(
+        filtros, df_metas_coord, df_vendas,
+        df_ag if df_ag is not None else pd.DataFrame(),
+        df_pastas if df_pastas is not None else pd.DataFrame(),
+        col_contrato_gerado or "", mapa_coord,
+    )
+
+    emps_tab = filtros.emps_sel or sorted(set(mapa_coord.keys()))
+    if filtros.coordenadores_sel:
+        emps_tab = sorted(
+            e for e in emps_tab
+            if mapa_coord.get(v._limpar_emp(e), "") in filtros.coordenadores_sel
+        )
+    tab = montar_tabela_analitica(
+        emps_tab[:80],
+        enr, resumo_est,
+        df_vendas,
+        df_ag if df_ag is not None else pd.DataFrame(),
+        df_pastas if df_pastas is not None else pd.DataFrame(),
+        df_metas_coord, filtros,
+        col_contrato_gerado or "", proj,
+        df_cotacoes=df_cotacoes,
+        df_pastas_aprov=df_pastas_aprov,
+        df_tabela_comp=df_tabela_comp,
+    )
+    render_tabela_analitica(tab)
+    render_comparativo_mtd_por_emp(
+        df_vendas,
+        df_ag if df_ag is not None else pd.DataFrame(),
+        df_pastas if df_pastas is not None else pd.DataFrame(),
+        col_contrato_gerado or "",
+        emps_tab,
+        resumo_est=resumo_est,
+    )
+    return filtros
+
+
+# =============================================================================
+# PODER DE COMPRA (inline — ex-velocimetro_poder_compra.py)
+# =============================================================================
+
+# -*- coding: utf-8 -*-
+"""
+Poder de compra e ineficiência comercial — pastas aprovadas (Avaliacao_credito__c).
+
+Lógica de pro soluto máximo alinhada ao diresimulator / TabelaComprometimentoDeRenda:
+  pro_soluto_max = min(ProSoluto__c da tabela SF, renda × comprometimento × parcelas, preço × limite %)
+Poder de compra = FGTS + subsídio + financiamento + pro_soluto_efetivo
+"""
+import re
+from dataclasses import dataclass, field
+from datetime import date
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+# Defaults (diresimulator / condição comercial RJ)
+DEFAULT_COMPROMETIMENTO_RENDA = 0.30
+DEFAULT_MAX_PARCELAS = 84
+DEFAULT_LIMITE_PS_PRECO = 0.25
+
+ALIASES_RENDA = ["RendaApurada__c", "Renda Apurada", "Valor_da_Renda__c", "Valor da Renda", "Renda__c", "Renda"]
+ALIASES_FGTS = ["FGTS_apurado__c", "FGTS apurado", "Valor_FGTS__c", "Valor FGTS"]
+ALIASES_SUBSIDIO = ["Subsidio__c", "Subsídio", "valor_do_subsidio__c", "Valor do Subsidio", "Valor_de_Subsidio__c", "Valor de Subsidio"]
+ALIASES_FINANCIAMENTO = ["Valor_Financiamento__c", "Valor do Financiamento"]
+ALIASES_TIPO_AVAL = ["Tipo__c", "Tipo"]
+ALIASES_TIPOLOGIA = ["Tipologia__c", "Tipologia"]
+ALIASES_OPP_AVAL = ["Oportunidade__c", "Oportunidade", "ID da Oportunidade"]
+
+
+@dataclass
+class PastaPoderCompra:
+    chave: str
+    empreendimento: str
+    tipo: str
+    renda: float
+    fgts: float
+    subsidio: float
+    financiamento: float
+    pro_soluto_max: float
+    pro_soluto_efetivo: float
+    poder_compra: float
+    oportunidade_id: str
+    comprou: bool
+    pc_suficiente: bool = False
+    preco_referencia: float = 0.0
+
+
+@dataclass
+class ResumoIneficienciaEmp:
+    empreendimento: str
+    pastas_aprovadas: int = 0
+    pastas_pc_suficiente: int = 0
+    vendas: int = 0
+    ineficiencia_qtd: int = 0
+    ineficiencia_pct: float = 0.0
+
+
+
+
+def _num(val: Any) -> float:
+    v = _v()
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return 0.0
+    if isinstance(val, (int, float)):
+        return float(val)
+    s = str(val).strip()
+    if not s or s.lower() in ("nan", "none", "nat"):
+        return 0.0
+    try:
+        return float(v.parse_valor_br(val))
+    except Exception:
+        try:
+            return float(s.replace(".", "").replace(",", "."))
+        except Exception:
+            return 0.0
+
+
+def _col_val(row: pd.Series, aliases: List[str]) -> float:
+    for a in aliases:
+        if a in row.index:
+            x = _num(row.get(a))
+            if x > 0:
+                return x
+    v = _v()
+    col = v.achar_coluna(pd.DataFrame([row]), aliases)
+    return _num(row.get(col)) if col else 0.0
+
+
+def renda_da_pasta(row: pd.Series) -> float:
+    return _col_val(row, ALIASES_RENDA)
+
+
+def parse_identificador_unidade(ident: Any) -> Dict[str, str]:
+    """Extrai bloco, andar e identificador normalizado."""
+    s = str(ident or "").strip().upper()
+    bloco = ""
+    m = re.search(r"BL\s*0*(\d+)", s)
+    if m:
+        bloco = m.group(1)
+    elif "-" in s:
+        bloco = s.split("-")[0].replace("BL", "").strip()
+    andar = s[-4:-2] if len(s) >= 4 else ""
+    return {"identificador": s, "bloco": bloco, "andar": andar}
+
+
+def calcular_pro_soluto_maximo(
+    renda: float,
+    preco_unidade: float,
+    tabela_row: Optional[Dict[str, Any]] = None,
+    comprometimento: float = DEFAULT_COMPROMETIMENTO_RENDA,
+    max_parcelas: int = DEFAULT_MAX_PARCELAS,
+    limite_pct_preco: float = DEFAULT_LIMITE_PS_PRECO,
+) -> float:
+    """
+    Pro soluto máximo (estilo diresimulator):
+    - Tabela SF: ProSoluto__c e/ou renda × ComprometimentoDeRenda × numParcelas
+    - Teto percentual sobre o preço da unidade (Limite Pro Soluto ~25%)
+    """
+    renda = max(float(renda or 0), 0.0)
+    preco = max(float(preco_unidade or 0), 0.0)
+    ps_tabela = 0.0
+    ps_renda = 0.0
+    if tabela_row:
+        ps_tabela = _num(tabela_row.get("ProSoluto__c") or tabela_row.get("Pro Soluto") or tabela_row.get("ProSoluto"))
+        comp = _num(tabela_row.get("ComprometimentoDeRenda__c") or tabela_row.get("Comprometimento de Renda Total"))
+        if comp > 1:
+            comp = comp / 100.0
+        n_par = int(_num(tabela_row.get("numParcelas__c") or tabela_row.get("Nº Parcelas")) or max_parcelas)
+        if renda > 0 and comp > 0:
+            ps_renda = renda * comp * n_par
+        elif renda > 0 and ps_tabela <= 0:
+            ps_renda = renda * comprometimento * max_parcelas
+    elif renda > 0:
+        ps_renda = renda * comprometimento * max_parcelas
+
+    ps_preco = preco * limite_pct_preco if preco > 0 else 0.0
+    candidatos = [x for x in (ps_tabela, ps_renda, ps_preco) if x > 0]
+    if not candidatos:
+        return 0.0
+    if ps_preco > 0:
+        return min(min(candidatos), ps_preco) if len(candidatos) > 1 else min(candidatos[0], ps_preco)
+    return min(candidatos)
+
+
+def calcular_poder_compra(
+    fgts: float,
+    subsidio: float,
+    financiamento: float,
+    pro_soluto_max: float,
+    pro_soluto_aprovado: Optional[float] = None,
+) -> Tuple[float, float]:
+    """Retorna (poder_compra, pro_soluto_efetivo)."""
+    ps_max = max(float(pro_soluto_max or 0), 0.0)
+    ps_ap = max(float(pro_soluto_aprovado or 0), 0.0) if pro_soluto_aprovado else ps_max
+    ps_ef = min(ps_ap, ps_max) if ps_max > 0 else ps_ap
+    pc = max(fgts, 0) + max(subsidio, 0) + max(financiamento, 0) + ps_ef
+    return pc, ps_ef
+
+
+def _normalizar_tipo(val: Any) -> str:
+    return str(val or "").strip().upper()
+
+
+def filtrar_estoque_tipo(df_est: pd.DataFrame, tipo_avaliacao: str) -> pd.DataFrame:
+    """Filtra unidades vendáveis compatíveis com o tipo da avaliação."""
+    v = _v()
+    if df_est is None or df_est.empty:
+        return pd.DataFrame()
+    df = df_est.copy()
+    col_st = v.achar_coluna(df, v.ALIASES_STATUS_UNIDADE if hasattr(v, "ALIASES_STATUS_UNIDADE") else ["StatusUnidade__c", "Status"])
+    if col_st:
+        vendavel = df[col_st].astype(str).str.strip().isin(v.ESTOQUE_STATUS_VENDAVEL)
+        df = df.loc[vendavel]
+    tipo = _normalizar_tipo(tipo_avaliacao)
+    if not tipo:
+        return df
+    col_tip = v.achar_coluna(df, ALIASES_TIPOLOGIA)
+    if col_tip:
+        df = df[df[col_tip].map(_normalizar_tipo) == tipo]
+    return df
+
+
+def preco_minimo_empreendimento(
+    df_est_enr: pd.DataFrame,
+    emp: str,
+    tipo: str = "",
+) -> float:
+    """Menor preço tabela (VFK−BA−folga) elegível para o empreendimento/tipo."""
+    v = _v()
+    emp_c = v._limpar_emp(emp)
+    if df_est_enr is None or df_est_enr.empty:
+        return 0.0
+    sub = df_est_enr[df_est_enr["Empreendimento"].map(v._limpar_emp) == emp_c]
+    if tipo:
+        sub = sub[sub["Tipologia"].map(_normalizar_tipo) == _normalizar_tipo(tipo)] if "Tipologia" in sub.columns else sub
+    if sub.empty or "PrecoTabela" not in sub.columns:
+        return 0.0
+    vals = sub["PrecoTabela"].astype(float)
+    vals = vals[vals > 0]
+    return float(vals.min()) if not vals.empty else 0.0
+
+
+def mapa_tabela_por_oportunidade(df_tab: pd.DataFrame) -> Dict[str, Dict[str, Any]]:
+    v = _v()
+    out: Dict[str, Dict[str, Any]] = {}
+    if df_tab is None or df_tab.empty:
+        return out
+    col_opp = v.achar_coluna(df_tab, ALIASES_OPP_AVAL) or "Oportunidade__c"
+    for _, row in df_tab.iterrows():
+        oid = str(row.get(col_opp) or "").strip()
+        if oid and oid not in out:
+            out[oid] = row.to_dict()
+    return out
+
+
+def ids_vendas_empreendimento(df_vendas: pd.DataFrame, emp: str) -> Set[str]:
+    v = _v()
+    emp_c = v._limpar_emp(emp)
+    if df_vendas is None or df_vendas.empty:
+        return set()
+    col_emp = v.achar_coluna(df_vendas, v.ALIASES_EMPREENDIMENTO)
+    col_id = v.achar_coluna(df_vendas, v.ALIASES_ID_OPORTUNIDADE)
+    if not col_emp or not col_id:
+        return set()
+    sub = df_vendas[df_vendas[col_emp].map(v._limpar_emp) == emp_c]
+    return {str(x).strip() for x in sub[col_id].dropna().unique() if str(x).strip()}
+
+
+def analisar_pasta(
+    row: pd.Series,
+    emp: str,
+    df_est_enr: pd.DataFrame,
+    mapa_tab: Dict[str, Dict[str, Any]],
+    vendas_ids: Set[str],
+    preco_override: Optional[float] = None,
+) -> PastaPoderCompra:
+    v = _v()
+    chave_col = v.achar_coluna(pd.DataFrame([row]), v.ALIASES_NOME_AVALIACAO_CREDITO) or "Name"
+    chave = str(row.get(chave_col) or row.get("Name") or row.name)
+    tipo = ""
+    col_tipo = v.achar_coluna(pd.DataFrame([row]), ALIASES_TIPO_AVAL)
+    if col_tipo:
+        tipo = str(row.get(col_tipo) or "").strip()
+
+    renda = renda_da_pasta(row)
+    fgts = _col_val(row, ALIASES_FGTS)
+    subsidio = _col_val(row, ALIASES_SUBSIDIO)
+    financiamento = _col_val(row, ALIASES_FINANCIAMENTO)
+
+    col_opp = v.achar_coluna(pd.DataFrame([row]), ALIASES_OPP_AVAL)
+    opp_id = str(row.get(col_opp) or "").strip() if col_opp else ""
+
+    preco_ref = preco_override if preco_override is not None else preco_minimo_empreendimento(df_est_enr, emp, tipo)
+    tab_row = mapa_tab.get(opp_id)
+    ps_max = calcular_pro_soluto_maximo(renda, preco_ref, tab_row)
+    pc, ps_ef = calcular_poder_compra(fgts, subsidio, financiamento, ps_max)
+    comprou = opp_id in vendas_ids if opp_id else False
+    pc_ok = pc >= preco_ref if preco_ref > 0 else False
+
+    return PastaPoderCompra(
+        chave=chave,
+        empreendimento=v._limpar_emp(emp),
+        tipo=tipo,
+        renda=renda,
+        fgts=fgts,
+        subsidio=subsidio,
+        financiamento=financiamento,
+        pro_soluto_max=ps_max,
+        pro_soluto_efetivo=ps_ef,
+        poder_compra=pc,
+        oportunidade_id=opp_id,
+        comprou=comprou,
+        pc_suficiente=pc_ok,
+        preco_referencia=preco_ref,
+    )
+
+
+def calcular_resumo_ineficiencia_emp(
+    df_pastas_aprov: pd.DataFrame,
+    df_est_enr: pd.DataFrame,
+    df_vendas: pd.DataFrame,
+    df_tabela: pd.DataFrame,
+    emp: str,
+    preco_override: Optional[float] = None,
+) -> ResumoIneficienciaEmp:
+    v = _v()
+    emp_c = v._limpar_emp(emp)
+    col_emp = v.achar_coluna(df_pastas_aprov, v.ALIASES_EMPREENDIMENTO) if not df_pastas_aprov.empty else None
+    if not col_emp or df_pastas_aprov.empty:
+        return ResumoIneficienciaEmp(empreendimento=emp_c)
+
+    pastas = df_pastas_aprov[df_pastas_aprov[col_emp].map(v._limpar_emp) == emp_c]
+    mapa_tab = mapa_tabela_por_oportunidade(df_tabela)
+    vendas_ids = ids_vendas_empreendimento(df_vendas, emp_c)
+
+    analises = [
+        analisar_pasta(r, emp_c, df_est_enr, mapa_tab, vendas_ids, preco_override)
+        for _, r in pastas.iterrows()
+    ]
+    n_aprov = len(analises)
+    n_pc = sum(1 for a in analises if a.pc_suficiente)
+    n_vendas = len(vendas_ids & {a.oportunidade_id for a in analises if a.oportunidade_id})
+    inef_qtd = sum(1 for a in analises if a.pc_suficiente and not a.comprou)
+    inef_pct = (inef_qtd / n_aprov * 100.0) if n_aprov > 0 else 0.0
+
+    return ResumoIneficienciaEmp(
+        empreendimento=emp_c,
+        pastas_aprovadas=n_aprov,
+        pastas_pc_suficiente=n_pc,
+        vendas=n_vendas,
+        ineficiencia_qtd=inef_qtd,
+        ineficiencia_pct=inef_pct,
+    )
+
+
+def calcular_resumos_todos_empreendimentos(
+    df_pastas_aprov: pd.DataFrame,
+    df_est_enr: pd.DataFrame,
+    df_vendas: pd.DataFrame,
+    df_tabela: pd.DataFrame,
+    empreendimentos: Optional[List[str]] = None,
+) -> pd.DataFrame:
+    v = _v()
+    if df_pastas_aprov is None or df_pastas_aprov.empty:
+        return pd.DataFrame()
+    col_emp = v.achar_coluna(df_pastas_aprov, v.ALIASES_EMPREENDIMENTO)
+    if not col_emp:
+        return pd.DataFrame()
+    emps = empreendimentos or sorted(df_pastas_aprov[col_emp].map(v._limpar_emp).dropna().unique())
+    rows = []
+    for emp in emps:
+        r = calcular_resumo_ineficiencia_emp(df_pastas_aprov, df_est_enr, df_vendas, df_tabela, emp)
+        rows.append({
+            "Empreendimento": r.empreendimento,
+            "Pastas_Aprovadas": r.pastas_aprovadas,
+            "Pastas_PC_Suficiente": r.pastas_pc_suficiente,
+            "Vendas": r.vendas,
+            "Ineficiencia_Qtd": r.ineficiencia_qtd,
+            "Ineficiencia_Pct": r.ineficiencia_pct,
+        })
+    return pd.DataFrame(rows)
+
+
+def estatisticas_preco_estoque(
+    df_est_enr: pd.DataFrame,
+    emp: str,
+    filtro_dim: str = "",
+    filtro_val: str = "",
+) -> Dict[str, float]:
+    """Min, médio, mediano, máximo de PrecoTabela para recorte do estoque."""
+    v = _v()
+    emp_c = v._limpar_emp(emp)
+    if df_est_enr is None or df_est_enr.empty:
+        return {"min": 0, "medio": 0, "mediano": 0, "max": 0, "n": 0}
+    sub = df_est_enr[df_est_enr["Empreendimento"].map(v._limpar_emp) == emp_c].copy()
+    if filtro_dim and filtro_val:
+        fv = str(filtro_val).strip().upper()
+        if filtro_dim == "identificador":
+            sub = sub[sub["Identificador"].astype(str).str.upper().str.strip() == fv]
+        elif filtro_dim == "bloco":
+            sub["_bloco"] = sub["Identificador"].map(lambda x: parse_identificador_unidade(x)["bloco"])
+            sub = sub[sub["_bloco"] == fv.replace("BL", "").strip()]
+        elif filtro_dim == "andar":
+            sub["_andar"] = sub["Identificador"].map(lambda x: parse_identificador_unidade(x)["andar"])
+            sub = sub[sub["_andar"] == fv]
+        elif filtro_dim == "tipo":
+            for c in ALIASES_TIPOLOGIA + ["Tipologia", "Tipo"]:
+                if c in sub.columns:
+                    sub = sub[sub[c].map(_normalizar_tipo) == fv]
+                    break
+    vals = sub["PrecoTabela"].astype(float)
+    vals = vals[vals > 0]
+    if vals.empty:
+        return {"min": 0, "medio": 0, "mediano": 0, "max": 0, "n": 0}
+    return {
+        "min": float(vals.min()),
+        "medio": float(vals.mean()),
+        "mediano": float(vals.median()),
+        "max": float(vals.max()),
+        "n": int(len(vals)),
+    }
+
+
+def simular_novo_preco(
+    df_pastas_aprov: pd.DataFrame,
+    df_est_enr: pd.DataFrame,
+    df_vendas: pd.DataFrame,
+    df_tabela: pd.DataFrame,
+    emp: str,
+    novo_preco: float,
+    preco_atual: float,
+) -> Dict[str, Any]:
+    """
+    Clientes sem PC no preço atual que passariam a ter PC no novo preço (e ainda não compraram).
+    """
+    v = _v()
+    emp_c = v._limpar_emp(emp)
+    col_emp = v.achar_coluna(df_pastas_aprov, v.ALIASES_EMPREENDIMENTO)
+    if not col_emp:
+        return {"ganhos_pc": 0, "vendas_potenciais": 0, "detalhe": []}
+    pastas = df_pastas_aprov[df_pastas_aprov[col_emp].map(v._limpar_emp) == emp_c]
+    mapa_tab = mapa_tabela_por_oportunidade(df_tabela)
+    vendas_ids = ids_vendas_empreendimento(df_vendas, emp_c)
+
+    ganhos = 0
+    detalhe = []
+    for _, row in pastas.iterrows():
+        a_atual = analisar_pasta(row, emp_c, df_est_enr, mapa_tab, vendas_ids, preco_atual)
+        a_novo = analisar_pasta(row, emp_c, df_est_enr, mapa_tab, vendas_ids, novo_preco)
+        if a_atual.comprou:
+            continue
+        if not a_atual.pc_suficiente and a_novo.pc_suficiente:
+            ganhos += 1
+            detalhe.append({
+                "Pasta": a_atual.chave,
+                "Poder Compra": a_novo.poder_compra,
+                "Preço novo": novo_preco,
+                "Gap": a_novo.poder_compra - novo_preco,
+            })
+    return {
+        "ganhos_pc": ganhos,
+        "vendas_potenciais": ganhos,
+        "detalhe": detalhe,
+    }
+
+
+def render_aba_poder_compra(
+    df_pastas_aprov: pd.DataFrame,
+    df_est_enr: pd.DataFrame,
+    df_vendas: pd.DataFrame,
+    df_tabela: pd.DataFrame,
+) -> None:
+    v = _v()
+    st.subheader("Poder de Compra & Simulação de Preço")
+    st.caption(
+        "Pastas aprovadas · poder de compra = FGTS + subsídio + financiamento + pro soluto "
+        f"(máx. estilo diresimulator: renda×{DEFAULT_COMPROMETIMENTO_RENDA:.0%}×{DEFAULT_MAX_PARCELAS} parcelas "
+        f"ou {DEFAULT_LIMITE_PS_PRECO:.0%} do preço, com tabela SF quando disponível)"
+    )
+    if df_pastas_aprov is None or df_pastas_aprov.empty:
+        st.info("Sem pastas aprovadas carregadas.")
+        return
+    col_emp = v.achar_coluna(df_pastas_aprov, v.ALIASES_EMPREENDIMENTO)
+    if not col_emp:
+        st.warning("Coluna empreendimento não encontrada nas pastas.")
+        return
+
+    emps = sorted(df_pastas_aprov[col_emp].map(v._limpar_emp).dropna().unique())
+    emp_sel = st.selectbox("Empreendimento", emps, key="pc_emp_sel")
+
+    resumo = calcular_resumo_ineficiencia_emp(
+        df_pastas_aprov, df_est_enr, df_vendas, df_tabela, emp_sel,
+    )
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Pastas aprovadas", resumo.pastas_aprovadas)
+    c2.metric("Com PC suficiente", resumo.pastas_pc_suficiente)
+    c3.metric("Vendas", resumo.vendas)
+    c4.metric("Ineficiência (qtd)", resumo.ineficiencia_qtd)
+    c5.metric("Ineficiência (%)", f"{resumo.ineficiencia_pct:.1f}%")
+
+    st.markdown("#### Referência de preços no estoque")
+    dim = st.selectbox(
+        "Recorte",
+        ["empreendimento", "tipo", "bloco", "andar", "identificador"],
+        key="pc_dim",
+    )
+    filtro_val = ""
+    emp_sub = df_est_enr[df_est_enr["Empreendimento"].map(v._limpar_emp) == v._limpar_emp(emp_sel)] if not df_est_enr.empty else pd.DataFrame()
+    if dim == "tipo":
+        opts = sorted({_normalizar_tipo(x) for x in emp_sub.get("Tipologia", emp_sub.get("Tipologia__c", pd.Series())).dropna() if str(x).strip()})
+        filtro_val = st.selectbox("Tipo / Tipologia", opts or [""], key="pc_tipo")
+    elif dim == "bloco":
+        blocos = sorted({parse_identificador_unidade(x)["bloco"] for x in emp_sub.get("Identificador", pd.Series()) if parse_identificador_unidade(x)["bloco"]})
+        filtro_val = st.selectbox("Bloco", blocos or [""], key="pc_bloco")
+    elif dim == "andar":
+        andares = sorted({parse_identificador_unidade(x)["andar"] for x in emp_sub.get("Identificador", pd.Series()) if parse_identificador_unidade(x)["andar"]})
+        filtro_val = st.selectbox("Andar", andares or [""], key="pc_andar")
+    elif dim == "identificador":
+        idents = sorted(emp_sub["Identificador"].astype(str).str.upper().unique()) if "Identificador" in emp_sub.columns else []
+        filtro_val = st.selectbox("Identificador", idents[:200] or [""], key="pc_ident")
+
+    stats = estatisticas_preco_estoque(
+        df_est_enr, emp_sel,
+        filtro_dim="" if dim == "empreendimento" else dim,
+        filtro_val=filtro_val,
+    )
+    st.markdown(
+        f"Unidades: **{stats['n']}** · Mín: **{v.fmt_br_milhoes(stats['min'])}** · "
+        f"Médio: **{v.fmt_br_milhoes(stats['medio'])}** · "
+        f"Mediano: **{v.fmt_br_milhoes(stats['mediano'])}** · "
+        f"Máx: **{v.fmt_br_milhoes(stats['max'])}**"
+    )
+
+    preco_atual = stats["min"] if stats["min"] > 0 else stats["mediano"]
+    novo_preco = st.number_input(
+        "Simular novo preço (R$)",
+        min_value=0.0,
+        value=float(preco_atual),
+        step=1000.0,
+        key="pc_novo_preco",
+    )
+    if st.button("Calcular impacto", key="pc_sim_btn"):
+        sim = simular_novo_preco(
+            df_pastas_aprov, df_est_enr, df_vendas, df_tabela,
+            emp_sel, novo_preco, preco_atual,
+        )
+        st.success(
+            f"Com preço **{v.fmt_br_milhoes(novo_preco)}** (referência atual **{v.fmt_br_milhoes(preco_atual)}**): "
+            f"**{sim['ganhos_pc']}** clientes passariam a ter poder de compra suficiente "
+            f"(potencial de **+{sim['vendas_potenciais']}** vendas entre quem ainda não comprou)."
+        )
+        if sim["detalhe"]:
+            st.dataframe(pd.DataFrame(sim["detalhe"]), use_container_width=True, hide_index=True)
+
+
+# =============================================================================
+# DASHBOARD COMERCIAL (inline — ex-velocimetro_dashboard_comercial.py)
+# =============================================================================
+
+# -*- coding: utf-8 -*-
+"""
+Dashboard comercial — VSO, velocímetros VGV por canal, rankings, share e evolução.
+"""
+import calendar
+from dataclasses import dataclass
+from datetime import date, timedelta
+from typing import Any, Dict, List, Optional, Tuple
+
+import pandas as pd
+import plotly.graph_objects as go
+import streamlit as st
+
+
+CANAIS_VGV = [
+    ("RIO", "RIO (100%)", None),
+    ("DIR", "DIR (50%)", "DIR"),
+    ("GC", "GC / RJG (25%)", "RJG"),
+    ("PC", "PC / RJ (25%)", "RJ"),
+]
+FATORES_VGV = {"RIO": 1.0, "DIR": 0.5, "GC": 0.25, "PC": 0.25}
+PREFIXOS_IMOB = {"DIR", "RJG", "RJ", "RIV"}
+CANAIS_IMOB = {"RJ", "RJG"}
+CANAIS_DV = {"DIR", "RIV"}
+JANELAS_VSO = (30, 60, 90, 120)
+
+RANKING_PERFIS = {
+    "IMOBs": {"col": "Proprietário da oportunidade", "canais": CANAIS_IMOB},
+    "Gerentes": {"col": "Proprietário da oportunidade", "canais": CANAIS_DV},
+    "Imobiliárias": {"col": "Contato Corretor Proprietario", "canais": CANAIS_IMOB},
+    "Corretores": {"col": "Contato Corretor Proprietario", "canais": CANAIS_DV},
+    "Regionais": {"col": "Gerente regional", "canais": CANAIS_DV},
+}
+
+
+@dataclass
+class FiltrosDashboard:
+    data_ini: date
+    data_fim: date
+    mes_meta: int
+    ano_meta: int
+    tipo_meta_col: str
+    emps_sel: List[str]
+    coords_sel: List[str]
+    canal_sel: str
+    imobs_sel: List[str]
+
+
+
+
+def _prefixo_imob(val: Any) -> str:
+    return _v().canal_de_imobiliaria(val)
+
+
+
+
+def enriquecer_vendas_vcx(
+    df_vendas: pd.DataFrame,
+    df_cotacoes: Optional[pd.DataFrame],
+) -> pd.DataFrame:
+    """Anexa valor de Volta ao Caixa (última cotação por oportunidade)."""
+    out = df_vendas.copy()
+    if df_cotacoes is None or df_cotacoes.empty:
+        out["Volta ao caixa"] = 0.0
+        return out
+    col_opp = "ID da Oportunidade"
+    col_vcx = None
+    for c in ("Volta ao caixa", "VoltaAoCaixa__c"):
+        if c in df_cotacoes.columns:
+            col_vcx = c
+            break
+    if not col_vcx or col_opp not in df_cotacoes.columns or col_opp not in out.columns:
+        out["Volta ao caixa"] = 0.0
+        return out
+    cot = df_cotacoes.copy()
+    cot["_vcx"] = cot[col_vcx].map(_parse_num_br)
+    agg = cot.groupby(col_opp, as_index=False)["_vcx"].max()
+    agg = agg.rename(columns={"_vcx": "Volta ao caixa"})
+    out = out.merge(agg, on=col_opp, how="left")
+    out["Volta ao caixa"] = pd.to_numeric(out["Volta ao caixa"], errors="coerce").fillna(0.0)
+    return out
+
+
+def _col_data_venda(df: pd.DataFrame) -> str:
+    v = _v()
+    return v.achar_coluna(df, ["Data da venda", "Data Venda", "Data de venda"]) or ""
+
+
+def _aplicar_filtros_base(
+    df: pd.DataFrame,
+    filtros: FiltrosDashboard,
+    mapa_coord: Dict[str, str],
+    col_data: str,
+    usar_periodo: bool = True,
+) -> pd.DataFrame:
+    v = _v()
+    base = df.copy()
+    if filtros.emps_sel and "Empreendimento" in base.columns:
+        emps = {_limpar_emp(e) for e in filtros.emps_sel}
+        base = base[base["Empreendimento"].map(_limpar_emp).isin(emps)]
+    if filtros.coords_sel and mapa_coord and "Empreendimento" in base.columns:
+        emps_coord = {
+            e for e, c in mapa_coord.items() if c in set(filtros.coords_sel)
+        }
+        base = base[base["Empreendimento"].map(_limpar_emp).isin(emps_coord)]
+    if filtros.imobs_sel and "Imobiliária" in base.columns:
+        imobs = {str(i).strip() for i in filtros.imobs_sel}
+        base = base[base["Imobiliária"].astype(str).str.strip().isin(imobs)]
+    canal = (filtros.canal_sel or "Todos").strip().upper()
+    if canal not in ("TODOS", "RIO", "") and "Imobiliária" in base.columns:
+        cfg = next((c for c in CANAIS_VGV if c[0] == canal), None)
+        if cfg and cfg[2]:
+            base = base[base["Imobiliária"].map(_prefixo_imob) == cfg[2]]
+        elif canal == "DIR":
+            base = base[base["Imobiliária"].map(_prefixo_imob).isin(CANAIS_DV)]
+        elif canal in ("GC", "PARC"):
+            base = base[base["Imobiliária"].map(_prefixo_imob) == "RJG"]
+        elif canal == "PC":
+            base = base[base["Imobiliária"].map(_prefixo_imob) == "RJ"]
+    if usar_periodo and col_data and col_data in base.columns:
+        base = _filtrar_df_periodo(base, col_data, filtros.data_ini, filtros.data_fim)
+    return base
+
+
+def _filtrar_canal_velocimetro(df: pd.DataFrame, canal_key: str) -> pd.DataFrame:
+    if df.empty or "Imobiliária" not in df.columns:
+        return df
+    cfg = next((c for c in CANAIS_VGV if c[0] == canal_key), None)
+    if not cfg:
+        return df
+    if cfg[2] is None:
+        return df
+    return df[df["Imobiliária"].map(_prefixo_imob) == cfg[2]]
+
+
+def _qtd_vgv(df: pd.DataFrame) -> Tuple[float, float]:
+    qtd = float(df["_qtd_venda"].sum()) if "_qtd_venda" in df.columns else float(len(df))
+    vgv = float(df["_vgv_venda"].sum()) if "_vgv_venda" in df.columns else float(df["_vgv"].sum()) if "_vgv" in df.columns else 0.0
+    return qtd, vgv
+
+
+def calcular_vso_por_emp(
+    df_vendas: pd.DataFrame,
+    df_estoque: pd.DataFrame,
+    filtros: FiltrosDashboard,
+    mapa_coord: Dict[str, str],
+    col_data: str,
+    ref_fim: Optional[date] = None,
+) -> pd.DataFrame:
+    """VSO = vendas / (vendas + unidades) por janela rolling."""
+    v = _v()
+    ref_fim = ref_fim or filtros.data_fim
+    emps = sorted(set(mapa_coord.keys()))
+    if filtros.emps_sel:
+        emps = [_limpar_emp(e) for e in filtros.emps_sel]
+    if filtros.coords_sel:
+        emps = [e for e in emps if mapa_coord.get(e, "") in filtros.coords_sel]
+
+    est = df_estoque.copy() if df_estoque is not None else pd.DataFrame()
+    if not est.empty and "Empreendimento" in est.columns:
+        est["_emp"] = est["Empreendimento"].map(_limpar_emp)
+        if filtros.emps_sel:
+            sel = {_limpar_emp(e) for e in filtros.emps_sel}
+            est = est[est["_emp"].isin(sel)]
+        unidades_por_emp = est.groupby("_emp").size().to_dict()
+    else:
+        unidades_por_emp = {}
+
+    rows = []
+    for emp in emps:
+        row: Dict[str, Any] = {"Empreendimento": emp, "Coordenador": mapa_coord.get(emp, "")}
+        unidades = float(unidades_por_emp.get(emp, 0))
+        row["Unidades_Estoque"] = int(unidades)
+        for dias in JANELAS_VSO:
+            ini = ref_fim - timedelta(days=dias)
+            sub = df_vendas.copy()
+            if "Empreendimento" in sub.columns:
+                sub = sub[sub["Empreendimento"].map(_limpar_emp) == emp]
+            if filtros.imobs_sel and "Imobiliária" in sub.columns:
+                imobs = {str(i).strip() for i in filtros.imobs_sel}
+                sub = sub[sub["Imobiliária"].astype(str).str.strip().isin(imobs)]
+            canal = (filtros.canal_sel or "Todos").strip().upper()
+            if canal not in ("TODOS", "RIO", "") and "Imobiliária" in sub.columns:
+                sub = _filtrar_canal_velocimetro(sub, canal if canal in FATORES_VGV else "RIO")
+            if col_data and col_data in sub.columns:
+                sub = _filtrar_df_periodo(sub, col_data, ini, ref_fim)
+            vendas = float(sub["_qtd_venda"].sum()) if "_qtd_venda" in sub.columns else float(len(sub))
+            denom = vendas + unidades
+            row[f"VSO_{dias}d"] = (vendas / denom * 100.0) if denom > 0 else 0.0
+            row[f"Vendas_{dias}d"] = vendas
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def _meta_vgv_canal(
+    df_canal: pd.DataFrame,
+    mes: int,
+    ano: int,
+    canal_key: str,
+) -> Tuple[float, float]:
+    fator = FATORES_VGV.get(canal_key, 1.0)
+    vgv, ven = meta_canal_vgv_vendas(df_canal, mes, ano, "RIO")
+    return vgv * fator, ven * fator
+
+
+def _meta_mensal_acumulada(
+    df_canal: pd.DataFrame,
+    ano: int,
+    ate_mes: int,
+    canal_key: str = "RIO",
+) -> pd.DataFrame:
+    """Meta VGV mês a mês (acumulada) até ate_mes."""
+    rows = []
+    acum = 0.0
+    for m in range(1, ate_mes + 1):
+        vgv, _ = _meta_vgv_canal(df_canal, m, ano, canal_key)
+        acum += vgv
+        rows.append({"Mes": m, "Meta_VGV_Acum": acum, "Meta_VGV_Mes": vgv})
+    return pd.DataFrame(rows)
+
+
+def _realizado_mensal_acumulado(
+    df: pd.DataFrame,
+    col_data: str,
+    ano: int,
+    ate_mes: int,
+) -> pd.DataFrame:
+    v = _v()
+    if df.empty or not col_data:
+        return pd.DataFrame()
+    base = df.copy()
+    base["_dt"] = v.parse_data_serie(base[col_data])
+    base = base.dropna(subset=["_dt"])
+    base = base[base["_dt"].dt.year == ano]
+    base = base[base["_dt"].dt.month <= ate_mes]
+    col_vgv = "_vgv_venda" if "_vgv_venda" in base.columns else "_vgv"
+    rows = []
+    acum = 0.0
+    for m in range(1, ate_mes + 1):
+        sub = base[base["_dt"].dt.month == m]
+        mes_vgv = float(sub[col_vgv].sum()) if col_vgv in sub.columns else 0.0
+        acum += mes_vgv
+        rows.append({"Mes": m, "Real_VGV_Acum": acum, "Real_VGV_Mes": mes_vgv})
+    return pd.DataFrame(rows)
+
+
+def calcular_gap_meta(
+    df_vendas: pd.DataFrame,
+    df_canal: pd.DataFrame,
+    filtros: FiltrosDashboard,
+    col_data: str,
+) -> Dict[str, float]:
+    hoje = date.today()
+    if hoje.month == 1:
+        ate_mes = 12
+        ano_ref = hoje.year - 1
+    else:
+        ate_mes = hoje.month - 1
+        ano_ref = hoje.year
+    meta_df = _meta_mensal_acumulada(df_canal, ano_ref, ate_mes, "RIO")
+    meta_total = float(meta_df["Meta_VGV_Acum"].iloc[-1]) if not meta_df.empty else 0.0
+    base = df_vendas.copy()
+    if col_data:
+        v = _v()
+        base["_dt"] = v.parse_data_serie(base[col_data])
+        base = base.dropna(subset=["_dt"])
+        base = base[(base["_dt"].dt.year == ano_ref) & (base["_dt"].dt.month <= ate_mes)]
+    col_vgv = "_vgv_venda" if "_vgv_venda" in base.columns else "_vgv"
+    real_total = float(base[col_vgv].sum()) if col_vgv in base.columns else 0.0
+    return {
+        "meta_acum": meta_total,
+        "real_acum": real_total,
+        "gap": meta_total - real_total,
+        "ate_mes": ate_mes,
+        "ano_ref": ano_ref,
+    }
+
+
+def share_por_canal(
+    df: pd.DataFrame,
+) -> pd.DataFrame:
+    if df.empty or "Imobiliária" not in df.columns:
+        return pd.DataFrame()
+    base = df.copy()
+    base["_pfx"] = base["Imobiliária"].map(_prefixo_imob)
+    base["_canal_grp"] = base["_pfx"].apply(
+        lambda p: "DIR" if p in CANAIS_DV else ("GC" if p == "RJG" else ("PC" if p == "RJ" else "Outros"))
+    )
+    col_vgv = "_vgv_venda" if "_vgv_venda" in base.columns else "_vgv"
+    agg = base.groupby("_canal_grp")[col_vgv].sum().reset_index()
+    agg.columns = ["Canal", "VGV"]
+    total = float(agg["VGV"].sum())
+    agg["Share_Real"] = agg["VGV"] / total * 100.0 if total > 0 else 0.0
+    meta_share = {"DIR": 50.0, "GC": 25.0, "PC": 25.0}
+    agg["Share_Meta"] = agg["Canal"].map(meta_share).fillna(0.0)
+    return agg
+
+
+def share_por_diretor(df: pd.DataFrame) -> pd.DataFrame:
+    col = "Diretor de vendas"
+    if col not in df.columns:
+        for c in ("Diretor_de_vendas__c", "Diretor"):
+            if c in df.columns:
+                col = c
+                break
+        else:
+            return pd.DataFrame()
+    base = df.copy()
+    base[col] = base[col].fillna("(sem diretor)").astype(str).str.strip()
+    col_vgv = "_vgv_venda" if "_vgv_venda" in base.columns else "_vgv"
+    agg = base.groupby(col)[col_vgv].sum().reset_index()
+    agg.columns = ["Diretor", "VGV"]
+    total = float(agg["VGV"].sum())
+    agg["Share"] = agg["VGV"] / total * 100.0 if total > 0 else 0.0
+    return agg.sort_values("VGV", ascending=False)
+
+
+def montar_ranking(
+    df: pd.DataFrame,
+    perfil: str,
+    col_data: str,
+    data_ini: date,
+    data_fim: date,
+    metrica: str = "VGV",
+) -> pd.DataFrame:
+    cfg = RANKING_PERFIS.get(perfil)
+    if not cfg or df.empty:
+        return pd.DataFrame()
+    col_nome = cfg["col"]
+    if col_nome not in df.columns or "Imobiliária" not in df.columns:
+        return pd.DataFrame()
+    base = df.copy()
+    base["_pfx"] = base["Imobiliária"].map(_prefixo_imob)
+    base = base[base["_pfx"].isin(cfg["canais"])]
+    if col_data and col_data in base.columns:
+        base = _filtrar_df_periodo(base, col_data, data_ini, data_fim)
+    base[col_nome] = base[col_nome].fillna("(vazio)").astype(str).str.strip()
+    base = base[base[col_nome] != "(vazio)"]
+    if base.empty:
+        return pd.DataFrame()
+    if metrica == "Quantidade":
+        agg = base.groupby(col_nome).agg(
+            Qtd=("_qtd_venda", "sum") if "_qtd_venda" in base.columns else (col_nome, "count"),
+            VGV=("_vgv_venda", "sum") if "_vgv_venda" in base.columns else ("_vgv", "sum"),
+        ).reset_index()
+        agg = agg.rename(columns={col_nome: "Nome"})
+        agg = agg.sort_values("Qtd", ascending=False)
+    else:
+        col_vgv = "_vgv_venda" if "_vgv_venda" in base.columns else "_vgv"
+        agg = base.groupby(col_nome).agg(
+            VGV=(col_vgv, "sum"),
+            Qtd=("_qtd_venda", "sum") if "_qtd_venda" in base.columns else (col_nome, "count"),
+        ).reset_index()
+        agg = agg.rename(columns={col_nome: "Nome"})
+        agg = agg.sort_values("VGV", ascending=False)
+    agg["Ranking"] = range(1, len(agg) + 1)
+    return agg
+
+
+def render_filtros_dashboard(
+    df_metas_coord: pd.DataFrame,
+    df_vendas: pd.DataFrame,
+) -> FiltrosDashboard:
+    hoje = date.today()
+    ini_mes = date(hoje.year, hoje.month, 1)
+    coords = sorted(
+        str(c).strip()
+        for c in (df_metas_coord.get("Coordenador") or pd.Series()).dropna().unique()
+        if str(c).strip()
+    )
+    emps = sorted(
+        str(e).strip()
+        for e in (df_metas_coord.get("Empreendimento") or pd.Series()).dropna().unique()
+        if str(e).strip()
+    )
+    imobs: List[str] = []
+    if "Imobiliária" in df_vendas.columns:
+        imobs = sorted(
+            str(i).strip()
+            for i in df_vendas["Imobiliária"].dropna().unique()
+            if str(i).strip()
+        )
+    st.markdown("#### Filtros do dashboard comercial")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    with c1:
+        data_ini = st.date_input("Data inicial", value=ini_mes, key="dc_data_ini")
+    with c2:
+        data_fim = st.date_input("Data final", value=hoje, key="dc_data_fim")
+    with c3:
+        mes_meta = st.selectbox("Mês meta", list(range(1, 13)), index=hoje.month - 1, key="dc_mes_meta")
+    with c4:
+        ano_meta = st.number_input("Ano meta", min_value=2020, max_value=2035, value=hoje.year, key="dc_ano_meta")
+    with c5:
+        tipo_meta_col = st.selectbox("Tipo meta", TIPOS_META_COL, key="dc_tipo_meta")
+    c6, c7, c8 = st.columns(3)
+    with c6:
+        coords_sel = st.multiselect("Coordenador", coords, default=coords, key="dc_coords")
+    with c7:
+        canal_sel = st.selectbox(
+            "Canal",
+            ["Todos", "RIO", "DIR", "GC", "PC"],
+            key="dc_canal",
+        )
+    with c8:
+        emps_sel = st.multiselect("Empreendimento", emps, default=[], key="dc_emps")
+    imobs_sel = st.multiselect("Imobiliária", imobs, default=[], key="dc_imobs")
+    return FiltrosDashboard(
+        data_ini=data_ini,
+        data_fim=data_fim,
+        mes_meta=int(mes_meta),
+        ano_meta=int(ano_meta),
+        tipo_meta_col=tipo_meta_col,
+        emps_sel=emps_sel,
+        coords_sel=coords_sel,
+        canal_sel=canal_sel,
+        imobs_sel=imobs_sel,
+    )
+
+
+def render_tabela_vso_meta(
+    df_vso: pd.DataFrame,
+    df_metas_coord: pd.DataFrame,
+    df_vendas_f: pd.DataFrame,
+    filtros: FiltrosDashboard,
+    col_data: str,
+) -> None:
+    v = _v()
+    st.subheader("VSO, meta e % meta por empreendimento")
+    if df_vso.empty:
+        st.info("Sem empreendimentos para exibir.")
+        return
+    rows = []
+    for _, r in df_vso.iterrows():
+        emp = r["Empreendimento"]
+        meta = soma_meta_coord(
+            df_metas_coord, filtros.mes_meta, filtros.ano_meta,
+            "vendas", filtros.tipo_meta_col, empreendimentos=[emp],
+        )
+        sub = df_vendas_f[df_vendas_f["Empreendimento"].map(_limpar_emp) == emp] if not df_vendas_f.empty else pd.DataFrame()
+        real_qtd, real_vgv = _qtd_vgv(sub)
+        pct_meta = (real_qtd / meta * 100.0) if meta > 0 else 0.0
+        row = {
+            "Empreendimento": emp,
+            "Coordenador": r.get("Coordenador", ""),
+            "Meta_Vendas": meta,
+            "Realizado_Vendas": real_qtd,
+            "Pct_Meta": round(pct_meta, 1),
+            "Unidades_Estoque": r.get("Unidades_Estoque", 0),
+        }
+        for dias in JANELAS_VSO:
+            row[f"VSO_{dias}d"] = round(float(r.get(f"VSO_{dias}d", 0)), 2)
+        rows.append(row)
+    df_out = pd.DataFrame(rows)
+    st.dataframe(df_out, use_container_width=True, hide_index=True)
+
+
+def render_velocimetros_vgv(
+    df_vendas: pd.DataFrame,
+    df_canal: pd.DataFrame,
+    filtros: FiltrosDashboard,
+    col_data: str,
+) -> None:
+    v = _v()
+    st.subheader("Velocímetros VGV por canal")
+    base = df_vendas.copy()
+    if col_data and col_data in base.columns:
+        base = _filtrar_df_periodo(base, col_data, filtros.data_ini, filtros.data_fim)
+
+    c_top, _, c_top2 = st.columns([1, 2, 1])
+    vgv_rio, ven_rio = _meta_vgv_canal(df_canal, filtros.mes_meta, filtros.ano_meta, "RIO")
+    qtd_rio, real_vgv_rio = _qtd_vgv(base)
+    with c_top:
+        v.criar_medidor(
+            "RIO · 100%", qtd_rio, ven_rio, real_vgv_rio, vgv_rio, qtd_rio, mostrar_vgv=True,
+        )
+
+    cols = st.columns(3)
+    for i, (key, titulo, _) in enumerate(CANAIS_VGV[1:]):
+        sub = _filtrar_canal_velocimetro(base, key)
+        qtd, real_vgv = _qtd_vgv(sub)
+        meta_vgv, meta_qtd = _meta_vgv_canal(df_canal, filtros.mes_meta, filtros.ano_meta, key)
+        with cols[i]:
+            v.criar_medidor(
+                titulo, qtd, meta_qtd, real_vgv, meta_vgv, qtd, mostrar_vgv=True,
             )
 
 
+def render_velocimetros_coordenador_vgv(
+    df_vendas: pd.DataFrame,
+    df_metas_coord: pd.DataFrame,
+    df_canal: pd.DataFrame,
+    filtros: FiltrosDashboard,
+    mapa_coord: Dict[str, str],
+    col_data: str,
+) -> None:
+    v = _v()
+    st.subheader("Velocímetro VGV por coordenador")
+    coords = filtros.coords_sel or sorted(set(mapa_coord.values()))
+    if not coords:
+        st.info("Nenhum coordenador disponível.")
+        return
+    base = df_vendas.copy()
+    if col_data and col_data in base.columns:
+        base = _filtrar_df_periodo(base, col_data, filtros.data_ini, filtros.data_fim)
+    cols = st.columns(min(3, len(coords)) or 1)
+    for i, coord in enumerate(coords):
+        emps = empreendimentos_de_coord(mapa_coord, [coord])
+        if filtros.emps_sel:
+            emps = [e for e in emps if e in {_limpar_emp(x) for x in filtros.emps_sel}]
+        sub = base[base["Empreendimento"].map(_limpar_emp).isin(emps)] if emps else base.iloc[0:0]
+        qtd, real_vgv = _qtd_vgv(sub)
+        meta_qtd = soma_meta_coord(
+            df_metas_coord, filtros.mes_meta, filtros.ano_meta,
+            "vendas", filtros.tipo_meta_col, coordenadores=[coord], empreendimentos=emps or None,
+        )
+        _, meta_vgv = _meta_vgv_canal(df_canal, filtros.mes_meta, filtros.ano_meta, "RIO")
+        # escala meta vgv proporcional aos emps do coord
+        meta_total = soma_meta_coord(
+            df_metas_coord, filtros.mes_meta, filtros.ano_meta,
+            "vendas", filtros.tipo_meta_col,
+        )
+        fator = (meta_qtd / meta_total) if meta_total > 0 else 0.0
+        meta_vgv_coord = meta_vgv * fator
+        with cols[i % len(cols)]:
+            v.criar_medidor(coord, qtd, meta_qtd, real_vgv, meta_vgv_coord, qtd, mostrar_vgv=True)
+
+
+def render_grafico_share_canal(df: pd.DataFrame) -> None:
+    st.subheader("Share por canal — realizado x meta")
+    agg = share_por_canal(df)
+    if agg.empty:
+        st.info("Sem dados para share por canal.")
+        return
+    fig = go.Figure()
+    fig.add_trace(go.Bar(name="Share realizado (%)", x=agg["Canal"], y=agg["Share_Real"], marker_color="#2563eb"))
+    fig.add_trace(go.Bar(name="Share meta (%)", x=agg["Canal"], y=agg["Share_Meta"], marker_color="#94a3b8"))
+    fig.update_layout(barmode="group", height=380, margin=dict(l=20, r=20, t=40, b=20))
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def render_grafico_evolucao_vgv(
+    df_vendas: pd.DataFrame,
+    df_canal: pd.DataFrame,
+    filtros: FiltrosDashboard,
+    col_data: str,
+) -> None:
+    st.subheader("Evolução VGV realizado x meta (Data da venda)")
+    if not col_data:
+        st.warning("Coluna Data da venda não encontrada.")
+        return
+    hoje = date.today()
+    ate_mes = hoje.month
+    real_df = _realizado_mensal_acumulado(df_vendas, col_data, filtros.ano_meta, ate_mes)
+    meta_df = _meta_mensal_acumulada(df_canal, filtros.ano_meta, ate_mes, "RIO")
+    if real_df.empty and meta_df.empty:
+        st.info("Sem dados de evolução.")
+        return
+    meses = list(range(1, ate_mes + 1))
+    nomes = [calendar.month_abbr[m] for m in meses]
+    fig = go.Figure()
+    if not meta_df.empty:
+        fig.add_trace(go.Scatter(
+            x=nomes, y=meta_df["Meta_VGV_Acum"], mode="lines+markers",
+            name="Meta VGV acum.", line=dict(color="#64748b", dash="dash"),
+        ))
+    if not real_df.empty:
+        fig.add_trace(go.Scatter(
+            x=nomes, y=real_df["Real_VGV_Acum"], mode="lines+markers",
+            name="Realizado VGV acum.", line=dict(color="#2563eb"),
+        ))
+    fig.update_layout(height=400, margin=dict(l=20, r=20, t=40, b=20), yaxis_title="VGV (R$)")
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def render_box_gap(
+    df_vendas: pd.DataFrame,
+    df_canal: pd.DataFrame,
+    filtros: FiltrosDashboard,
+    col_data: str,
+) -> None:
+    v = _v()
+    gap = calcular_gap_meta(df_vendas, df_canal, filtros, col_data)
+    st.markdown("##### Gap disponível para meta")
+    cor = "#16a34a" if gap["gap"] >= 0 else "#cb0935"
+    st.markdown(
+        f"""
+        <div class="vel-kpi-row">
+            <div class="vel-kpi"><div class="lbl">Meta acum. até {gap['ate_mes']:02d}/{gap['ano_ref']}</div>
+            <div class="val">{v.fmt_br_milhoes(gap['meta_acum'])}</div></div>
+            <div class="vel-kpi"><div class="lbl">Realizado acum.</div>
+            <div class="val">{v.fmt_br_milhoes(gap['real_acum'])}</div></div>
+            <div class="vel-kpi"><div class="lbl">Gap disponível para meta</div>
+            <div class="val" style="color:{cor}">{v.fmt_br_milhoes(gap['gap'])}</div></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+def render_rankings(
+    df_vendas: pd.DataFrame,
+    col_data: str,
+    filtros: FiltrosDashboard,
+) -> None:
+    st.subheader("Rankings por data da venda")
+    c1, c2 = st.columns(2)
+    with c1:
+        perfil = st.selectbox("Perfil", list(RANKING_PERFIS.keys()), key="dc_rank_perfil")
+    with c2:
+        metrica = st.selectbox("Indicador", ["VGV", "Quantidade"], key="dc_rank_metrica")
+    rank = montar_ranking(
+        df_vendas, perfil, col_data, filtros.data_ini, filtros.data_fim, metrica,
+    )
+    if rank.empty:
+        st.info("Sem dados para o ranking selecionado.")
+        return
+    st.dataframe(rank.head(50), use_container_width=True, hide_index=True)
+
+
+def render_share_diretor(df: pd.DataFrame) -> None:
+    st.subheader("Share por diretor")
+    agg = share_por_diretor(df)
+    if agg.empty:
+        st.info("Coluna Diretor de vendas não disponível na base.")
+        return
+    fig = go.Figure(go.Pie(labels=agg["Diretor"], values=agg["VGV"], hole=0.4))
+    fig.update_layout(height=400, margin=dict(l=20, r=20, t=40, b=20))
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.dataframe(agg, use_container_width=True, hide_index=True)
+
+
+def render_tabela_detalhada(
+    df: pd.DataFrame,
+    col_data: str,
+    filtros: FiltrosDashboard,
+) -> None:
+    v = _v()
+    st.subheader("Detalhamento de vendas")
+    c1, c2 = st.columns(2)
+    with c1:
+        dt_ini = st.date_input("Data venda — de", value=filtros.data_ini, key="dc_det_ini")
+    with c2:
+        dt_fim = st.date_input("Data venda — até", value=filtros.data_fim, key="dc_det_fim")
+    base = df.copy()
+    if col_data and col_data in base.columns:
+        base = _filtrar_df_periodo(base, col_data, dt_ini, dt_fim)
+    col_val = v.achar_coluna(base, ["Valor Real de Venda", "Valor Real", "Valor"])
+    cols_out = []
+    for c in ("Canal", "Empreendimento", "Imobiliária", "Ranking", col_val, "Volta ao caixa"):
+        if c and c in base.columns:
+            cols_out.append(c)
+    if not cols_out:
+        st.info("Colunas insuficientes para a tabela detalhada.")
+        return
+    out = base[cols_out].copy()
+    if col_val and col_val in out.columns:
+        out = out.rename(columns={col_val: "Valor Venda"})
+    if "Canal" not in out.columns and "Imobiliária" in out.columns:
+        out["Canal"] = out["Imobiliária"].map(_prefixo_imob)
+    st.dataframe(out, use_container_width=True, hide_index=True)
+
+
+def render_dashboard_comercial(
+    df_vendas: pd.DataFrame,
+    df_estoque: pd.DataFrame,
+    df_cotacoes: Optional[pd.DataFrame],
+    cred_fp: str,
+    col_data_venda: Optional[str] = None,
+) -> None:
+    """Ponto de entrada do dashboard comercial."""
+    v = _v()
+    try:
+        df_metas_coord = carregar_metas_coordenadores(cred_fp)
+        df_canal = carregar_metas_canal(cred_fp)
+    except Exception as exc:
+        st.error(f"Erro ao carregar metas: {exc}")
+        return
+
+    df_vendas = enriquecer_vendas_vcx(df_vendas, df_cotacoes)
+    col_data = col_data_venda or _col_data_venda(df_vendas)
+
+    filtros = render_filtros_dashboard(df_metas_coord, df_vendas)
+    mapa_coord = mapa_emp_coordenador(df_metas_coord, filtros.mes_meta, filtros.ano_meta)
+
+    df_f = _aplicar_filtros_base(df_vendas, filtros, mapa_coord, col_data, usar_periodo=True)
+    df_ctx = _aplicar_filtros_base(df_vendas, filtros, mapa_coord, col_data, usar_periodo=False)
+
+    df_vso = calcular_vso_por_emp(
+        df_ctx, df_estoque, filtros, mapa_coord, col_data, ref_fim=filtros.data_fim,
+    )
+    render_tabela_vso_meta(df_vso, df_metas_coord, df_f, filtros, col_data)
+
+    render_velocimetros_vgv(df_f, df_canal, filtros, col_data)
+    render_velocimetros_coordenador_vgv(
+        df_f, df_metas_coord, df_canal, filtros, mapa_coord, col_data,
+    )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        render_grafico_share_canal(df_f)
+    with c2:
+        render_grafico_evolucao_vgv(df_ctx, df_canal, filtros, col_data)
+
+    render_box_gap(df_ctx, df_canal, filtros, col_data)
+
+    render_rankings(df_f, col_data, filtros)
+    render_share_diretor(df_f)
+    render_tabela_detalhada(df_f, col_data, filtros)
+
+    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1.5rem 0;'/>", unsafe_allow_html=True)
+    df_ag = pd.DataFrame()
+    df_pastas = pd.DataFrame()
+    df_tabela = pd.DataFrame()
+    try:
+        pacote_funil = carregar_funil_painel_sf()
+        df_ag = pacote_funil.get("agendamentos") or pd.DataFrame()
+        df_pastas = pacote_funil.get("pastas") or pd.DataFrame()
+        pacote_pc = carregar_pacote_poder_compra_sf()
+        df_tabela = pacote_pc.get("tabela_comprometimento") or pd.DataFrame()
+    except Exception as exc:
+        st.warning(f"Funil/avaliações indisponíveis para tempos de conversão: {exc}")
+    emps_funil = filtros.emps_sel or None
+    if not emps_funil and filtros.coords_sel:
+        emps_funil = sorted(
+            e for e, c in mapa_coord.items() if c in filtros.coords_sel
+        )
+    render_secao_funil_tempos(
+        df_ag, df_pastas, df_ctx, df_estoque, df_tabela, emps_funil,
+    )
+
+
+# =============================================================================
+# FUNIL TEMPOS (inline — ex-velocimetro_funil_tempos.py)
+# =============================================================================
+
+# -*- coding: utf-8 -*-
+"""
+Tempos médios de conversão do funil e hipereficiência (comprou sem poder de compra).
+"""
+from dataclasses import dataclass
+from datetime import date
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+import streamlit as st
+
+
+
+@dataclass
+class TemposEmpreendimento:
+    empreendimento: str
+    media_agend_visita: Optional[float] = None
+    n_agend_visita: int = 0
+    media_visita_pasta: Optional[float] = None
+    n_visita_pasta: int = 0
+    media_pasta_aprov: Optional[float] = None
+    n_pasta_aprov: int = 0
+    media_aprov_venda: Optional[float] = None
+    n_aprov_venda: int = 0
+
+
+@dataclass
+class HipereficienciaEmp:
+    empreendimento: str
+    vendas: int = 0
+    hipereficiencia_qtd: int = 0
+    hipereficiencia_pct: float = 0.0
+
+
+
+
+
+
+def _parse_dt_series(df: pd.DataFrame, col: str) -> pd.Series:
+    v = _v()
+    if col not in df.columns:
+        return pd.Series(dtype="datetime64[ns]")
+    return v.parse_data_serie(df[col])
+
+
+def _dias_entre(dt_ini: Any, dt_fim: Any) -> Optional[float]:
+    if dt_ini is None or dt_fim is None or pd.isna(dt_ini) or pd.isna(dt_fim):
+        return None
+    try:
+        delta = (pd.Timestamp(dt_fim) - pd.Timestamp(dt_ini)).total_seconds() / 86400.0
+    except Exception:
+        return None
+    return float(delta) if delta >= 0 else None
+
+
+def _media(lst: List[float]) -> Optional[float]:
+    if not lst:
+        return None
+    return float(np.mean(lst))
+
+
+def _opp_id(val: Any) -> str:
+    s = str(val or "").strip()
+    return s if s.startswith("006") else ""
+
+
+def _indexar_pastas(
+    df_pastas: pd.DataFrame,
+) -> Tuple[Dict[Tuple[str, str], List[Tuple[Any, Any]]], Dict[Tuple[str, str], List[Tuple[Any, Any, str]]]]:
+    """Índices (emp, opp) e (emp, conta) → [(dt_criacao, dt_aprov, opp)]."""
+    por_opp: Dict[Tuple[str, str], List[Tuple[Any, Any]]] = {}
+    por_conta: Dict[Tuple[str, str], List[Tuple[Any, Any, str]]] = {}
+    if df_pastas is None or df_pastas.empty:
+        return por_opp, por_conta
+    v = _v()
+    col_emp = v.achar_coluna(df_pastas, v.ALIASES_EMPREENDIMENTO) or "Empreendimento"
+    col_cri = v.achar_coluna(df_pastas, v.ALIASES_DATA_CRIACAO) or "Data de criação"
+    col_apr = v.achar_coluna_aprovacao_safi(df_pastas)
+    col_opp = v.achar_coluna(df_pastas, ALIASES_OPP_AVAL) or "Oportunidade"
+    col_conta = v.achar_coluna(df_pastas, ["Conta__c", "Conta"]) or "Conta"
+    df = df_pastas.copy()
+    df["_cri"] = _parse_dt_series(df, col_cri)
+    df["_apr"] = _parse_dt_series(df, col_apr) if col_apr else pd.NaT
+    for _, row in df.iterrows():
+        emp = _limpar_emp(row.get(col_emp))
+        if not emp:
+            continue
+        opp = str(row.get(col_opp) or "").strip()
+        conta = str(row.get(col_conta) or "").strip()
+        cri, apr = row.get("_cri"), row.get("_apr")
+        if opp:
+            por_opp.setdefault((emp, opp), []).append((cri, apr))
+        if conta and conta.lower() not in ("nan", "none", ""):
+            por_conta.setdefault((emp, conta), []).append((cri, apr, opp))
+    return por_opp, por_conta
+
+
+def _menor_pasta_apos(
+    candidatos: List[Tuple[Any, Any]],
+    ref: Any,
+) -> Optional[Any]:
+    """Data de criação da pasta mais próxima após ref."""
+    best = None
+    best_d = None
+    for cri, _ in candidatos:
+        d = _dias_entre(ref, cri)
+        if d is None:
+            continue
+        if best_d is None or d < best_d:
+            best_d = d
+            best = cri
+    return best
+
+
+def calcular_tempos_agend_visita(
+    df_ag: pd.DataFrame,
+    empreendimentos: Optional[List[str]] = None,
+) -> Dict[str, Tuple[Optional[float], int]]:
+    """Média dias: data de criação do agendamento → data da visita."""
+    v = _v()
+    out: Dict[str, Tuple[Optional[float], int]] = {}
+    if df_ag is None or df_ag.empty:
+        return out
+    df = v.deduplicar_agendamentos_funil(df_ag)
+    col_emp = v.achar_coluna(df, v.ALIASES_EMPREENDIMENTO) or "Empreendimento"
+    col_cri = v.achar_coluna(df, v.ALIASES_DATA_CRIACAO) or "Data de criação"
+    col_vis = v.achar_coluna(df, v.ALIASES_DATA_VISITA) or "Data da visita"
+    if col_cri not in df.columns or col_vis not in df.columns:
+        return out
+    df = df.copy()
+    df["_cri"] = _parse_dt_series(df, col_cri)
+    df["_vis"] = _parse_dt_series(df, col_vis)
+    if col_emp in df.columns:
+        df["_emp"] = df[col_emp].map(_limpar_emp)
+    else:
+        df["_emp"] = ""
+    if empreendimentos:
+        sel = {_limpar_emp(e) for e in empreendimentos}
+        df = df[df["_emp"].isin(sel)]
+    por_emp: Dict[str, List[float]] = {}
+    for _, row in df.iterrows():
+        d = _dias_entre(row["_cri"], row["_vis"])
+        if d is None:
+            continue
+        emp = row["_emp"] or "(sem empreendimento)"
+        por_emp.setdefault(emp, []).append(d)
+    for emp, vals in por_emp.items():
+        out[emp] = (_media(vals), len(vals))
+    return out
+
+
+def calcular_tempos_visita_pasta(
+    df_ag: pd.DataFrame,
+    df_pastas: pd.DataFrame,
+    empreendimentos: Optional[List[str]] = None,
+) -> Dict[str, Tuple[Optional[float], int]]:
+    """Média dias: data da visita → data de criação da pasta."""
+    v = _v()
+    out: Dict[str, Tuple[Optional[float], int]] = {}
+    if df_ag is None or df_ag.empty or df_pastas is None or df_pastas.empty:
+        return out
+    ag = v.deduplicar_agendamentos_funil(df_ag)
+    pas = v.deduplicar_pastas_funil(df_pastas)
+    por_opp, por_conta = _indexar_pastas(pas)
+    col_emp = v.achar_coluna(ag, v.ALIASES_EMPREENDIMENTO) or "Empreendimento"
+    col_vis = v.achar_coluna(ag, v.ALIASES_DATA_VISITA) or "Data da visita"
+    ag = ag.copy()
+    ag["_vis"] = _parse_dt_series(ag, col_vis)
+    if col_emp in ag.columns:
+        ag["_emp"] = ag[col_emp].map(_limpar_emp)
+    else:
+        ag["_emp"] = ""
+    if empreendimentos:
+        sel = {_limpar_emp(e) for e in empreendimentos}
+        ag = ag[ag["_emp"].isin(sel)]
+    por_emp: Dict[str, List[float]] = {}
+    for _, row in ag.iterrows():
+        vis = row.get("_vis")
+        if pd.isna(vis):
+            continue
+        emp = row["_emp"] or "(sem empreendimento)"
+        opp = _opp_id(row.get("WhatId"))
+        conta = str(row.get("AccountId") or "").strip()
+        dt_pasta = None
+        if opp:
+            dt_pasta = _menor_pasta_apos(por_opp.get((emp, opp), []), vis)
+        if dt_pasta is None and conta:
+            dt_pasta = _menor_pasta_apos(
+                [(c, a) for c, a, _ in por_conta.get((emp, conta), [])],
+                vis,
+            )
+        d = _dias_entre(vis, dt_pasta)
+        if d is None:
+            continue
+        por_emp.setdefault(emp, []).append(d)
+    for emp, vals in por_emp.items():
+        out[emp] = (_media(vals), len(vals))
+    return out
+
+
+def calcular_tempos_pasta_aprovada(
+    df_pastas: pd.DataFrame,
+    empreendimentos: Optional[List[str]] = None,
+) -> Dict[str, Tuple[Optional[float], int]]:
+    """Média dias: data de criação da pasta → data de aprovação SAFI."""
+    v = _v()
+    out: Dict[str, Tuple[Optional[float], int]] = {}
+    if df_pastas is None or df_pastas.empty:
+        return out
+    df = v.deduplicar_pastas_funil(df_pastas)
+    col_emp = v.achar_coluna(df, v.ALIASES_EMPREENDIMENTO) or "Empreendimento"
+    col_cri = v.achar_coluna(df, v.ALIASES_DATA_CRIACAO) or "Data de criação"
+    col_apr = v.achar_coluna_aprovacao_safi(df)
+    if not col_apr or col_cri not in df.columns:
+        return out
+    df = df.copy()
+    df["_cri"] = _parse_dt_series(df, col_cri)
+    df["_apr"] = _parse_dt_series(df, col_apr)
+    df = df.dropna(subset=["_cri", "_apr"])
+    if col_emp in df.columns:
+        df["_emp"] = df[col_emp].map(_limpar_emp)
+    else:
+        df["_emp"] = ""
+    if empreendimentos:
+        sel = {_limpar_emp(e) for e in empreendimentos}
+        df = df[df["_emp"].isin(sel)]
+    por_emp: Dict[str, List[float]] = {}
+    for _, row in df.iterrows():
+        d = _dias_entre(row["_cri"], row["_apr"])
+        if d is None:
+            continue
+        emp = row["_emp"] or "(sem empreendimento)"
+        por_emp.setdefault(emp, []).append(d)
+    for emp, vals in por_emp.items():
+        out[emp] = (_media(vals), len(vals))
+    return out
+
+
+def calcular_tempos_aprov_venda(
+    df_pastas: pd.DataFrame,
+    df_vendas: pd.DataFrame,
+    empreendimentos: Optional[List[str]] = None,
+) -> Dict[str, Tuple[Optional[float], int]]:
+    """Média dias: data de aprovação SAFI → contrato gerado em (vendas)."""
+    v = _v()
+    out: Dict[str, Tuple[Optional[float], int]] = {}
+    if df_pastas is None or df_pastas.empty or df_vendas is None or df_vendas.empty:
+        return out
+    pas_ap = v.deduplicar_pastas_aprovadas_funil(df_pastas)
+    ven = v.deduplicar_vendas_funil(v.filtrar_vendas_comerciais(df_vendas))
+    col_apr = v.achar_coluna_aprovacao_safi(pas_ap)
+    col_opp_p = v.achar_coluna(pas_ap, ALIASES_OPP_AVAL) or "Oportunidade"
+    col_opp_v = v.achar_coluna(ven, v.ALIASES_ID_OPORTUNIDADE) or "ID da Oportunidade"
+    col_con = v.achar_coluna(ven, v.ALIASES_CONTRATO_GERADO) or "Contrato gerado em"
+    col_emp_v = v.achar_coluna(ven, v.ALIASES_EMPREENDIMENTO) or "Empreendimento"
+    if not col_apr or col_con not in ven.columns:
+        return out
+    pas_ap = pas_ap.copy()
+    pas_ap["_apr"] = _parse_dt_series(pas_ap, col_apr)
+    apr_por_opp: Dict[str, Any] = {}
+    for _, row in pas_ap.iterrows():
+        oid = str(row.get(col_opp_p) or "").strip()
+        if oid and oid not in apr_por_opp:
+            apr_por_opp[oid] = row["_apr"]
+    ven = ven.copy()
+    ven["_contrato"] = _parse_dt_series(ven, col_con)
+    if col_emp_v in ven.columns:
+        ven["_emp"] = ven[col_emp_v].map(_limpar_emp)
+    else:
+        ven["_emp"] = ""
+    if empreendimentos:
+        sel = {_limpar_emp(e) for e in empreendimentos}
+        ven = ven[ven["_emp"].isin(sel)]
+    por_emp: Dict[str, List[float]] = {}
+    for _, row in ven.iterrows():
+        oid = str(row.get(col_opp_v) or "").strip()
+        if not oid or oid not in apr_por_opp:
+            continue
+        d = _dias_entre(apr_por_opp[oid], row["_contrato"])
+        if d is None:
+            continue
+        emp = row["_emp"] or "(sem empreendimento)"
+        por_emp.setdefault(emp, []).append(d)
+    for emp, vals in por_emp.items():
+        out[emp] = (_media(vals), len(vals))
+    return out
+
+
+def montar_tabela_tempos_conversao(
+    df_ag: pd.DataFrame,
+    df_pastas: pd.DataFrame,
+    df_vendas: pd.DataFrame,
+    empreendimentos: Optional[List[str]] = None,
+) -> pd.DataFrame:
+    t1 = calcular_tempos_agend_visita(df_ag, empreendimentos)
+    t2 = calcular_tempos_visita_pasta(df_ag, df_pastas, empreendimentos)
+    t3 = calcular_tempos_pasta_aprovada(df_pastas, empreendimentos)
+    t4 = calcular_tempos_aprov_venda(df_pastas, df_vendas, empreendimentos)
+    emps = set(t1) | set(t2) | set(t3) | set(t4)
+    if empreendimentos:
+        emps |= {_limpar_emp(e) for e in empreendimentos}
+    rows = []
+    for emp in sorted(emps):
+        m1, n1 = t1.get(emp, (None, 0))
+        m2, n2 = t2.get(emp, (None, 0))
+        m3, n3 = t3.get(emp, (None, 0))
+        m4, n4 = t4.get(emp, (None, 0))
+        rows.append({
+            "Empreendimento": emp,
+            "Dias_Agend_Visita": round(m1, 1) if m1 is not None else None,
+            "N_Agend_Visita": n1,
+            "Dias_Visita_Pasta": round(m2, 1) if m2 is not None else None,
+            "N_Visita_Pasta": n2,
+            "Dias_Pasta_Aprov": round(m3, 1) if m3 is not None else None,
+            "N_Pasta_Aprov": n3,
+            "Dias_Aprov_Venda": round(m4, 1) if m4 is not None else None,
+            "N_Aprov_Venda": n4,
+        })
+    return pd.DataFrame(rows)
+
+
+def calcular_hipereficiencia_por_emp(
+    df_vendas: pd.DataFrame,
+    df_pastas_aprov: pd.DataFrame,
+    df_est_enr: pd.DataFrame,
+    df_tabela: pd.DataFrame,
+    empreendimentos: Optional[List[str]] = None,
+) -> pd.DataFrame:
+    """
+    Hipereficiência: clientes sem poder de compra suficiente que compraram unidade.
+    Usa pasta aprovada vinculada à oportunidade e preço real da venda como referência.
+    """
+    v = _v()
+    if df_vendas is None or df_vendas.empty:
+        return pd.DataFrame()
+    ven = v.deduplicar_vendas_funil(v.filtrar_vendas_comerciais(df_vendas))
+    col_emp = v.achar_coluna(ven, v.ALIASES_EMPREENDIMENTO) or "Empreendimento"
+    col_id = v.achar_coluna(ven, v.ALIASES_ID_OPORTUNIDADE) or "ID da Oportunidade"
+    col_val = v.achar_coluna(ven, ["Valor Real de Venda", "Valor Real", "Valor"])
+    if not col_id:
+        return pd.DataFrame()
+
+    pas_ap = pd.DataFrame()
+    if df_pastas_aprov is not None and not df_pastas_aprov.empty:
+        pas_ap = v.deduplicar_pastas_aprovadas_funil(df_pastas_aprov)
+    elif df_pastas_aprov is not None:
+        pas_ap = pd.DataFrame()
+
+    mapa_tab = mapa_tabela_por_oportunidade(df_tabela)
+    pas_por_opp: Dict[str, pd.Series] = {}
+    if not pas_ap.empty:
+        col_opp_p = v.achar_coluna(pas_ap, ALIASES_OPP_AVAL) or "Oportunidade"
+        col_apr = v.achar_coluna_aprovacao_safi(pas_ap)
+        if col_opp_p and col_apr:
+            tmp = pas_ap.copy()
+            tmp["_apr"] = _parse_dt_series(tmp, col_apr)
+            tmp = tmp.sort_values("_apr", ascending=False, na_position="last")
+            for _, row in tmp.iterrows():
+                oid = str(row.get(col_opp_p) or "").strip()
+                if oid and oid not in pas_por_opp:
+                    pas_por_opp[oid] = row
+
+    if empreendimentos:
+        sel = {_limpar_emp(e) for e in empreendimentos}
+        ven = ven[ven[col_emp].map(_limpar_emp).isin(sel)]
+
+    por_emp: Dict[str, Dict[str, int]] = {}
+    for _, row in ven.iterrows():
+        emp = _limpar_emp(row.get(col_emp))
+        oid = str(row.get(col_id) or "").strip()
+        preco = _num(row.get(col_val)) if col_val else 0.0
+        if preco <= 0:
+            preco = float(row.get("_vgv") or row.get("_vgv_venda") or 0.0)
+        if not emp or not oid:
+            continue
+        por_emp.setdefault(emp, {"vendas": 0, "hiper": 0})
+        por_emp[emp]["vendas"] += 1
+        pasta_row = pas_por_opp.get(oid)
+        if pasta_row is None:
+            continue
+        analise = analisar_pasta(
+            pasta_row, emp, df_est_enr, mapa_tab, {oid}, preco_override=preco,
+        )
+        if not analise.pc_suficiente:
+            por_emp[emp]["hiper"] += 1
+
+    rows = []
+    for emp, d in sorted(por_emp.items()):
+        vendas = d["vendas"]
+        hiper = d["hiper"]
+        rows.append({
+            "Empreendimento": emp,
+            "Vendas": vendas,
+            "Hipereficiencia_Qtd": hiper,
+            "Hipereficiencia_Pct": round(hiper / vendas * 100.0, 1) if vendas > 0 else 0.0,
+        })
+    return pd.DataFrame(rows)
+
+
+def render_secao_funil_tempos(
+    df_ag: pd.DataFrame,
+    df_pastas: pd.DataFrame,
+    df_vendas: pd.DataFrame,
+    df_estoque: pd.DataFrame,
+    df_tabela_comp: pd.DataFrame,
+    empreendimentos: Optional[List[str]] = None,
+) -> None:
+
+    st.subheader("Tempos médios de conversão por empreendimento")
+    st.caption(
+        "Agendamento→Visita (criação×visita) · Visita→Pasta (visita×criação pasta) · "
+        "Pasta→Aprovada (criação×aprovação) · Aprovada→Venda (aprovação×contrato gerado)"
+    )
+    tab_tempos = montar_tabela_tempos_conversao(
+        df_ag, df_pastas, df_vendas, empreendimentos,
+    )
+    if tab_tempos.empty:
+        st.info("Sem dados de funil para calcular tempos de conversão.")
+    else:
+        st.dataframe(tab_tempos, use_container_width=True, hide_index=True)
+
+    st.subheader("Hipereficiência")
+    st.caption(
+        "Clientes **sem poder de compra** suficiente (avaliação aprovada) que **compraram** unidade."
+    )
+    _, enr = agregar_estoque(df_estoque if df_estoque is not None else pd.DataFrame())
+    pas_aprov = pd.DataFrame()
+    if df_pastas is not None and not df_pastas.empty:
+        pas_aprov = _v().deduplicar_pastas_aprovadas_funil(df_pastas)
+    tab_hiper = calcular_hipereficiencia_por_emp(
+        df_vendas, pas_aprov, enr, df_tabela_comp, empreendimentos,
+    )
+    if tab_hiper.empty:
+        st.info("Sem vendas para calcular hipereficiência.")
+    else:
+        st.dataframe(tab_hiper, use_container_width=True, hide_index=True)
 def _corpo_painel_metas(
     df_vendas: pd.DataFrame,
     df_metas: pd.DataFrame,
@@ -7227,134 +10799,83 @@ def _corpo_painel_metas(
     sid: str,
 ) -> None:
 
-    # -------------------------------------------------------------------------
-    # LINHA ÚNICA DE FILTROS
-    # -------------------------------------------------------------------------
-    anos_disponiveis = sorted(
-        int(x)
-        for x in df_vendas["_ano"].dropna().unique().tolist()
-        if pd.notna(x) and int(x) > 2000
-    )
-    if not anos_disponiveis and col_contrato_gerado:
-        dt_anos = _serie_data_contrato(df_vendas, col_contrato_gerado).dropna()
-        if not dt_anos.empty:
-            anos_disponiveis = sorted(int(y) for y in dt_anos.dt.year.unique() if int(y) > 2000)
+    df_estoque = pd.DataFrame()
+    df_ag_v2 = pd.DataFrame()
+    df_pastas_v2 = pd.DataFrame()
+    df_cotacoes = pd.DataFrame()
+    try:
+        df_estoque = carregar_estoque_painel_sf()
+    except Exception as exc:
+        st.warning(f"Estoque SF indisponível: {exc}")
+    try:
+        pacote_funil_v2 = carregar_funil_painel_sf()
+        df_ag_v2 = deduplicar_agendamentos_funil(_coalesce_df(pacote_funil_v2.get("agendamentos")))
+        df_pastas_v2 = deduplicar_pastas_funil(_coalesce_df(pacote_funil_v2.get("pastas")))
+    except Exception as exc:
+        st.warning(f"Funil SF (painel v2): {exc}")
+    try:
+        df_cotacoes = carregar_cotacoes_painel_sf()
+    except Exception:
+        pass
 
-    meses_no_ano = list(range(1, 13))
-    mes_atual = datetime.now().month
-    ano_atual = datetime.now().year
-    mes_padrao = mes_atual if mes_atual in meses_no_ano else 1
-    default_anos = (
-        [ano_atual]
-        if ano_atual in anos_disponiveis
-        else ([anos_disponiveis[-1]] if anos_disponiveis else [])
-    )
-    regioes_disponiveis = sorted(set(str(x).strip() for x in df_metas["Regiao_Coord"].dropna().unique() if str(x).strip()))
-    
-    todos_emps_vendas = sorted(list(set(str(x).strip() for x in df_vendas["Empreendimento"].dropna().unique() if str(x).strip())))
+    df_pastas_aprov = pd.DataFrame()
+    df_tabela_comp = pd.DataFrame()
+    try:
+        pacote_pc = carregar_pacote_poder_compra_sf()
+        df_pastas_aprov = pacote_pc.get("pastas_aprovadas") or pd.DataFrame()
+        df_tabela_comp = pacote_pc.get("tabela_comprometimento") or pd.DataFrame()
+    except Exception as exc:
+        st.warning(f"Pacote poder de compra: {exc}")
 
-    st.markdown("<div style='margin-bottom:1rem; text-align: center;'><strong>Filtros</strong></div>", unsafe_allow_html=True)
-    
-    col_filtros = st.columns(6) 
-    with col_filtros[0]:
-        canais_sel = st.multiselect("Canal da Meta", ["RIO", "DIR", "PARC", "RJ"], default=["RIO"])
-    with col_filtros[1]:
-        anos_sel = st.multiselect("Ano", anos_disponiveis, default=default_anos)
-    with col_filtros[2]:
-        meses_venda_sel = st.multiselect("Mês da Venda", meses_no_ano, default=[mes_padrao])
-    with col_filtros[3]:
-        meses_meta_sel = st.multiselect("Mês da Meta", meses_no_ano, default=[mes_padrao])
-    with col_filtros[4]:
-        regioes_sel = st.multiselect("Região", regioes_disponiveis, default=[])
-    with col_filtros[5]:
-        emps_sel = st.multiselect("Empreendimento", todos_emps_vendas, default=[])
-
-    # -------------------------------------------------------------------------
-    # Aplicação de Filtros
-    # -------------------------------------------------------------------------
-    vendas_f = df_vendas.copy()
-    metas_f = df_metas.copy()
-
-    vendas_f = filtrar_vendas_competencia(
-        vendas_f, anos_sel, meses_venda_sel, col_contrato_gerado
+    filtros_v2 = render_painel_metas_v2(
+        df_vendas,
+        df_vendas_painel,
+        col_contrato_gerado,
+        cred_fp,
+        df_estoque=df_estoque,
+        df_ag=df_ag_v2,
+        df_pastas=df_pastas_v2,
+        df_cotacoes=df_cotacoes,
+        df_pastas_aprov=df_pastas_aprov,
+        df_tabela_comp=df_tabela_comp,
+        proj=None,
     )
 
-    if meses_meta_sel:
-        metas_f = metas_f[metas_f["Mes_Num"].isin(meses_meta_sel)]
-    
-    if regioes_sel:
-        metas_f = metas_f[metas_f["Regiao_Coord"].isin(regioes_sel)]
-        if not emps_sel:
-                regioes_base = [r.split(" - ")[0].strip() for r in regioes_sel]
-                vendas_f = vendas_f[vendas_f["Regiao_Coord"].isin(regioes_sel) | vendas_f["Região"].isin(regioes_base)]
-        else:
-                vendas_f = vendas_f[vendas_f["Regiao_Coord"].isin(regioes_sel)]
-    
-    if emps_sel:
-        metas_f = metas_f[metas_f["Empreendimento"].isin(emps_sel)]
-        vendas_f = vendas_f[vendas_f["Empreendimento"].isin(emps_sel)]
+    vendas_f = filtrar_vendas_painel_v2(
+        df_vendas, filtros_v2, col_contrato_gerado or "", col_canal,
+    )
 
-    fator_meta = 0.0
-    mask_vendas = pd.Series(False, index=vendas_f.index)
+    try:
+        df_metas_coord = carregar_metas_coordenadores(cred_fp)
+        df_canal = carregar_metas_canal(cred_fp)
+    except Exception:
+        df_metas_coord = pd.DataFrame()
+        df_canal = pd.DataFrame()
 
-    if not canais_sel or "RIO" in canais_sel:
-        fator_meta = 1.0
-        mask_vendas = pd.Series(True, index=vendas_f.index)
+    if filtros_v2.tipo_indicador == "vendas":
+        total_meta_vgv, total_meta_qtd = meta_canal_vgv_vendas(
+            df_canal, filtros_v2.mes_meta, filtros_v2.ano_meta, filtros_v2.canal_meta,
+        )
+        if total_meta_qtd <= 0:
+            total_meta_qtd = soma_meta_coord(
+                df_metas_coord, filtros_v2.mes_meta, filtros_v2.ano_meta,
+                "vendas", filtros_v2.tipo_meta_col, filtros_v2.emps_sel or None,
+            )
     else:
-        if "DIR" in canais_sel:
-                fator_meta += 0.50
-                mask_vendas |= (vendas_f["Canal_Agrupado"] == "DV RJ")
-        if "PARC" in canais_sel and col_canal:
-                fator_meta += 0.25
-                mask_vendas |= vendas_f[col_canal].astype(str).str.upper().str.strip().apply(lambda x: x.split('-')[0].strip() == 'RJG' or x == 'RJG')
-        if "RJ" in canais_sel and col_canal:
-                fator_meta += 0.25
-                mask_vendas |= vendas_f[col_canal].astype(str).str.upper().str.strip().apply(lambda x: x.split('-')[0].strip() == 'RJ' or x == 'RJ')
-
-    fator_meta = min(1.0, factor_meta := fator_meta)
-    vendas_f = vendas_f[mask_vendas]
-
-    total_meta_qtd_base = float(metas_f["Meta_Qtd"].sum()) if not metas_f.empty else 0.0
-    total_meta_vgv_base = float(metas_f["Meta_VGV"].sum()) if not metas_f.empty else 0.0
-
-    metas_f["Meta_Qtd"] = (metas_f["Meta_Qtd"] * fator_meta).apply(math.floor)
-    metas_f["Meta_VGV"] = metas_f["Meta_VGV"] * fator_meta
-
-    total_realizado_qtd = float(vendas_f["_qtd_venda"].sum())
-    total_meta_qtd = float(metas_f["Meta_Qtd"].sum()) if not metas_f.empty else 0.0
-    total_vgv_realizado = float(vendas_f["_vgv_venda"].sum())
-    total_meta_vgv = float(metas_f["Meta_VGV"].sum()) if not metas_f.empty else 0.0
-
-    pct_qtd = (total_realizado_qtd / total_meta_qtd * 100.0) if total_meta_qtd > 0 else 0.0
-    pct_vgv = (total_vgv_realizado / total_meta_vgv * 100.0) if total_meta_vgv > 0 else 0.0
-
-    if total_realizado_qtd <= 0 and len(df_vendas) > 0:
-        n_sem_comp = int(df_vendas["_mes"].isna().sum()) if "_mes" in df_vendas.columns else 0
-        st.caption(
-                f"Filtros ativos: ano={anos_sel or 'todos'} · mês venda={meses_venda_sel or 'todos'} · "
-                f"mês meta={meses_meta_sel or 'todos'} · "
-                f"base total={len(df_vendas):,} vendas · sem mês identificado={n_sem_comp:,}".replace(",", ".")
+        total_meta_vgv = 0.0
+        total_meta_qtd = soma_meta_coord(
+            df_metas_coord, filtros_v2.mes_meta, filtros_v2.ano_meta,
+            filtros_v2.tipo_indicador, filtros_v2.tipo_meta_col,
+            filtros_v2.emps_sel or None,
         )
 
-    st.markdown(
-        f"""
-        <div class="vel-kpi-row" style="margin-top: 1rem;">
-                <div class="vel-kpi"><div class="lbl">Qtd Meta</div><div class="val">{int(total_meta_qtd)}</div></div>
-                <div class="vel-kpi"><div class="lbl">Qtd Realizado</div><div class="val">{fmt_qtd(total_realizado_qtd)}</div></div>
-                <div class="vel-kpi"><div class="lbl">% Qtd</div><div class="val">{pct_qtd:.1f}%</div></div>
-        </div>
-        <div class="vel-kpi-row">
-                <div class="vel-kpi"><div class="lbl">VGV Meta</div><div class="val">{fmt_br_milhoes(total_meta_vgv)}</div></div>
-                <div class="vel-kpi"><div class="lbl">VGV Realizado</div><div class="val val--red">{fmt_br_milhoes(total_vgv_realizado)}</div></div>
-                <div class="vel-kpi"><div class="lbl">% VGV</div><div class="val">{pct_vgv:.1f}%</div></div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+    fator_meta = FATORES_CANAL.get((filtros_v2.canal_meta or "RIO").strip().upper(), 0.0)
+    total_realizado_qtd = float(vendas_f["_qtd_venda"].sum()) if "_qtd_venda" in vendas_f.columns else float(len(vendas_f))
+    total_vgv_realizado = float(vendas_f["_vgv_venda"].sum()) if "_vgv_venda" in vendas_f.columns else 0.0
 
     st.subheader("Perfil das Vendas")
-    qtd_facilitada = float(vendas_f[vendas_f["Tipo_Venda"] == "Facilitada"]["_qtd_venda"].sum())
-    qtd_normal = float(vendas_f[vendas_f["Tipo_Venda"] == "Normal"]["_qtd_venda"].sum())
+    qtd_facilitada = float(vendas_f[vendas_f["Tipo_Venda"] == "Facilitada"]["_qtd_venda"].sum()) if "Tipo_Venda" in vendas_f.columns else 0.0
+    qtd_normal = float(vendas_f[vendas_f["Tipo_Venda"] == "Normal"]["_qtd_venda"].sum()) if "Tipo_Venda" in vendas_f.columns else 0.0
     st.markdown(
         f"""
         <div class="vel-kpi-row">
@@ -7364,34 +10885,6 @@ def _corpo_painel_metas(
         """,
         unsafe_allow_html=True,
     )
-
-    st.subheader("Visão geral")
-    c1, c2, c3 = st.columns([1, 2, 1])
-    with c2:
-        criar_medidor("Geral — quantidade vs meta", float(total_realizado_qtd), total_meta_qtd, total_vgv_realizado, total_meta_vgv, total_realizado_qtd)
-
-    st.subheader("Por região")
-    if "Regiao_Coord" in metas_f.columns:
-        regioes_m = sorted(str(x).strip() for x in metas_f["Regiao_Coord"].dropna().unique() if str(x).strip())
-        if regioes_m:
-                cols = st.columns(min(3, len(regioes_m)) or 1)
-                for i, regiao in enumerate(regioes_m):
-                    with cols[i % len(cols)]:
-                        m_reg = metas_f[metas_f["Regiao_Coord"] == regiao]
-                        v_reg = vendas_f[vendas_f["Regiao_Coord"] == regiao]
-                        criar_medidor(regiao, float(v_reg["_qtd_venda"].sum()), m_reg["Meta_Qtd"].sum(), v_reg["_vgv_venda"].sum(), m_reg["Meta_VGV"].sum(), float(v_reg["_qtd_venda"].sum()))
-
-    # -------------------------------------------------------------------------
-    # TABELAS
-    # -------------------------------------------------------------------------
-    st.subheader("Tabela Resumo: Por Região")
-    if "Regiao_Coord" in metas_f.columns:
-        vg_reg = vendas_f.groupby("Regiao_Coord", as_index=False).agg(real_qtd=("_qtd_venda", "sum"), real_vgv=("_vgv_venda", "sum")).rename(columns={"Regiao_Coord": "Região"})
-        mg_reg = metas_f.groupby("Regiao_Coord", as_index=False).agg(meta_qtd=("Meta_Qtd", "sum"), meta_vgv=("Meta_VGV", "sum")).rename(columns={"Regiao_Coord": "Região"})
-        tab_reg = vg_reg.merge(mg_reg, on="Região", how="outer").fillna(0)
-        tab_reg["% Qtd"] = tab_reg.apply(lambda r: (r["real_qtd"] / r["meta_qtd"] * 100.0) if r["meta_qtd"] > 0 else 0.0, axis=1)
-        tab_reg["% VGV"] = tab_reg.apply(lambda r: (r["real_vgv"] / r["meta_vgv"] * 100.0) if r["meta_vgv"] > 0 else 0.0, axis=1)
-        st.dataframe(tab_reg.sort_values("meta_qtd", ascending=False), use_container_width=True, hide_index=True)
 
     # -------------------------------------------------------------------------
     # FUNIL IDEAL E ENGENHARIA REVERSA
@@ -7455,49 +10948,15 @@ def _corpo_painel_metas(
     # -------------------------------------------------------------------------
     # Projeção de Vendas (regressão diária — Contrato gerado em)
     # -------------------------------------------------------------------------
-    mes_corrente = datetime.now().month
-    metas_mes_atual = metas_f[metas_f["Mes_Num"] == mes_corrente] if "Mes_Num" in metas_f.columns else metas_f.iloc[0:0]
-    if metas_mes_atual.empty and "Mes_Num" in df_metas.columns:
-        # fallback: meta do mês corrente na base completa, com mesmos filtros de região/emp e fator de canal
-        metas_mes_atual = df_metas[df_metas["Mes_Num"] == mes_corrente].copy()
-        if regioes_sel:
-                metas_mes_atual = metas_mes_atual[metas_mes_atual["Regiao_Coord"].isin(regioes_sel)]
-        if emps_sel:
-                metas_mes_atual = metas_mes_atual[metas_mes_atual["Empreendimento"].isin(emps_sel)]
-        metas_mes_atual["Meta_VGV"] = metas_mes_atual["Meta_VGV"] * fator_meta
-        if "Meta_Qtd" in metas_mes_atual.columns:
-                metas_mes_atual["Meta_Qtd"] = (metas_mes_atual["Meta_Qtd"] * fator_meta).apply(math.floor)
-    meta_vgv_proj = float(metas_mes_atual["Meta_VGV"].sum()) if not metas_mes_atual.empty else float(total_meta_vgv)
-    meta_qtd_proj = float(metas_mes_atual["Meta_Qtd"].sum()) if (not metas_mes_atual.empty and "Meta_Qtd" in metas_mes_atual.columns) else float(total_meta_qtd)
+    mes_corrente = filtros_v2.mes_meta
+    meta_vgv_proj = float(total_meta_vgv)
+    meta_qtd_proj = float(total_meta_qtd)
 
     if col_contrato_gerado:
-        # Base comercial; mesmos filtros de região/emp/canal do painel (RIO = todas as vendas).
-        base_proj = df_vendas_painel.copy()
-        if regioes_sel:
-                if "Região" in base_proj.columns:
-                    regioes_base = [r.split(" - ")[0].strip() for r in regioes_sel]
-                    base_proj = base_proj[
-                        base_proj["Regiao_Coord"].isin(regioes_sel) | base_proj["Região"].isin(regioes_base)
-                    ]
-                else:
-                    base_proj = base_proj[base_proj["Regiao_Coord"].isin(regioes_sel)]
-        if emps_sel:
-                base_proj = base_proj[base_proj["Empreendimento"].isin(emps_sel)]
-
-        # Mesma regra do KPI: RIO (ou vazio) = 100% das vendas comerciais; senão, recorte por canal.
-        if canais_sel and "RIO" not in canais_sel:
-                mask_p = pd.Series(False, index=base_proj.index)
-                if "DIR" in canais_sel:
-                    mask_p |= (base_proj["Canal_Agrupado"] == "DV RJ")
-                if "PARC" in canais_sel and col_canal:
-                    mask_p |= base_proj[col_canal].astype(str).str.upper().str.strip().apply(
-                        lambda x: x.split("-")[0].strip() == "RJG" or x == "RJG"
-                    )
-                if "RJ" in canais_sel and col_canal:
-                    mask_p |= base_proj[col_canal].astype(str).str.upper().str.strip().apply(
-                        lambda x: x.split("-")[0].strip() == "RJ" or x == "RJ"
-                    )
-                base_proj = base_proj[mask_p]
+        base_proj = filtrar_vendas_painel_v2(
+            df_vendas_painel, filtros_v2, col_contrato_gerado, col_canal,
+            aplicar_periodo=False,
+        )
 
         try:
                 proj = projetar_vendas_mes_atual(
@@ -7655,102 +11114,9 @@ def _corpo_painel_metas(
         st.warning("Coluna 'Contrato gerado em' não encontrada — seção de Projeção de Vendas indisponível.")
 
     # -------------------------------------------------------------------------
-    # Comparativo de Vendas Eficiência Isolado (Janela Histórica: Dia 1 ao Dia Atual MTD)
+    # Comparativos MTD parciais (dia 1 ao dia atual)
     # -------------------------------------------------------------------------
-    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
-    dia_atual_janela = datetime.now().day
-    st.subheader(f"Comparativo de Vendas (Dia 01 ao Dia {dia_atual_janela:02d} do Mês)")
-    
-    if col_contrato_gerado:
-        # Base de espelho limpa para o gráfico de eficiência temporal sem interferência de filtros de UI de competência
-        df_grafico_eficiencia = df_vendas.copy()
-        df_grafico_eficiencia["Data_Contrato_DT"] = parse_data_serie(df_grafico_eficiencia[col_contrato_gerado])
-        df_grafico_eficiencia = df_grafico_eficiencia.dropna(subset=["Data_Contrato_DT"])
-    
-        if not df_grafico_eficiencia.empty:
-                # Trava a janela da série histórica estritamente do dia 01 ao dia atual de cada mês para medição justa de ritmo MTD
-                df_parcial_janela = df_grafico_eficiencia[df_grafico_eficiencia["Data_Contrato_DT"].dt.day <= dia_atual_janela].copy()
-        
-                df_parcial_janela["_ano_c"] = df_parcial_janela["Data_Contrato_DT"].dt.year
-                df_parcial_janela["_mes_c"] = df_parcial_janela["Data_Contrato_DT"].dt.month
-        
-                df_comp = df_parcial_janela.groupby(["_ano_c", "_mes_c"], as_index=False).agg(
-                    QTD=("_qtd_venda", "sum"),
-                    VGV=("_vgv_venda", "sum")
-                ).sort_values(["_ano_c", "_mes_c"])
-        
-                df_comp["Periodo"] = df_comp["_mes_c"].astype(str).str.zfill(2) + "/" + df_comp["_ano_c"].astype(str)
-                df_comp["VGV_Formatado"] = df_comp["VGV"].apply(lambda x: fmt_br_milhoes(x))
-                df_comp["QTD_Formatado"] = df_comp["QTD"].apply(lambda x: fmt_qtd(x))
-        
-                fig_linha = make_subplots(specs=[[{"secondary_y": True}]])
-        
-                fig_linha.add_trace(
-                    go.Scatter(
-                        x=df_comp["Periodo"], 
-                        y=df_comp["QTD"], 
-                        mode="lines+markers+text",
-                        name="QTD Vendas",
-                        line=dict(color=COR_AZUL_ESC, width=3),
-                        marker=dict(size=8, color=COR_AZUL_ESC),
-                        text=df_comp["QTD_Formatado"],
-                        textposition="top center",
-                        textfont=dict(color=COR_AZUL_ESC, size=11, family="Inter")
-                    ),
-                    secondary_y=False,
-                )
-        
-                fig_linha.add_trace(
-                    go.Scatter(
-                        x=df_comp["Periodo"], 
-                        y=df_comp["VGV"], 
-                        mode="lines+markers+text",
-                        name="VGV Real",
-                        line=dict(color=COR_VERMELHO, width=3),
-                        marker=dict(size=8, color=COR_VERMELHO),
-                        text=df_comp["VGV_Formatado"],
-                        textposition="bottom center",
-                        textfont=dict(color=COR_VERMELHO, size=11, family="Inter")
-                    ),
-                    secondary_y=True,
-                )
-        
-                fig_linha.update_layout(
-                    margin=dict(l=20, r=20, t=40, b=20),
-                    paper_bgcolor="rgba(0,0,0,0)",
-                    plot_bgcolor="rgba(0,0,0,0)",
-                    font=dict(family="Inter", color=COR_TEXTO_PRETO),
-                    legend=dict(
-                        orientation="h", yanchor="bottom", y=1.08, xanchor="center", x=0.5,
-                        font=dict(color=COR_TEXTO_PRETO, family="Inter", size=12),
-                    ),
-                    hovermode="x unified",
-                )
-
-                fig_linha.update_xaxes(
-                    title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
-                    tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
-                )
-                fig_linha.update_yaxes(
-                    title_text="Quantidade (Vendas)",
-                    title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
-                    tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
-                    secondary_y=False,
-                    showgrid=False,
-                )
-                fig_linha.update_yaxes(
-                    title_text="VGV Real (R$)",
-                    title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
-                    tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
-                    secondary_y=True,
-                    showgrid=True,
-                    gridcolor="rgba(226, 232, 240, 0.5)",
-                )
-                st.plotly_chart(fig_linha, use_container_width=True, config={"displayModeBar": False})
-        else:
-                st.info("Não há dados de vendas no período acumulado de eficiência para exibir.")
-    else:
-        st.warning("A coluna de Contrato Gerado em não foi encontrada. Impossível renderizar a linha do tempo.")
+    render_comparativos_mtd_funil(df_vendas, col_contrato_gerado)
 
     st.markdown(
         f'<div class="footer" style="text-align:center;padding:1rem 0;color:{COR_TEXTO_PRETO};font-size:0.82rem;">'
@@ -7942,12 +11308,45 @@ def main() -> None:
     df_vendas["_vgv_venda"] = df_vendas["_vgv"] * df_vendas["_peso_coord"]
     df_vendas_painel = df_vendas.copy()
 
-    tab_metas, tab_funil_emp = st.tabs(["Metas & Projeção", "Funil por Empreendimento"])
+    tab_metas, tab_dashboard, tab_funil_emp, tab_poder_compra = st.tabs(
+        ["Metas & Projeção", "Dashboard Comercial", "Funil por Empreendimento", "Poder de Compra"]
+    )
     with tab_funil_emp:
         render_aba_funil_empreendimentos(
             df_metas=df_metas,
             df_vendas=df_vendas_painel,
             col_contrato_gerado=col_contrato_gerado,
+        )
+    with tab_poder_compra:
+        try:
+            pacote_pc = carregar_pacote_poder_compra_sf()
+            df_est_pc = carregar_estoque_painel_sf()
+            _, enr_pc = agregar_estoque(df_est_pc)
+            render_aba_poder_compra(
+                pacote_pc.get("pastas_aprovadas") or pd.DataFrame(),
+                enr_pc,
+                df_vendas_painel,
+                pacote_pc.get("tabela_comprometimento") or pd.DataFrame(),
+            )
+        except Exception as exc:
+            st.error(f"Não foi possível carregar aba Poder de Compra: {exc}")
+    with tab_dashboard:
+        df_est_dc = pd.DataFrame()
+        df_cot_dc = pd.DataFrame()
+        try:
+            df_est_dc = carregar_estoque_painel_sf()
+        except Exception as exc:
+            st.warning(f"Estoque SF indisponível: {exc}")
+        try:
+            df_cot_dc = carregar_cotacoes_painel_sf()
+        except Exception:
+            pass
+        render_dashboard_comercial(
+            df_vendas=df_vendas_painel,
+            df_estoque=df_est_dc,
+            df_cotacoes=df_cot_dc,
+            cred_fp=cred_fp,
+            col_data_venda=col_data_venda,
         )
     with tab_metas:
         _corpo_painel_metas(
