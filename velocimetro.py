@@ -11072,6 +11072,31 @@ def _idx_pareto_corte(cum: np.ndarray, alvo: float) -> int:
     return max(len(cum) - 1, 0)
 
 
+def _pareto_linha_corte(fig: go.Figure, x: float, cor: str, rotulo: str) -> None:
+    """Linha vertical de corte ABC — evita add_vline (incompatível com subplots/categóricos)."""
+    fig.add_shape(
+        type="line",
+        x0=x,
+        x1=x,
+        y0=0,
+        y1=1,
+        xref="x",
+        yref="paper",
+        line=dict(dash="dash", color=cor, width=1.5),
+        layer="below",
+    )
+    fig.add_annotation(
+        x=x,
+        y=1.02,
+        xref="x",
+        yref="paper",
+        text=rotulo,
+        showarrow=False,
+        font=dict(color=cor, size=11),
+        xanchor="center",
+    )
+
+
 def _plot_pareto_abc(
     df: pd.DataFrame,
     dim_col: str,
@@ -11120,7 +11145,7 @@ def _plot_pareto_abc(
     for alvo, cor in ((75.0, "#f59e0b"), (95.0, "#ef4444")):
         idx = _idx_pareto_corte(cum_pct, alvo)
         if idx < len(labels):
-            fig.add_vline(x=idx, line_dash="dash", line_color=cor, annotation_text=f"{alvo:.0f}%")
+            _pareto_linha_corte(fig, float(idx), cor, f"{alvo:.0f}%")
     fig.update_layout(
         title=titulo, barmode="stack", height=460,
         margin=dict(l=20, r=20, t=50, b=80),
