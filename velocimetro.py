@@ -11100,18 +11100,19 @@ def _plot_pareto_abc(
         st.info(f"Sem volume para {titulo}.")
         return
     labels = list(pivot.index.astype(str))
+    x_idx = list(range(len(labels)))
     totals = pivot["_tot"].values.astype(float)
     cum_pct = np.cumsum(totals) / totals.sum() * 100.0
     fig = make_subplots(specs=[[{"secondary_y": True}]])
     cores = {"RIO": "#2563eb", "DIR": "#16a34a", "GC": "#f59e0b", "PC": "#8b5cf6"}
     for canal in CANAIS_STACK:
         fig.add_trace(
-            go.Bar(x=labels, y=pivot[canal].values, name=canal, marker_color=cores.get(canal, "#64748b")),
+            go.Bar(x=x_idx, y=pivot[canal].values, name=canal, marker_color=cores.get(canal, "#64748b")),
             secondary_y=False,
         )
     fig.add_trace(
         go.Scatter(
-            x=labels, y=cum_pct, name="% acumulada", mode="lines+markers",
+            x=x_idx, y=cum_pct, name="% acumulada", mode="lines+markers",
             line=dict(color="#dc2626", width=2), marker=dict(size=6),
         ),
         secondary_y=True,
@@ -11119,12 +11120,13 @@ def _plot_pareto_abc(
     for alvo, cor in ((75.0, "#f59e0b"), (95.0, "#ef4444")):
         idx = _idx_pareto_corte(cum_pct, alvo)
         if idx < len(labels):
-            fig.add_vline(x=labels[idx], line_dash="dash", line_color=cor, annotation_text=f"{alvo:.0f}%")
+            fig.add_vline(x=idx, line_dash="dash", line_color=cor, annotation_text=f"{alvo:.0f}%")
     fig.update_layout(
         title=titulo, barmode="stack", height=460,
         margin=dict(l=20, r=20, t=50, b=80),
         legend=dict(orientation="h", y=-0.25),
     )
+    fig.update_xaxes(tickmode="array", tickvals=x_idx, ticktext=labels)
     fig.update_yaxes(title_text="Quantidade", secondary_y=False)
     fig.update_yaxes(title_text="% acumulada", range=[0, 105], secondary_y=True)
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, key=_plotly_key(key_prefix))
