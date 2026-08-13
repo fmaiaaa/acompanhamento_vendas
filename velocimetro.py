@@ -7113,15 +7113,19 @@ def _filtrar_opps_abertas(df: pd.DataFrame) -> pd.DataFrame:
 
 def _filtrar_df_periodo(
     df: pd.DataFrame,
-    aliases_data: List[str],
+    col_ou_aliases,
     ini: date,
     fim: date,
 ) -> pd.DataFrame:
+    """Filtra linhas cuja coluna de data está em [ini, fim]. Aceita nome de coluna ou lista de aliases."""
     if df is None or df.empty:
-        return pd.DataFrame()
-    col = achar_coluna(df, aliases_data)
-    if not col:
-        return pd.DataFrame()
+        return df.iloc[0:0].copy() if df is not None else pd.DataFrame()
+    if isinstance(col_ou_aliases, (list, tuple)):
+        col = achar_coluna(df, list(col_ou_aliases))
+    else:
+        col = col_ou_aliases
+    if not col or col not in df.columns:
+        return df.iloc[0:0].copy()
     dt = parse_data_serie(df[col])
     ini_ts = pd.Timestamp(ini)
     fim_ts = pd.Timestamp(fim) + pd.Timedelta(hours=23, minutes=59, seconds=59)
@@ -8514,16 +8518,6 @@ def filtrar_vendas_painel_v2(
             mask = pd.Series(False, index=base.index)
         base = base[mask]
     return base
-
-
-def _filtrar_df_periodo(df: pd.DataFrame, col: str, ini: date, fim: date) -> pd.DataFrame:
-    v = _v()
-    if df is None or df.empty or not col or col not in df.columns:
-        return df.iloc[0:0].copy() if df is not None else pd.DataFrame()
-    out = df.copy()
-    out["_dt"] = v.parse_data_serie(out[col])
-    out = out.dropna(subset=["_dt"])
-    return out.loc[(out["_dt"].dt.date >= ini) & (out["_dt"].dt.date <= fim)]
 
 
 def empreendimentos_de_coord(
