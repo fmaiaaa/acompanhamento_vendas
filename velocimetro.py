@@ -3872,7 +3872,7 @@ def _sf_soql_estoque_empreendimento(sf) -> pd.DataFrame:
     soql = (
         "SELECT Id, StatusUnidade__c, Empreendimento__r.Name, "
         "Identificador__c, ValorFinalComKit__c, Valor_de_Avalia_o_Banc_ria__c, "
-        "Valor_Folga__c, B_nus_Adimpl_ncia__c, Area__c, Habite_se__c, "
+        "Valor_Folga__c, B_nus_Adimpl_ncia__c, Area__c, "
         "Possui_Investidor__c, Tipologia__c, "
         "Empreendimento__r.DataExpedicaoHabitese__c "
         "FROM Produto__c "
@@ -3896,7 +3896,7 @@ def _sf_soql_estoque_empreendimento(sf) -> pd.DataFrame:
             "Valor Folga": r.get("Valor_Folga__c"),
             "Bônus Adimplência": r.get("B_nus_Adimpl_ncia__c"),
             "Area": r.get("Area__c"),
-            "Habite-se": r.get("Habite_se__c") or hab_emp,
+            "Habite-se": hab_emp,
             "Tipologia": r.get("Tipologia__c"),
             "Possui Investidor": r.get("Possui_Investidor__c"),
         })
