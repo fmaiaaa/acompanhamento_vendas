@@ -27,6 +27,19 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
+try:
+    from velocimetro_feedbacks_previsao import (
+        carregar_feedbacks_comerciais,
+        carregar_previsao_vendas,
+        render_aba_feedbacks_comerciais,
+        render_aba_previsao_vendas,
+    )
+except ImportError:
+    carregar_feedbacks_comerciais = None  # type: ignore
+    carregar_previsao_vendas = None  # type: ignore
+    render_aba_feedbacks_comerciais = None  # type: ignore
+    render_aba_previsao_vendas = None  # type: ignore
+
 # -----------------------------------------------------------------------------
 # Identificação da planilha e Arquivos Visuais
 # -----------------------------------------------------------------------------
@@ -3730,7 +3743,7 @@ _PASTAS_PC_CAMPOS = (
     "Empreendimento__r.Name, Tipo__c, Oportunidade__c, Conta__c, "
     "Renda__c, Valor_da_Renda__c, RendaApurada__c, "
     "Valor_FGTS__c, FGTS_apurado__c, "
-    "Valor_Financiamento__c, valor_do_subsidio__c, Valor_de_Subsidio__c"
+    "Valor_Financiamento__c, Valor_de_Subsidio__c"
 )
 
 
@@ -3768,8 +3781,8 @@ def _sf_soql_pastas(sf, modo_janela: str = "producao") -> pd.DataFrame:
             "Valor FGTS": r.get("Valor_FGTS__c"),
             "FGTS apurado": r.get("FGTS_apurado__c"),
             "Valor do Financiamento": r.get("Valor_Financiamento__c"),
-            "Subsídio": r.get("valor_do_subsidio__c") or r.get("Valor_de_Subsidio__c"),
-            "Valor do Subsidio": r.get("valor_do_subsidio__c"),
+            "Subsídio": r.get("Valor_de_Subsidio__c"),
+            "Valor do Subsidio": r.get("Valor_de_Subsidio__c"),
             "Valor de Subsidio": r.get("Valor_de_Subsidio__c"),
         }
         for r in (res.get("records") or [])
@@ -3888,7 +3901,7 @@ def _sf_soql_estoque_empreendimento(sf) -> pd.DataFrame:
         "SELECT Id, StatusUnidade__c, Empreendimento__r.Name, "
         "Identificador__c, ValorFinalComKit__c, Valor_de_Avalia_o_Banc_ria__c, "
         "Valor_Folga__c, B_nus_Adimpl_ncia__c, Area__c, "
-        "Possui_Investidor__c, Tipologia__c, "
+        "Tipologia__c, Empreendimento__r.Possui_Investidor__c, "
         "Empreendimento__r.DataExpedicaoHabitese__c "
         "FROM Produto__c "
         "WHERE Empreendimento__r.Regional__c = 'RJ' "
@@ -3913,9 +3926,29 @@ def _sf_soql_estoque_empreendimento(sf) -> pd.DataFrame:
             "Area": r.get("Area__c"),
             "Habite-se": hab_emp,
             "Tipologia": r.get("Tipologia__c"),
-            "Possui Investidor": r.get("Possui_Investidor__c"),
+            "Possui Investidor": emp_rel.get("Possui_Investidor__c") if emp_rel else None,
         })
     return pd.DataFrame(rows)
+
+
+def _sf_soql_contagem_unidades_total_por_emp(sf) -> Dict[str, int]:
+    """Contagem de todas as unidades (Produto__c) por empreendimento, qualquer status."""
+    soql = (
+        "SELECT Id, Empreendimento__r.Name "
+        "FROM Produto__c "
+        "WHERE Empreendimento__r.Regional__c = 'RJ' "
+        "AND Empreendimento__r.UnidadeDeNegocio__c = 'Direcional'"
+    )
+    try:
+        res = sf.query_all(soql)
+    except Exception:
+        return {}
+    out: Dict[str, int] = {}
+    for r in res.get("records") or []:
+        emp = _limpar_emp(_sf_rel_name(r.get("Empreendimento__r")))
+        if emp:
+            out[emp] = out.get(emp, 0) + 1
+    return out
 
 
 def _sf_inicio_funil_empreendimento(hoje: Optional[date] = None) -> date:
@@ -3993,8 +4026,8 @@ def _sf_soql_pastas_empreendimento(sf, hoje: Optional[date] = None) -> pd.DataFr
             "Valor FGTS": r.get("Valor_FGTS__c"),
             "FGTS apurado": r.get("FGTS_apurado__c"),
             "Valor do Financiamento": r.get("Valor_Financiamento__c"),
-            "Subsídio": r.get("valor_do_subsidio__c") or r.get("Valor_de_Subsidio__c"),
-            "Valor do Subsidio": r.get("valor_do_subsidio__c"),
+            "Subsídio": r.get("Valor_de_Subsidio__c"),
+            "Valor do Subsidio": r.get("Valor_de_Subsidio__c"),
             "Valor de Subsidio": r.get("Valor_de_Subsidio__c"),
         })
     return pd.DataFrame(rows)
@@ -4185,6 +4218,13 @@ def carregar_estoque_painel_sf() -> pd.DataFrame:
     sf = _cliente_salesforce_cache()
     df = _sf_soql_estoque_empreendimento(sf)
     return normalizar_colunas(df) if df is not None and not df.empty else pd.DataFrame()
+
+
+@st.cache_data(ttl=3600, show_spinner="Carregando totais de unidades por empreendimento…")
+def carregar_total_unidades_por_emp_sf() -> Dict[str, int]:
+    """Total de unidades Produto__c por empreendimento (todos os status)."""
+    sf = _cliente_salesforce_cache()
+    return _sf_soql_contagem_unidades_total_por_emp(sf)
 
 
 @st.cache_data(ttl=3600, show_spinner="Carregando funil (agendamentos + pastas)…")
@@ -7492,6 +7532,32 @@ def resumo_estoque_empreendimentos(df_estoque: pd.DataFrame) -> Dict[str, Dict[s
     return out
 
 
+def metricas_liberacao_estoque_por_emp(
+    estoque_map: Dict[str, Dict[str, int]],
+    total_por_emp: Optional[Dict[str, int]] = None,
+) -> Dict[str, Dict[str, Any]]:
+    """
+    Por empreendimento:
+    - liberadas = unidades nos 4 status do relatório de estoque
+    - disponíveis = status Disponível
+    - total = todas as unidades Produto__c (se total_por_emp informado)
+    """
+    total_por_emp = total_por_emp or {}
+    out: Dict[str, Dict[str, Any]] = {}
+    for emp, buckets in estoque_map.items():
+        liberadas = int(buckets.get("total_status", 0))
+        disponiveis = int(buckets.get("disponivel", 0))
+        total = int(total_por_emp.get(emp, liberadas))
+        out[emp] = {
+            "disponivel": disponiveis,
+            "liberadas": liberadas,
+            "total": total,
+            "pct_disp_liberadas": (disponiveis / liberadas * 100.0) if liberadas > 0 else 0.0,
+            "pct_liberadas_total": (liberadas / total * 100.0) if total > 0 else 0.0,
+        }
+    return out
+
+
 def _media_mensal_vendas_emp(
     df_vendas: pd.DataFrame,
     empreendimento: str,
@@ -7718,6 +7784,8 @@ def _render_secao_funil_empreendimento(
     df_vendas_hist: Optional[pd.DataFrame] = None,
     col_contrato: Optional[str] = None,
     estoque_emp: Optional[Dict[str, int]] = None,
+    total_unidades_emp: Optional[int] = None,
+    sinal_sobre_renda: Optional[float] = None,
 ) -> None:
     """Uma seção completa por empreendimento (sem nova consulta SOQL)."""
     hoje = janelas["hoje"]
@@ -7767,6 +7835,35 @@ def _render_secao_funil_empreendimento(
     )
     st.caption(f"Ritmo: {gap_txt} · projeção linear ao dia {hoje.day}.")
     st.caption(_caption_meta_empreendimento(meta_info))
+
+    if estoque_emp:
+        lib = metricas_liberacao_estoque_por_emp(
+            {_limpar_emp(emp): estoque_emp},
+            {_limpar_emp(emp): total_unidades_emp} if total_unidades_emp is not None else None,
+        ).get(_limpar_emp(emp), {})
+        disp = int(lib.get("disponivel", estoque_emp.get("disponivel", 0)))
+        liberadas = int(lib.get("liberadas", estoque_emp.get("total_status", 0)))
+        total_u = int(lib.get("total", total_unidades_emp or liberadas))
+        pct_dl = float(lib.get("pct_disp_liberadas", 0.0))
+        pct_lt = float(lib.get("pct_liberadas_total", 0.0))
+        sinal_txt = f"{sinal_sobre_renda * 100:.1f}%" if sinal_sobre_renda is not None else "—"
+        st.markdown(
+            f"""
+            <div class="vel-kpi-row aba-funil-kpi">
+                <div class="vel-kpi"><div class="lbl">Disp. / liberadas</div>
+                <div class="val">{disp} / {liberadas} ({pct_dl:.0f}%)</div></div>
+                <div class="vel-kpi"><div class="lbl">Liberadas / total</div>
+                <div class="val">{liberadas} / {total_u} ({pct_lt:.0f}%)</div></div>
+                <div class="vel-kpi"><div class="lbl">Σ sinais / Σ renda</div>
+                <div class="val">{sinal_txt}</div></div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.caption(
+            "Estoque: liberadas = Disponível + Mirror + Fora de venda + Fora de Venda - Comercial · "
+            "total = todas as unidades Produto__c · sinal/renda = pastas do período com cotação vinculada."
+        )
 
     st.markdown("##### Mês corrente (MTD)")
     st.caption(
@@ -7964,6 +8061,14 @@ def render_aba_funil_empreendimentos(
 
     empreendimentos = sorted(empreendimentos, key=_score_emp, reverse=True)
     estoque_map = resumo_estoque_empreendimentos(df_estoque)
+    try:
+        total_unidades_map = carregar_total_unidades_por_emp_sf()
+    except Exception:
+        total_unidades_map = {}
+    try:
+        df_cot_funil = carregar_cotacoes_painel_sf()
+    except Exception:
+        df_cot_funil = pd.DataFrame()
     col_c_hist = col_contrato_gerado or achar_coluna(df_vendas, ALIASES_CONTRATO_GERADO)
 
     # Mapa empreendimento → canal (derivado das vendas SF)
@@ -8038,6 +8143,10 @@ def render_aba_funil_empreendimentos(
     janelas["fim"] = data_fim
     janelas["ini_7d_mes"] = max(data_ini, data_fim - timedelta(days=6))
 
+    sinal_renda_map = calcular_sinal_sobre_renda_por_emp(
+        df_cot_funil, df_pastas, data_ini, data_fim,
+    )
+
     st.info(
         f"{len(emps_render)} empreendimento(s) · meta = regressão ({PAINEL_MESES_VENDAS}m vendas) "
         f"limitada por estoque vendável (relatório {SF_REPORT_ESTOQUE_ID})."
@@ -8060,6 +8169,8 @@ def render_aba_funil_empreendimentos(
                     df_vendas_hist=df_vendas,
                     col_contrato=col_c_hist,
                     estoque_emp=estoque_map.get(_limpar_emp(emp)) or estoque_map.get(emp),
+                    total_unidades_emp=total_unidades_map.get(_limpar_emp(emp)),
+                    sinal_sobre_renda=sinal_renda_map.get(_limpar_emp(emp)),
                 )
     else:
         for emp in emps_render:
@@ -8077,6 +8188,8 @@ def render_aba_funil_empreendimentos(
                 df_vendas_hist=df_vendas,
                 col_contrato=col_c_hist,
                 estoque_emp=estoque_map.get(_limpar_emp(emp)) or estoque_map.get(emp),
+                total_unidades_emp=total_unidades_map.get(_limpar_emp(emp)),
+                sinal_sobre_renda=sinal_renda_map.get(_limpar_emp(emp)),
             )
             st.divider()
 
@@ -8693,10 +8806,17 @@ def montar_tabela_analitica(
     df_cotacoes: Optional[pd.DataFrame] = None,
     df_pastas_aprov: Optional[pd.DataFrame] = None,
     df_tabela_comp: Optional[pd.DataFrame] = None,
+    estoque_map: Optional[Dict[str, Dict[str, int]]] = None,
+    total_unidades_por_emp: Optional[Dict[str, int]] = None,
 ) -> pd.DataFrame:
     v = _v()
     rows = []
     mapa_coord = mapa_emp_coordenador(df_metas_coord, filtros.mes_meta, filtros.ano_meta)
+    sinal_renda_map = calcular_sinal_sobre_renda_por_emp(
+        df_cotacoes, df_pastas, filtros.data_ini, filtros.data_fim,
+    )
+    estoque_map = estoque_map or {}
+    lib_map = metricas_liberacao_estoque_por_emp(estoque_map, total_unidades_por_emp or {})
     for emp in empreendimentos:
         emp_c = v._limpar_emp(emp)
         meta_m = soma_meta_coord(
@@ -8743,6 +8863,8 @@ def montar_tabela_analitica(
             df_tabela_comp if df_tabela_comp is not None else pd.DataFrame(),
             emp_c,
         )
+        lib = lib_map.get(emp_c, {})
+        ratio_sr = sinal_renda_map.get(emp_c)
         row = {
             "Empreendimento": emp_c,
             "Coordenador": mapa_coord.get(emp_c, ""),
@@ -8785,6 +8907,12 @@ def montar_tabela_analitica(
             "Preco_Medio_Tabela": base_est.get("Preco_Medio_Tabela", 0),
             "Meta_Ano": meta_ano,
             "Vendido_Ano": ven_ano,
+            "Unidades_Disponiveis": int(lib.get("disponivel", 0)),
+            "Unidades_Liberadas": int(lib.get("liberadas", 0)),
+            "Unidades_Total_SF": int(lib.get("total", 0)),
+            "Pct_Disp_Liberadas": round(float(lib.get("pct_disp_liberadas", 0.0)), 1),
+            "Pct_Liberadas_Total": round(float(lib.get("pct_liberadas_total", 0.0)), 1),
+            "Sinal_Sobre_Renda_Pct": round(ratio_sr * 100.0, 1) if ratio_sr is not None else None,
         }
         rows.append(row)
     return pd.DataFrame(rows)
@@ -9054,6 +9182,13 @@ def render_painel_metas_v2(
     kpi_est, enr = agregar_estoque(df_estoque if df_estoque is not None else pd.DataFrame())
     render_kpi_estoque(kpi_est)
     resumo_est = resumo_estoque_por_emp(enr)
+    estoque_map_v2 = resumo_estoque_empreendimentos(
+        df_estoque if df_estoque is not None else pd.DataFrame(),
+    )
+    try:
+        total_unidades_v2 = carregar_total_unidades_por_emp_sf()
+    except Exception:
+        total_unidades_v2 = {}
 
     if filtros.tipo_indicador == "vendas":
         meta_vgv, meta_qtd = meta_canal_vgv_vendas(
@@ -9116,6 +9251,8 @@ def render_painel_metas_v2(
         df_cotacoes=df_cotacoes,
         df_pastas_aprov=df_pastas_aprov,
         df_tabela_comp=df_tabela_comp,
+        estoque_map=estoque_map_v2,
+        total_unidades_por_emp=total_unidades_v2,
     )
     render_tabela_analitica(tab)
     render_comparativo_mtd_por_emp(
@@ -9152,7 +9289,7 @@ DEFAULT_LIMITE_PS_PRECO = 0.25
 
 ALIASES_RENDA = ["RendaApurada__c", "Renda Apurada", "Valor_da_Renda__c", "Valor da Renda", "Renda__c", "Renda"]
 ALIASES_FGTS = ["FGTS_apurado__c", "FGTS apurado", "Valor_FGTS__c", "Valor FGTS"]
-ALIASES_SUBSIDIO = ["valor_do_subsidio__c", "Valor_de_Subsidio__c", "Valor do Subsidio", "Valor de Subsidio", "Subsídio", "Subsidio__c"]
+ALIASES_SUBSIDIO = ["Valor_de_Subsidio__c", "Valor do Subsidio", "Valor de Subsidio", "Subsídio"]
 ALIASES_FINANCIAMENTO = ["Valor_Financiamento__c", "Valor do Financiamento"]
 ALIASES_TIPO_AVAL = ["Tipo__c", "Tipo"]
 ALIASES_TIPOLOGIA = ["Tipologia__c", "Tipologia"]
@@ -9220,6 +9357,87 @@ def _col_val(row: pd.Series, aliases: List[str]) -> float:
 
 def renda_da_pasta(row: pd.Series) -> float:
     return _col_val(row, ALIASES_RENDA)
+
+
+def calcular_sinal_sobre_renda_por_emp(
+    df_cotacoes: Optional[pd.DataFrame],
+    df_pastas: Optional[pd.DataFrame],
+    data_ini: Optional[date] = None,
+    data_fim: Optional[date] = None,
+) -> Dict[str, float]:
+    """
+    Σ sinal / Σ renda por empreendimento.
+    Pastas no período; sinal = maior Total Sinal Com por oportunidade (cotação).
+    """
+    if df_pastas is None or df_pastas.empty:
+        return {}
+    v = _v()
+    pas = df_pastas.copy()
+    col_e = v.achar_coluna(pas, v.ALIASES_EMPREENDIMENTO) or "Empreendimento"
+    col_d = (
+        v.achar_coluna_primeiro_envio_analise(pas)
+        or v.achar_coluna(pas, v.ALIASES_DATA_CRIACAO)
+    )
+    if data_ini and data_fim and col_d:
+        pas = _filtrar_df_periodo(pas, col_d, data_ini, data_fim)
+    if pas.empty or col_e not in pas.columns:
+        return {}
+
+    col_opp = v.achar_coluna(pas, ALIASES_OPP_AVAL) or "Oportunidade"
+    pas["_renda"] = pas.apply(renda_da_pasta, axis=1)
+
+    sinal_por_opp: Dict[str, float] = {}
+    if df_cotacoes is not None and not df_cotacoes.empty:
+        col_opp_c = "ID da Oportunidade"
+        col_sinal = next(
+            (c for c in ("Total Sinal Com", "TotalSinalCom__c") if c in df_cotacoes.columns),
+            None,
+        )
+        if col_opp_c in df_cotacoes.columns and col_sinal:
+            cot = df_cotacoes.copy()
+            cot["_sinal"] = cot[col_sinal].map(_parse_num_br)
+            sinal_por_opp = cot.groupby(col_opp_c)["_sinal"].max().to_dict()
+
+    if col_opp in pas.columns and sinal_por_opp:
+        pas["_sinal"] = pas[col_opp].astype(str).map(
+            lambda x: sinal_por_opp.get(x, 0.0)
+        ).fillna(0.0)
+    else:
+        pas["_sinal"] = 0.0
+
+    out: Dict[str, float] = {}
+    pas["_emp_c"] = pas[col_e].map(_limpar_emp)
+    for emp, g in pas.groupby("_emp_c"):
+        sum_renda = float(g["_renda"].sum())
+        sum_sinal = float(g["_sinal"].sum())
+        if sum_renda > 0:
+            out[str(emp)] = sum_sinal / sum_renda
+    return out
+
+
+def montar_tabela_sinal_renda_estoque_emp(
+    empreendimentos: List[str],
+    estoque_map: Dict[str, Dict[str, int]],
+    total_unidades_por_emp: Dict[str, int],
+    sinal_renda_por_emp: Dict[str, float],
+) -> pd.DataFrame:
+    """Tabela consolidada: sinal/renda e ratios de estoque por empreendimento."""
+    lib_map = metricas_liberacao_estoque_por_emp(estoque_map, total_unidades_por_emp)
+    rows = []
+    for emp in empreendimentos:
+        emp_c = _limpar_emp(emp)
+        lib = lib_map.get(emp_c, {})
+        ratio_sr = sinal_renda_por_emp.get(emp_c)
+        rows.append({
+            "Empreendimento": emp_c,
+            "Unidades_Disponiveis": int(lib.get("disponivel", 0)),
+            "Unidades_Liberadas": int(lib.get("liberadas", 0)),
+            "Unidades_Total": int(lib.get("total", 0)),
+            "Pct_Disp_Liberadas": round(float(lib.get("pct_disp_liberadas", 0.0)), 1),
+            "Pct_Liberadas_Total": round(float(lib.get("pct_liberadas_total", 0.0)), 1),
+            "Sinal_Sobre_Renda_Pct": round(ratio_sr * 100.0, 1) if ratio_sr is not None else None,
+        })
+    return pd.DataFrame(rows)
 
 
 def parse_identificador_unidade(ident: Any) -> Dict[str, str]:
@@ -11027,6 +11245,7 @@ def render_secao_analises_avancadas(
     mapa_coord: Dict[str, str],
     col_data: str,
     status_estoque: List[str],
+    df_cotacoes: Optional[pd.DataFrame] = None,
 ) -> None:
     """KPIs e gráficos: pastas sem visita, Pareto, vendas/mês, PS/VGV, estoque."""
     st.markdown("---")
@@ -11074,6 +11293,31 @@ def render_secao_analises_avancadas(
         st.info("Sem cotações/vendas para PS e sinais.")
     else:
         st.dataframe(tab_ps, use_container_width=True, hide_index=True)
+
+    st.markdown("##### Sinal / renda e estoque liberado por empreendimento")
+    st.caption(
+        "Σ sinais ÷ Σ renda (pastas no período · cotação por oportunidade) · "
+        "liberadas = Disponível + Mirror + Fora de venda + Fora de Venda - Comercial · "
+        "total = todas as unidades Produto__c no SF."
+    )
+    try:
+        total_u_map = carregar_total_unidades_por_emp_sf()
+    except Exception:
+        total_u_map = {}
+    est_map = resumo_estoque_empreendimentos(df_estoque if df_estoque is not None else pd.DataFrame())
+    sr_map = calcular_sinal_sobre_renda_por_emp(
+        df_cotacoes, df_pastas, filtros.data_ini, filtros.data_fim,
+    )
+    emps_tab = sorted(set(mapa_coord.keys()))
+    if filtros.emps_sel:
+        emps_tab = [_limpar_emp(e) for e in filtros.emps_sel]
+    if filtros.coords_sel:
+        emps_tab = [e for e in emps_tab if mapa_coord.get(e, "") in filtros.coords_sel]
+    tab_sre = montar_tabela_sinal_renda_estoque_emp(emps_tab, est_map, total_u_map, sr_map)
+    if tab_sre.empty:
+        st.info("Sem dados de sinal/renda ou estoque para os empreendimentos filtrados.")
+    else:
+        st.dataframe(tab_sre, use_container_width=True, hide_index=True)
 
     render_grafico_share_estoque_produto(df_estoque, status_estoque, filtros, mapa_coord)
 
@@ -11164,6 +11408,7 @@ def render_dashboard_comercial(
     render_secao_analises_avancadas(
         df_vendas, df_estoque, df_ag_radar, df_pastas_radar,
         filtros, mapa_coord, col_data, status_est,
+        df_cotacoes=df_cotacoes,
     )
 
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1.5rem 0;'/>", unsafe_allow_html=True)
@@ -12161,9 +12406,34 @@ def main() -> None:
         pass
     filtros_glob = render_filtros_globais(df_metas_coord_g, df_vendas_painel)
 
-    tab_metas, tab_dashboard, tab_funil_emp, tab_poder_compra = st.tabs(
-        ["Metas & Projeção", "Dashboard Comercial", "Funil por Empreendimento", "Poder de Compra"]
+    tab_metas, tab_dashboard, tab_funil_emp, tab_poder_compra, tab_feedbacks, tab_previsao = st.tabs(
+        [
+            "Metas & Projeção",
+            "Dashboard Comercial",
+            "Funil por Empreendimento",
+            "Poder de Compra",
+            "Feedbacks Comerciais",
+            "Previsão de Vendas",
+        ]
     )
+    with tab_feedbacks:
+        if render_aba_feedbacks_comerciais and carregar_feedbacks_comerciais:
+            try:
+                df_fb = carregar_feedbacks_comerciais(cred_fp)
+                render_aba_feedbacks_comerciais(df_fb)
+            except Exception as exc:
+                st.error(f"Não foi possível carregar Feedbacks Comerciais: {exc}")
+        else:
+            st.error("Módulo velocimetro_feedbacks_previsao.py não encontrado.")
+    with tab_previsao:
+        if render_aba_previsao_vendas and carregar_previsao_vendas:
+            try:
+                df_pr = carregar_previsao_vendas(cred_fp)
+                render_aba_previsao_vendas(df_pr, df_vendas_painel, col_contrato_gerado or "")
+            except Exception as exc:
+                st.error(f"Não foi possível carregar Previsão de Vendas: {exc}")
+        else:
+            st.error("Módulo velocimetro_feedbacks_previsao.py não encontrado.")
     with tab_funil_emp:
         render_aba_funil_empreendimentos(
             df_metas=df_metas,
