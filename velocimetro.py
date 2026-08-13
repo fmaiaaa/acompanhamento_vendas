@@ -3730,7 +3730,7 @@ _PASTAS_PC_CAMPOS = (
     "Empreendimento__r.Name, Tipo__c, Oportunidade__c, Conta__c, "
     "Renda__c, Valor_da_Renda__c, RendaApurada__c, "
     "Valor_FGTS__c, FGTS_apurado__c, "
-    "Valor_Financiamento__c, Subsidio__c, valor_do_subsidio__c, Valor_de_Subsidio__c"
+    "Valor_Financiamento__c, valor_do_subsidio__c, Valor_de_Subsidio__c"
 )
 
 
@@ -3768,7 +3768,7 @@ def _sf_soql_pastas(sf, modo_janela: str = "producao") -> pd.DataFrame:
             "Valor FGTS": r.get("Valor_FGTS__c"),
             "FGTS apurado": r.get("FGTS_apurado__c"),
             "Valor do Financiamento": r.get("Valor_Financiamento__c"),
-            "Subsídio": r.get("Subsidio__c"),
+            "Subsídio": r.get("valor_do_subsidio__c") or r.get("Valor_de_Subsidio__c"),
             "Valor do Subsidio": r.get("valor_do_subsidio__c"),
             "Valor de Subsidio": r.get("Valor_de_Subsidio__c"),
         }
@@ -3870,7 +3870,7 @@ def _sf_soql_estoque_empreendimento(sf) -> pd.DataFrame:
     """
     statuses = ", ".join(f"'{s}'" for s in ESTOQUE_STATUS_TODOS)
     soql = (
-        "SELECT Id, StatusUnidade__c, Empreendimento__r.Name, NomeEmpreendimento__c, "
+        "SELECT Id, StatusUnidade__c, Empreendimento__r.Name, "
         "Identificador__c, ValorFinalComKit__c, Valor_de_Avalia_o_Banc_ria__c, "
         "Valor_Folga__c, B_nus_Adimpl_ncia__c, Area__c, Habite_se__c, "
         "Possui_Investidor__c, Tipologia__c, "
@@ -3885,8 +3885,6 @@ def _sf_soql_estoque_empreendimento(sf) -> pd.DataFrame:
     for r in res.get("records") or []:
         emp = _sf_rel_name(r.get("Empreendimento__r"))
         emp_rel = r.get("Empreendimento__r") if isinstance(r.get("Empreendimento__r"), dict) else {}
-        if not emp:
-            emp = str(r.get("NomeEmpreendimento__c") or "").strip()
         hab_emp = emp_rel.get("DataExpedicaoHabitese__c") if emp_rel else None
         rows.append({
             "ID da Unidade": r.get("Id"),
@@ -3980,7 +3978,7 @@ def _sf_soql_pastas_empreendimento(sf, hoje: Optional[date] = None) -> pd.DataFr
             "Valor FGTS": r.get("Valor_FGTS__c"),
             "FGTS apurado": r.get("FGTS_apurado__c"),
             "Valor do Financiamento": r.get("Valor_Financiamento__c"),
-            "Subsídio": r.get("Subsidio__c"),
+            "Subsídio": r.get("valor_do_subsidio__c") or r.get("Valor_de_Subsidio__c"),
             "Valor do Subsidio": r.get("valor_do_subsidio__c"),
             "Valor de Subsidio": r.get("Valor_de_Subsidio__c"),
         })
@@ -5987,7 +5985,10 @@ def _plot_funil_etapa_comparativo(etapa: str, df: pd.DataFrame, ultimo_dia: int,
         showgrid=True,
         gridcolor="rgba(226,232,240,0.5)",
     )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(
+        fig, use_container_width=True, config={"displayModeBar": False},
+        key=_plotly_key("funil_etapa_cmp", etapa),
+    )
 
 
 ALIASES_DATA_VISITA = [
@@ -6440,13 +6441,21 @@ def _render_conversoes_par_funis(
         _render_conversoes_de_totais(totais_b, titulo=label_b)
 
 
-def _plot_funil_go(titulo: str, totais: Dict[str, float], altura: int = 350) -> None:
+def _plot_funil_go(
+    titulo: str,
+    totais: Dict[str, float],
+    altura: int = 350,
+    chart_key: str = "",
+) -> None:
     """Funil estilo marketing (go.Funnel); volumes arredondados para cima."""
     labels = [FUNIL_LABELS[e] for e in FUNIL_ETAPAS]
     ceil_tot = ceil_funil_totais(totais)
     vals = [float(ceil_tot.get(e, 0.0)) for e in FUNIL_ETAPAS]
     fig = _criar_fig_funil(labels, vals, titulo=titulo, altura=altura)
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(
+        fig, use_container_width=True, config={"displayModeBar": False},
+        key=_plotly_key("funil_go", chart_key or titulo),
+    )
 
 
 def _plot_meta_diaria_indicador(
@@ -6533,7 +6542,10 @@ def _plot_meta_diaria_indicador(
         showgrid=True,
         gridcolor="rgba(226,232,240,0.5)",
     )
-    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    st.plotly_chart(
+        fig, use_container_width=True, config={"displayModeBar": False},
+        key=_plotly_key("meta_diaria_ind", etapa),
+    )
 
 
 def render_projecao_funil(proj: Dict[str, Any]) -> None:
@@ -6629,9 +6641,9 @@ def render_projecao_funil(proj: Dict[str, Any]) -> None:
     )
     c1, c2 = st.columns(2)
     with c1:
-        _plot_funil_go("Realizado até agora (MTD)", totais_mtd, altura=380)
+        _plot_funil_go("Realizado até agora (MTD)", totais_mtd, altura=380, chart_key="sec1_real")
     with c2:
-        _plot_funil_go("Projetado até agora (modelo)", totais_proj_mtd, altura=380)
+        _plot_funil_go("Projetado até agora (modelo)", totais_proj_mtd, altura=380, chart_key="sec1_proj")
     _render_razoes_funil(
         razoes_1,
         "Razões realizado / projetado até agora",
@@ -6653,9 +6665,9 @@ def render_projecao_funil(proj: Dict[str, Any]) -> None:
     )
     c3, c4 = st.columns(2)
     with c3:
-        _plot_funil_go("Projetado do mês", totais_proj, altura=380)
+        _plot_funil_go("Projetado do mês", totais_proj, altura=380, chart_key="sec2_proj_mes")
     with c4:
-        _plot_funil_go("Necessário p/ meta", funil_nec, altura=380)
+        _plot_funil_go("Necessário p/ meta", funil_nec, altura=380, chart_key="sec2_nec")
     _render_razoes_funil(
         razoes_2,
         "Razões projetado do mês / necessário para a meta",
@@ -6703,10 +6715,12 @@ def render_projecao_funil(proj: Dict[str, Any]) -> None:
     )
     c5, c6 = st.columns(2)
     with c5:
-        _plot_funil_go(f"Meta do dia ({fmt_qtd(meta_v_dia)} vendas)", funil_dia, altura=380)
+        _plot_funil_go(
+            f"Meta do dia ({fmt_qtd(meta_v_dia)} vendas)", funil_dia, altura=380, chart_key="sec3_dia",
+        )
     with c6:
         _plot_funil_go(
-            f"Meta da semana ({fmt_qtd(meta_v_sem)} vendas)", funil_sem, altura=380
+            f"Meta da semana ({fmt_qtd(meta_v_sem)} vendas)", funil_sem, altura=380, chart_key="sec3_sem",
         )
     _render_conversoes_par_funis(
         funil_dia, "Meta do dia",
@@ -9106,7 +9120,7 @@ DEFAULT_LIMITE_PS_PRECO = 0.25
 
 ALIASES_RENDA = ["RendaApurada__c", "Renda Apurada", "Valor_da_Renda__c", "Valor da Renda", "Renda__c", "Renda"]
 ALIASES_FGTS = ["FGTS_apurado__c", "FGTS apurado", "Valor_FGTS__c", "Valor FGTS"]
-ALIASES_SUBSIDIO = ["Subsidio__c", "Subsídio", "valor_do_subsidio__c", "Valor do Subsidio", "Valor_de_Subsidio__c", "Valor de Subsidio"]
+ALIASES_SUBSIDIO = ["valor_do_subsidio__c", "Valor_de_Subsidio__c", "Valor do Subsidio", "Valor de Subsidio", "Subsídio", "Subsidio__c"]
 ALIASES_FINANCIAMENTO = ["Valor_Financiamento__c", "Valor do Financiamento"]
 ALIASES_TIPO_AVAL = ["Tipo__c", "Tipo"]
 ALIASES_TIPOLOGIA = ["Tipologia__c", "Tipologia"]
@@ -10263,6 +10277,226 @@ def render_tabela_detalhada(
     st.dataframe(out, use_container_width=True, hide_index=True)
 
 
+# Metas de conversão de referência (aba Radar do Polaroid)
+META_CONV_POLAROID = {
+    "Visita → Pasta": 0.40,
+    "Pasta → Pasta aprovada": 0.50,
+    "Pasta aprovada → Venda": 0.25,
+    "Visita → Venda": 0.10,
+}
+
+
+def _contar_funil_mtd(
+    df: pd.DataFrame,
+    col_data: str,
+    mes: int,
+    ano: int,
+) -> float:
+    v = _v()
+    if df is None or df.empty or not col_data or col_data not in df.columns:
+        return 0.0
+    sub = df.copy()
+    sub["_dt"] = v.parse_data_serie(sub[col_data])
+    sub = sub.dropna(subset=["_dt"])
+    sub = sub[(sub["_dt"].dt.month == mes) & (sub["_dt"].dt.year == ano)]
+    return float(len(sub))
+
+
+def render_radar_polaroid(
+    df_vendas: pd.DataFrame,
+    df_estoque: pd.DataFrame,
+    df_canal: pd.DataFrame,
+    df_metas_coord: pd.DataFrame,
+    filtros: FiltrosDashboard,
+    mapa_coord: Dict[str, str],
+    col_data: str,
+    df_ag: Optional[pd.DataFrame] = None,
+    df_pastas: Optional[pd.DataFrame] = None,
+) -> None:
+    """Painel estilo aba Radar do Polaroid — metas, realizado, estoque, funil e pipeline."""
+    v = _v()
+    hoje = date.today()
+    mes, ano = filtros.mes_meta, filtros.ano_meta
+    ini_mes = date(ano, mes, 1)
+    if mes == 12:
+        fim_mes = date(ano, 12, 31)
+    else:
+        fim_mes = date(ano, mes + 1, 1) - timedelta(days=1)
+
+    meta_vgv_desafio, _ = _meta_vgv_canal(df_canal, mes, ano, "RIO")
+    meta_vgv_bp, _ = meta_canal_vgv_vendas(df_canal, mes, ano, "RIO")
+    meta_qtd = soma_meta_coord(
+        df_metas_coord, mes, ano, "vendas", "Desafio",
+        coordenadores=filtros.coords_sel or None,
+        empreendimentos=filtros.emps_sel or None,
+    )
+    meta_qtd_bp = soma_meta_coord(
+        df_metas_coord, mes, ano, "vendas", "BP",
+        coordenadores=filtros.coords_sel or None,
+        empreendimentos=filtros.emps_sel or None,
+    )
+    esc = escala_meta_regressao(None, meta_vgv_desafio, hoje if mes == hoje.month and ano == hoje.year else fim_mes)
+
+    base_mes = df_vendas.copy()
+    if col_data and col_data in base_mes.columns:
+        base_mes = _filtrar_df_periodo(base_mes, col_data, ini_mes, fim_mes)
+    real_vgv = float(base_mes["_vgv_venda"].sum()) if "_vgv_venda" in base_mes.columns else float(base_mes["_vgv"].sum()) if "_vgv" in base_mes.columns else 0.0
+    real_qtd = float(base_mes["_qtd_venda"].sum()) if "_qtd_venda" in base_mes.columns else float(len(base_mes))
+
+    pct_desafio = (real_vgv / meta_vgv_desafio * 100.0) if meta_vgv_desafio > 0 else 0.0
+    pct_bp = (real_vgv / meta_vgv_bp * 100.0) if meta_vgv_bp > 0 else 0.0
+
+    kpi_est, _ = agregar_estoque(df_estoque if df_estoque is not None else pd.DataFrame())
+    vso = real_qtd / (real_qtd + float(kpi_est.get("unidades", 0))) if (real_qtd + kpi_est.get("unidades", 0)) > 0 else 0.0
+
+    n_comunicadas = 0
+    for col in ("Venda comunicada", "GeradoComunicadoVenda__c"):
+        if col in base_mes.columns:
+            n_comunicadas = int(base_mes[col].astype(str).str.upper().isin(("TRUE", "1", "SIM", "YES")).sum())
+            break
+
+    col_vis = v.achar_coluna(df_ag or pd.DataFrame(), v.ALIASES_DATA_VISITA) or "Data da visita"
+    col_pas = v.achar_coluna_primeiro_envio_analise(df_pastas or pd.DataFrame()) or v.achar_coluna(
+        df_pastas or pd.DataFrame(), v.ALIASES_DATA_CRIACAO
+    )
+    col_apr = v.achar_coluna_aprovacao_safi(df_pastas or pd.DataFrame())
+    n_visitas = _contar_funil_mtd(df_ag, col_vis, mes, ano) if col_vis else 0.0
+    n_pastas = _contar_funil_mtd(df_pastas, col_pas, mes, ano) if col_pas else 0.0
+    n_aprov = _contar_funil_mtd(df_pastas, col_apr, mes, ano) if col_apr else 0.0
+
+    st.subheader("Radar — visão Polaroid")
+    st.caption(f"Referência: Polaroid RJ · {mes:02d}/{ano} · metas comercial (desafio) vs BP")
+    st.markdown(
+        f"""
+        <div class="vel-kpi-row">
+            <div class="vel-kpi"><div class="lbl">Meta Comercial (VGV)</div>
+            <div class="val">{v.fmt_br_milhoes(meta_vgv_desafio)}</div></div>
+            <div class="vel-kpi"><div class="lbl">Meta BP (VGV)</div>
+            <div class="val">{v.fmt_br_milhoes(meta_vgv_bp)}</div></div>
+            <div class="vel-kpi"><div class="lbl">Meta acum. dia</div>
+            <div class="val">{v.fmt_br_milhoes(esc['meta_acum_hoje'])}</div></div>
+            <div class="vel-kpi"><div class="lbl">Realizado mês (VGV)</div>
+            <div class="val">{v.fmt_br_milhoes(real_vgv)}</div></div>
+        </div>
+        <div class="vel-kpi-row">
+            <div class="vel-kpi"><div class="lbl">% Meta Comercial</div>
+            <div class="val">{pct_desafio:.1f}%</div></div>
+            <div class="vel-kpi"><div class="lbl">% Meta BP</div>
+            <div class="val">{pct_bp:.1f}%</div></div>
+            <div class="vel-kpi"><div class="lbl">VSO mês</div>
+            <div class="val">{vso * 100:.1f}%</div></div>
+            <div class="vel-kpi"><div class="lbl">Comunicadas</div>
+            <div class="val">{n_comunicadas}</div></div>
+        </div>
+        <div class="vel-kpi-row">
+            <div class="vel-kpi"><div class="lbl">Estoque (unid.)</div>
+            <div class="val">{int(kpi_est.get('unidades', 0))}</div></div>
+            <div class="vel-kpi"><div class="lbl">Estoque VGV</div>
+            <div class="val">{v.fmt_br_milhoes(float(kpi_est.get('vgv', 0)))}</div></div>
+            <div class="vel-kpi"><div class="lbl">Ticket estoque</div>
+            <div class="val">{v.fmt_br_milhoes(float(kpi_est.get('ticket', 0)))}</div></div>
+            <div class="vel-kpi"><div class="lbl">Vendas (qtd mês)</div>
+            <div class="val">{v.fmt_qtd(real_qtd)}</div></div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    c1, c2 = st.columns(2)
+    with c1:
+        st.markdown("##### Funil do mês")
+        st.markdown(
+            f"- Visitas: **{int(n_visitas)}**\n"
+            f"- Pastas: **{int(n_pastas)}**\n"
+            f"- Pastas aprovadas: **{int(n_aprov)}**\n"
+            f"- Vendas: **{int(real_qtd)}**"
+        )
+    with c2:
+        st.markdown("##### Metas de conversão (Polaroid)")
+        for nome, ref in META_CONV_POLAROID.items():
+            st.markdown(f"- {nome}: **{ref:.0%}**")
+
+
+def montar_tabela_radar_emp(
+    df_vendas: pd.DataFrame,
+    df_estoque: pd.DataFrame,
+    df_metas_coord: pd.DataFrame,
+    df_pastas_aprov: pd.DataFrame,
+    df_tabela_comp: pd.DataFrame,
+    filtros: FiltrosDashboard,
+    mapa_coord: Dict[str, str],
+    col_data: str,
+) -> pd.DataFrame:
+    """Tabela por empreendimento inspirada na aba Radar (Polaroid)."""
+    v = _v()
+    hoje = date.today()
+    mes, ano = filtros.mes_meta, filtros.ano_meta
+    ini_mes = date(ano, mes, 1)
+    fim_mes = date(ano, mes, calendar.monthrange(ano, mes)[1])
+    dias_mes = calendar.monthrange(ano, mes)[1]
+    dia_ref = hoje.day if mes == hoje.month and ano == hoje.year else dias_mes
+
+    _, enr = agregar_estoque(df_estoque if df_estoque is not None else pd.DataFrame())
+    resumo_est = resumo_estoque_por_emp(enr)
+    emps = sorted(set(mapa_coord.keys()))
+    if filtros.emps_sel:
+        emps = [_limpar_emp(e) for e in filtros.emps_sel]
+    if filtros.coords_sel:
+        emps = [e for e in emps if mapa_coord.get(e, "") in filtros.coords_sel]
+
+    rows = []
+    for emp in emps:
+        meta_m = soma_meta_coord(
+            df_metas_coord, mes, ano, "vendas", filtros.tipo_meta_col, empreendimentos=[emp],
+        )
+        meta_dia = meta_m * dia_ref / dias_mes if dias_mes else 0.0
+        ven_qtd, ven_vgv = realizado_vendas_periodo(
+            df_vendas, col_data or "", ini_mes, fim_mes, [emp],
+        )
+        pct_dia = (ven_qtd / meta_dia * 100.0) if meta_dia > 0 else 0.0
+        pct_mes = (ven_qtd / meta_m * 100.0) if meta_m > 0 else 0.0
+        rs = resumo_est.loc[resumo_est["Empreendimento"] == emp] if not resumo_est.empty else pd.DataFrame()
+        est_u = int(rs["Unidades"].iloc[0]) if not rs.empty else 0
+        diff_av = float(rs["Diff_Avaliacao"].iloc[0]) if not rs.empty and "Diff_Avaliacao" in rs.columns else 0.0
+        m2 = float(rs["m2_Total"].iloc[0]) if not rs.empty else 0.0
+        res_pc = calcular_resumo_ineficiencia_emp(
+            df_pastas_aprov, enr, df_vendas, df_tabela_comp, emp,
+        )
+        ven_fut = 0.0
+        if col_data:
+            sub = _filtrar_df_periodo(df_vendas, col_data, ini_mes, fim_mes)
+            if not sub.empty and "Empreendimento" in sub.columns:
+                ve = sub[sub["Empreendimento"].map(_limpar_emp) == emp]
+                for col in ("Venda futura", "Venda_Futura__c"):
+                    if col in ve.columns:
+                        ven_fut = float(ve[col].astype(str).str.upper().isin(("TRUE", "1", "SIM", "YES")).sum())
+                        break
+        rows.append({
+            "Empreendimento": emp,
+            "Coordenador": mapa_coord.get(emp, ""),
+            "Estoque_Un": est_u,
+            "Diff_Avaliacao": round(diff_av, 0),
+            "m2_Total": round(m2, 1),
+            "Realizado_Vendas": ven_qtd,
+            "Meta_Vendas_Dia": round(meta_dia, 1),
+            "Meta_Vendas_Mes": meta_m,
+            "Pct_Meta_Dia": round(pct_dia, 1),
+            "Pct_Meta_Mes": round(pct_mes, 1),
+            "Ineficiencia": res_pc.ineficiencia_qtd,
+            "Vendas_Futuras": ven_fut,
+            "Pct_Venda_Futura": round(ven_fut / ven_qtd * 100.0, 1) if ven_qtd > 0 else 0.0,
+        })
+    return pd.DataFrame(rows)
+
+
+def render_tabela_radar_emp(df: pd.DataFrame) -> None:
+    st.subheader("Radar por empreendimento")
+    st.caption("Colunas alinhadas ao Polaroid: estoque, diff. avaliação, metas dia/mês, ineficiência, venda futura.")
+    if df.empty:
+        st.info("Sem empreendimentos para a tabela Radar.")
+        return
+    st.dataframe(df, use_container_width=True, hide_index=True)
+
+
 def render_dashboard_comercial(
     df_vendas: pd.DataFrame,
     df_estoque: pd.DataFrame,
@@ -10287,6 +10521,31 @@ def render_dashboard_comercial(
 
     df_f = _aplicar_filtros_base(df_vendas, filtros, mapa_coord, col_data, usar_periodo=True)
     df_ctx = _aplicar_filtros_base(df_vendas, filtros, mapa_coord, col_data, usar_periodo=False)
+
+    df_ag_radar = pd.DataFrame()
+    df_pastas_radar = pd.DataFrame()
+    df_pastas_aprov_radar = pd.DataFrame()
+    df_tabela_radar = pd.DataFrame()
+    try:
+        pacote_funil_r = carregar_funil_painel_sf()
+        df_ag_radar = pacote_funil_r.get("agendamentos") or pd.DataFrame()
+        df_pastas_radar = pacote_funil_r.get("pastas") or pd.DataFrame()
+        if not df_pastas_radar.empty:
+            df_pastas_aprov_radar = deduplicar_pastas_aprovadas_funil(df_pastas_radar)
+        pacote_pc_r = carregar_pacote_poder_compra_sf()
+        df_tabela_radar = pacote_pc_r.get("tabela_comprometimento") or pd.DataFrame()
+    except Exception:
+        pass
+
+    render_radar_polaroid(
+        df_ctx, df_estoque, df_canal, df_metas_coord, filtros, mapa_coord, col_data,
+        df_ag_radar, df_pastas_radar,
+    )
+    tab_radar = montar_tabela_radar_emp(
+        df_ctx, df_estoque, df_metas_coord, df_pastas_aprov_radar,
+        df_tabela_radar, filtros, mapa_coord, col_data,
+    )
+    render_tabela_radar_emp(tab_radar)
 
     df_vso = calcular_vso_por_emp(
         df_ctx, df_estoque, filtros, mapa_coord, col_data, ref_fim=filtros.data_fim,
@@ -10972,6 +11231,10 @@ def _corpo_painel_metas(
                         render_efeitos_sazonais(efeitos)
 
                 # Projeção do funil — carrega ag/pastas sob demanda (não bloqueia KPI inicial)
+                df_ag_vis_cache: Optional[pd.DataFrame] = None
+                df_pastas_cache: Optional[pd.DataFrame] = None
+                origem_ag_cache = ""
+                origem_pastas_cache = ""
                 try:
                     try:
                         pacote_funil = carregar_funil_painel_sf()
