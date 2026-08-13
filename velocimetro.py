@@ -3788,8 +3788,8 @@ def _sf_soql_vendas(sf, modo_janela: str = "producao") -> pd.DataFrame:
         "Valor_Real_de_Venda__c, Owner.Name, DirecionalVendas__c, ContratoGeradoEm__c, "
         "DataVenda__c, Termo_de_reserva__c, Ranking__c, M_s_Venda__c, Ano_da_Venda__c, "
         "Imobiliaria__r.Name, Contato_Corretor_Proprietario1__r.Name, Gerente_regional__c, "
-        "Diretor_de_vendas__c, Regional__c, OrigemConta__c, LeadSource, AtribuicaoDigital__c, "
-        "UltimaEntradaDigital__c, VendaFutura__c, VendaComunicadaAutomaticamente__c "
+        "Diretor_de_vendas__c, Regional__c, OrigemConta__c, LeadSource, "
+        "Venda_Futura__c, GeradoComunicadoVenda__c "
         "FROM Opportunity "
         "WHERE DirecionalVendas__c = true "
         "AND Empreendimento__r.Regional__c = 'RJ' "
@@ -3826,10 +3826,8 @@ def _sf_soql_vendas(sf, modo_janela: str = "producao") -> pd.DataFrame:
             "Regional": r.get("Regional__c"),
             "Origem da Conta": r.get("OrigemConta__c"),
             "Origem do lead": r.get("LeadSource"),
-            "Atribuição Digital": r.get("AtribuicaoDigital__c"),
-            "Última entrada Digital": r.get("UltimaEntradaDigital__c"),
-            "Venda futura": r.get("VendaFutura__c"),
-            "Venda comunicada": r.get("VendaComunicadaAutomaticamente__c"),
+            "Venda futura": r.get("Venda_Futura__c"),
+            "Venda comunicada": r.get("GeradoComunicadoVenda__c"),
         })
     return pd.DataFrame(rows)
 
@@ -4024,8 +4022,7 @@ def _sf_soql_oportunidades_empreendimento(sf, hoje: Optional[date] = None) -> pd
     desde = f"{ini.isoformat()}T00:00:00Z"
     soql = (
         "SELECT Id, StageName, CreatedDate, LastStageChangeDate, IsClosed, IsWon, "
-        "Empreendimento__r.Name, AtribuicaoDigital__c, UltimaEntradaDigital__c, "
-        "OrigemConta__c, LeadSource "
+        "Empreendimento__r.Name, OrigemConta__c, LeadSource "
         "FROM Opportunity "
         "WHERE Empreendimento__r.Regional__c = 'RJ' "
         "AND Empreendimento__r.UnidadeDeNegocio__c = 'Direcional' "
@@ -4041,8 +4038,6 @@ def _sf_soql_oportunidades_empreendimento(sf, hoje: Optional[date] = None) -> pd
             "Data de criação": r.get("CreatedDate"),
             "Data mudança fase": r.get("LastStageChangeDate"),
             "Empreendimento": _sf_rel_name(r.get("Empreendimento__r")),
-            "Atribuição Digital": r.get("AtribuicaoDigital__c"),
-            "Última entrada Digital": r.get("UltimaEntradaDigital__c"),
             "Origem da Conta": r.get("OrigemConta__c"),
             "Origem do lead": r.get("LeadSource"),
             "Fechada": r.get("IsClosed"),
@@ -8063,10 +8058,8 @@ def _v():
 # PAINEL V2 (inline — ex-velocimetro_painel_v2.py)
 # =============================================================================
 
-# -*- coding: utf-8 -*-
-"""
-Painel v2 — metas Coordenadores + Canal, estoque analítico, velocímetros por coordenador.
-"""
+# Painel v2 — metas Coordenadores + Canal, estoque analítico, velocímetros por coordenador.
+
 import calendar
 import html
 import math
@@ -8569,11 +8562,11 @@ def _metricas_vendas_avancadas(
     base = base[base["Empreendimento"].map(v._limpar_emp) == v._limpar_emp(emp)]
     vf = 0.0
     vc = 0.0
-    for col in ("Venda futura", "VendaFutura__c"):
+    for col in ("Venda futura", "Venda_Futura__c", "VendaFutura__c"):
         if col in base.columns:
             vf = float(base[col].astype(str).str.upper().isin(("TRUE", "1", "SIM", "YES")).sum())
             break
-    for col in ("Venda comunicada", "VendaComunicadaAutomaticamente__c"):
+    for col in ("Venda comunicada", "GeradoComunicadoVenda__c", "VendaComunicadaAutomaticamente__c"):
         if col in base.columns:
             vc = float(base[col].astype(str).str.upper().isin(("TRUE", "1", "SIM", "YES")).sum())
             break
@@ -9094,14 +9087,9 @@ def render_painel_metas_v2(
 # PODER DE COMPRA (inline — ex-velocimetro_poder_compra.py)
 # =============================================================================
 
-# -*- coding: utf-8 -*-
-"""
-Poder de compra e ineficiência comercial — pastas aprovadas (Avaliacao_credito__c).
+# Poder de compra — pastas aprovadas (Avaliacao_credito__c).
+# pro_soluto_max = min(ProSoluto__c, renda×comprometimento×parcelas, preço×limite %)
 
-Lógica de pro soluto máximo alinhada ao diresimulator / TabelaComprometimentoDeRenda:
-  pro_soluto_max = min(ProSoluto__c da tabela SF, renda × comprometimento × parcelas, preço × limite %)
-Poder de compra = FGTS + subsídio + financiamento + pro_soluto_efetivo
-"""
 import re
 from dataclasses import dataclass, field
 from datetime import date
@@ -9615,10 +9603,8 @@ def render_aba_poder_compra(
 # DASHBOARD COMERCIAL (inline — ex-velocimetro_dashboard_comercial.py)
 # =============================================================================
 
-# -*- coding: utf-8 -*-
-"""
-Dashboard comercial — VSO, velocímetros VGV por canal, rankings, share e evolução.
-"""
+# Dashboard comercial — VSO, velocímetros VGV, rankings, share e evolução.
+
 import calendar
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -10350,10 +10336,8 @@ def render_dashboard_comercial(
 # FUNIL TEMPOS (inline — ex-velocimetro_funil_tempos.py)
 # =============================================================================
 
-# -*- coding: utf-8 -*-
-"""
-Tempos médios de conversão do funil e hipereficiência (comprou sem poder de compra).
-"""
+# Tempos médios de conversão do funil e hipereficiência.
+
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, Dict, List, Optional, Tuple
