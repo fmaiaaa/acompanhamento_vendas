@@ -7041,6 +7041,30 @@ def _coalesce_df(val: Any) -> pd.DataFrame:
     return val
 
 
+def _coalesce_dict_df(d: Optional[Dict[str, Any]], key: str) -> pd.DataFrame:
+    if not d:
+        return pd.DataFrame()
+    return _coalesce_df(d.get(key))
+
+
+def _serie_coluna(df: Optional[pd.DataFrame], col: str) -> pd.Series:
+    if df is None or df.empty or col not in df.columns:
+        return pd.Series(dtype=object)
+    return df[col]
+
+
+def _opcoes_unicas(*series: pd.Series) -> List[str]:
+    vals: set = set()
+    for s in series:
+        if s is None or s.empty:
+            continue
+        for c in s.dropna().unique():
+            t = str(c).strip()
+            if t:
+                vals.add(t)
+    return sorted(vals)
+
+
 def _limpar_emp(val: Any) -> str:
     if val is None or (isinstance(val, float) and pd.isna(val)):
         return ""
@@ -8250,6 +8274,62 @@ COL_META_MAP = {
     ("visitas", "BP 70%"): "Meta Visitas BP 70%",
 }
 
+
+def adaptar_metas_melt_para_coord(
+    df_metas: pd.DataFrame,
+    ano_meta: Optional[int] = None,
+) -> pd.DataFrame:
+    """Fallback: metas legado (melt) → schema da planilha Coordenadores Comerciais."""
+    if df_metas is None or df_metas.empty:
+        return pd.DataFrame()
+    ano = int(ano_meta or date.today().year)
+    out = df_metas.copy()
+    if "Empreendimento" not in out.columns:
+        for c in out.columns:
+            if str(c).lower() in ("empreendimento", "obra"):
+                out = out.rename(columns={c: "Empreendimento"})
+                break
+    if "Coordenador" not in out.columns:
+        out["Coordenador"] = "Não Informado"
+    if "Mes_Num" not in out.columns and "Mes" in out.columns:
+        out["Mes_Num"] = pd.to_numeric(out["Mes"], errors="coerce").fillna(0).astype(int)
+    out["Ano_Num"] = ano
+    qtd = pd.to_numeric(
+        out["Meta_Qtd"] if "Meta_Qtd" in out.columns else 0,
+        errors="coerce",
+    ).fillna(0.0)
+    for (ind, tipo), col_name in COL_META_MAP.items():
+        if col_name in out.columns:
+            continue
+        if ind == "vendas":
+            if tipo == "Desafio":
+                out[col_name] = qtd
+            elif tipo == "BP":
+                out[col_name] = qtd * 0.85
+            elif tipo == "BP 70%":
+                out[col_name] = qtd * 0.7
+        else:
+            out[col_name] = 0.0
+    return out
+
+
+def carregar_metas_coordenadores_com_fallback(
+    cred_fp: str,
+    df_metas_legacy: Optional[pd.DataFrame] = None,
+    ano_meta: Optional[int] = None,
+) -> Tuple[pd.DataFrame, Optional[str]]:
+    aviso: Optional[str] = None
+    try:
+        df = carregar_metas_coordenadores(cred_fp)
+        if df is not None and not df.empty:
+            return df, None
+        aviso = "Planilha Metas Coordenadores vazia ou inacessível."
+    except Exception as exc:
+        aviso = str(exc)
+    if df_metas_legacy is not None and not df_metas_legacy.empty:
+        return adaptar_metas_melt_para_coord(df_metas_legacy, ano_meta), aviso
+    return pd.DataFrame(), aviso
+
 ALIASES_ESTOQUE_VFK = ["Valor Final com Kit", "ValorFinalComKit__c", "Valor Final Com Kit"]
 ALIASES_ESTOQUE_AVAL = ["Valor de Avaliação Bancária", "Valor de Avaliação", "Valor_de_Avalia_o_Banc_ria__c"]
 ALIASES_ESTOQUE_FOLGA = ["Valor Folga", "Valor_Folga__c", "Folga Comercial", "Folga_Comercial__c"]
@@ -8921,15 +9001,11 @@ def render_filtros_painel_v2(
         return filtros_glob_to_v2(filtros_externos)
     hoje = date.today()
     ini_mes = date(hoje.year, hoje.month, 1)
-    coords = sorted(
-        str(c).strip()
-        for c in (df_metas_coord.get("Coordenador") or pd.Series()).dropna().unique()
-        if str(c).strip()
+    coords = _opcoes_unicas(
+        _serie_coluna(df_metas_coord, "Coordenador"),
     )
-    emps = sorted(
-        str(e).strip()
-        for e in (df_metas_coord.get("Empreendimento") or pd.Series()).dropna().unique()
-        if str(e).strip()
+    emps = _opcoes_unicas(
+        _serie_coluna(df_metas_coord, "Empreendimento"),
     )
     st.markdown("#### Filtros de análise")
     c1, c2, c3, c4 = st.columns(4)
@@ -9154,18 +9230,29 @@ def render_painel_metas_v2(
     df_tabela_comp: Optional[pd.DataFrame] = None,
     proj: Optional[Dict[str, Any]] = None,
     filtros_glob: Optional["FiltrosGlobais"] = None,
+    df_metas_fallback: Optional[pd.DataFrame] = None,
 ) -> FiltrosPainelV2:
     """Renderiza seção v2: estoque, velocímetros, tabela analítica."""
     v = _v()
+    ano_fb = filtros_glob.ano_meta if filtros_glob else date.today().year
+    df_metas_coord, aviso_coord = carregar_metas_coordenadores_com_fallback(
+        cred_fp, df_metas_fallback, ano_fb,
+    )
     try:
-        df_metas_coord = carregar_metas_coordenadores(cred_fp)
         df_canal = carregar_metas_canal(cred_fp)
     except Exception as exc:
-        st.error(f"Erro ao carregar planilhas de meta: {exc}")
+        st.warning(f"Metas canal (IVAN) indisponíveis: {exc}")
+        df_canal = pd.DataFrame()
+    if df_metas_coord.empty:
+        st.error(f"Erro ao carregar planilhas de meta: {aviso_coord or 'sem dados'}")
         return FiltrosPainelV2(
             date.today().replace(day=1), date.today(),
             date.today().month, date.today().year,
             "vendas", "Desafio", "RIO", [], [],
+        )
+    if aviso_coord:
+        st.warning(
+            f"Metas coordenadores: usando planilha legado de metas ({aviso_coord})."
         )
 
     filtros = render_filtros_painel_v2(df_metas_coord, cred_fp, filtros_externos=filtros_glob)
@@ -9954,19 +10041,18 @@ def filtros_glob_to_v2(fg: FiltrosGlobais) -> "FiltrosPainelV2":
 def render_filtros_globais(
     df_metas_coord: pd.DataFrame,
     df_vendas: pd.DataFrame,
+    df_metas_fallback: Optional[pd.DataFrame] = None,
 ) -> FiltrosGlobais:
     """Filtros únicos aplicados em todas as abas."""
     hoje = date.today()
     ini_mes = date(hoje.year, hoje.month, 1)
-    coords = sorted(
-        str(c).strip()
-        for c in (df_metas_coord.get("Coordenador") or pd.Series()).dropna().unique()
-        if str(c).strip()
+    coords = _opcoes_unicas(
+        _serie_coluna(df_metas_coord, "Coordenador"),
+        _serie_coluna(df_metas_fallback, "Coordenador"),
     )
-    emps = sorted(
-        str(e).strip()
-        for e in (df_metas_coord.get("Empreendimento") or pd.Series()).dropna().unique()
-        if str(e).strip()
+    emps = _opcoes_unicas(
+        _serie_coluna(df_metas_coord, "Empreendimento"),
+        _serie_coluna(df_metas_fallback, "Empreendimento"),
     )
     imobs: List[str] = []
     if "Imobiliária" in df_vendas.columns:
@@ -10367,15 +10453,11 @@ def render_filtros_dashboard(
         return filtros_glob_to_dashboard(filtros_externos)
     hoje = date.today()
     ini_mes = date(hoje.year, hoje.month, 1)
-    coords = sorted(
-        str(c).strip()
-        for c in (df_metas_coord.get("Coordenador") or pd.Series()).dropna().unique()
-        if str(c).strip()
+    coords = _opcoes_unicas(
+        _serie_coluna(df_metas_coord, "Coordenador"),
     )
-    emps = sorted(
-        str(e).strip()
-        for e in (df_metas_coord.get("Empreendimento") or pd.Series()).dropna().unique()
-        if str(e).strip()
+    emps = _opcoes_unicas(
+        _serie_coluna(df_metas_coord, "Empreendimento"),
     )
     imobs: List[str] = []
     if "Imobiliária" in df_vendas.columns:
@@ -10742,11 +10824,11 @@ def render_radar_polaroid(
             n_comunicadas = int(base_mes[col].astype(str).str.upper().isin(("TRUE", "1", "SIM", "YES")).sum())
             break
 
-    col_vis = v.achar_coluna(df_ag or pd.DataFrame(), v.ALIASES_DATA_VISITA) or "Data da visita"
-    col_pas = v.achar_coluna_primeiro_envio_analise(df_pastas or pd.DataFrame()) or v.achar_coluna(
-        df_pastas or pd.DataFrame(), v.ALIASES_DATA_CRIACAO
+    col_vis = v.achar_coluna(_coalesce_df(df_ag), v.ALIASES_DATA_VISITA) or "Data da visita"
+    col_pas = v.achar_coluna_primeiro_envio_analise(_coalesce_df(df_pastas)) or v.achar_coluna(
+        _coalesce_df(df_pastas), v.ALIASES_DATA_CRIACAO
     )
-    col_apr = v.achar_coluna_aprovacao_safi(df_pastas or pd.DataFrame())
+    col_apr = v.achar_coluna_aprovacao_safi(_coalesce_df(df_pastas))
     n_visitas = _contar_funil_mtd(df_ag, col_vis, mes, ano) if col_vis else 0.0
     n_pastas = _contar_funil_mtd(df_pastas, col_pas, mes, ano) if col_pas else 0.0
     n_aprov = _contar_funil_mtd(df_pastas, col_apr, mes, ano) if col_apr else 0.0
@@ -11323,15 +11405,24 @@ def render_dashboard_comercial(
     cred_fp: str,
     col_data_venda: Optional[str] = None,
     filtros_glob: Optional["FiltrosGlobais"] = None,
+    df_metas_fallback: Optional[pd.DataFrame] = None,
 ) -> None:
     """Ponto de entrada do dashboard comercial."""
     v = _v()
+    ano_fb = filtros_glob.ano_meta if filtros_glob else date.today().year
+    df_metas_coord, aviso_coord = carregar_metas_coordenadores_com_fallback(
+        cred_fp, df_metas_fallback, ano_fb,
+    )
     try:
-        df_metas_coord = carregar_metas_coordenadores(cred_fp)
         df_canal = carregar_metas_canal(cred_fp)
     except Exception as exc:
-        st.error(f"Erro ao carregar metas: {exc}")
+        st.error(f"Erro ao carregar metas canal: {exc}")
         return
+    if df_metas_coord.empty:
+        st.error(f"Erro ao carregar metas: {aviso_coord or 'sem dados'}")
+        return
+    if aviso_coord:
+        st.warning(f"Metas coordenadores: usando planilha legado ({aviso_coord}).")
 
     df_vendas = enriquecer_vendas_vcx(df_vendas, df_cotacoes)
     col_data = col_data_venda or _col_data_venda(df_vendas)
@@ -11353,12 +11444,12 @@ def render_dashboard_comercial(
     df_tabela_radar = pd.DataFrame()
     try:
         pacote_funil_r = carregar_funil_painel_sf()
-        df_ag_radar = pacote_funil_r.get("agendamentos") or pd.DataFrame()
-        df_pastas_radar = pacote_funil_r.get("pastas") or pd.DataFrame()
+        df_ag_radar = _coalesce_dict_df(pacote_funil_r, "agendamentos")
+        df_pastas_radar = _coalesce_dict_df(pacote_funil_r, "pastas")
         if not df_pastas_radar.empty:
             df_pastas_aprov_radar = deduplicar_pastas_aprovadas_funil(df_pastas_radar)
         pacote_pc_r = carregar_pacote_poder_compra_sf()
-        df_tabela_radar = pacote_pc_r.get("tabela_comprometimento") or pd.DataFrame()
+        df_tabela_radar = _coalesce_dict_df(pacote_pc_r, "tabela_comprometimento")
     except Exception:
         pass
 
@@ -11411,10 +11502,10 @@ def render_dashboard_comercial(
     df_tabela = pd.DataFrame()
     try:
         pacote_funil = carregar_funil_painel_sf()
-        df_ag = pacote_funil.get("agendamentos") or pd.DataFrame()
-        df_pastas = pacote_funil.get("pastas") or pd.DataFrame()
+        df_ag = _coalesce_dict_df(pacote_funil, "agendamentos")
+        df_pastas = _coalesce_dict_df(pacote_funil, "pastas")
         pacote_pc = carregar_pacote_poder_compra_sf()
-        df_tabela = pacote_pc.get("tabela_comprometimento") or pd.DataFrame()
+        df_tabela = _coalesce_dict_df(pacote_pc, "tabela_comprometimento")
     except Exception as exc:
         st.warning(f"Funil/avaliações indisponíveis para tempos de conversão: {exc}")
     emps_funil = filtros.emps_sel or None
@@ -11902,8 +11993,8 @@ def _corpo_painel_metas(
     df_tabela_comp = pd.DataFrame()
     try:
         pacote_pc = carregar_pacote_poder_compra_sf()
-        df_pastas_aprov = pacote_pc.get("pastas_aprovadas") or pd.DataFrame()
-        df_tabela_comp = pacote_pc.get("tabela_comprometimento") or pd.DataFrame()
+        df_pastas_aprov = _coalesce_dict_df(pacote_pc, "pastas_aprovadas")
+        df_tabela_comp = _coalesce_dict_df(pacote_pc, "tabela_comprometimento")
     except Exception as exc:
         st.warning(f"Pacote poder de compra: {exc}")
 
@@ -11920,17 +12011,19 @@ def _corpo_painel_metas(
         df_tabela_comp=df_tabela_comp,
         proj=None,
         filtros_glob=filtros_glob,
+        df_metas_fallback=df_metas,
     )
 
     vendas_f = filtrar_vendas_painel_v2(
         df_vendas, filtros_v2, col_contrato_gerado or "", col_canal,
     )
 
+    df_metas_coord, _ = carregar_metas_coordenadores_com_fallback(
+        cred_fp, df_metas, filtros_v2.ano_meta,
+    )
     try:
-        df_metas_coord = carregar_metas_coordenadores(cred_fp)
         df_canal = carregar_metas_canal(cred_fp)
     except Exception:
-        df_metas_coord = pd.DataFrame()
         df_canal = pd.DataFrame()
 
     if filtros_v2.tipo_indicador == "vendas":
@@ -12393,12 +12486,12 @@ def main() -> None:
     df_vendas["_vgv_venda"] = df_vendas["_vgv"] * df_vendas["_peso_coord"]
     df_vendas_painel = df_vendas.copy()
 
-    df_metas_coord_g = pd.DataFrame()
-    try:
-        df_metas_coord_g = carregar_metas_coordenadores(cred_fp)
-    except Exception:
-        pass
-    filtros_glob = render_filtros_globais(df_metas_coord_g, df_vendas_painel)
+    df_metas_coord_g, _ = carregar_metas_coordenadores_com_fallback(
+        cred_fp, df_metas, date.today().year,
+    )
+    filtros_glob = render_filtros_globais(
+        df_metas_coord_g, df_vendas_painel, df_metas_fallback=df_metas,
+    )
 
     tab_metas, tab_dashboard, tab_funil_emp, tab_poder_compra, tab_feedbacks, tab_previsao = st.tabs(
         [
@@ -12441,10 +12534,10 @@ def main() -> None:
             df_est_pc = carregar_estoque_painel_sf()
             _, enr_pc = agregar_estoque(df_est_pc)
             render_aba_poder_compra(
-                pacote_pc.get("pastas_aprovadas") or pd.DataFrame(),
+                _coalesce_dict_df(pacote_pc, "pastas_aprovadas"),
                 enr_pc,
                 df_vendas_painel,
-                pacote_pc.get("tabela_comprometimento") or pd.DataFrame(),
+                _coalesce_dict_df(pacote_pc, "tabela_comprometimento"),
             )
         except Exception as exc:
             st.error(f"Não foi possível carregar aba Poder de Compra: {exc}")
@@ -12466,6 +12559,7 @@ def main() -> None:
             cred_fp=cred_fp,
             col_data_venda=col_data_venda,
             filtros_glob=filtros_glob,
+            df_metas_fallback=df_metas,
         )
     with tab_metas:
         _corpo_painel_metas(
