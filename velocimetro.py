@@ -3833,9 +3833,18 @@ def _sf_soql_vendas(sf, modo_janela: str = "producao") -> pd.DataFrame:
 
 
 def _sf_soql_cotacoes(sf, modo_janela: str = "producao") -> pd.DataFrame:
-    """Cotações (pro soluto, VCX) vinculadas a oportunidades RJ."""
+    """Cotações (pro soluto, VCX, sinal) vinculadas a oportunidades RJ."""
     desde = _sf_soql_desde(modo_janela)[:10]
-    soql = (
+    soql_com_sinal = (
+        "SELECT Id, OpportunityId, Opportunity.Empreendimento__r.Name, "
+        "VoltaAoCaixa__c, PercentualdoProSoluto__c, TemProSoluto__c, "
+        "TotalSinalCom__c, CreatedDate "
+        "FROM Quote "
+        "WHERE Opportunity.Empreendimento__r.Regional__c = 'RJ' "
+        "AND Opportunity.Empreendimento__r.UnidadeDeNegocio__c = 'Direcional' "
+        f"AND CreatedDate >= {desde}T00:00:00Z"
+    )
+    soql_base = (
         "SELECT Id, OpportunityId, Opportunity.Empreendimento__r.Name, "
         "VoltaAoCaixa__c, PercentualdoProSoluto__c, TemProSoluto__c, CreatedDate "
         "FROM Quote "
@@ -3843,10 +3852,15 @@ def _sf_soql_cotacoes(sf, modo_janela: str = "producao") -> pd.DataFrame:
         "AND Opportunity.Empreendimento__r.UnidadeDeNegocio__c = 'Direcional' "
         f"AND CreatedDate >= {desde}T00:00:00Z"
     )
+    com_sinal = True
     try:
-        res = sf.query_all(soql)
+        res = sf.query_all(soql_com_sinal)
     except Exception:
-        return pd.DataFrame()
+        com_sinal = False
+        try:
+            res = sf.query_all(soql_base)
+        except Exception:
+            return pd.DataFrame()
     rows = []
     for r in res.get("records") or []:
         opp = r.get("Opportunity") if isinstance(r.get("Opportunity"), dict) else {}
@@ -3858,6 +3872,7 @@ def _sf_soql_cotacoes(sf, modo_janela: str = "producao") -> pd.DataFrame:
             "Volta ao caixa": r.get("VoltaAoCaixa__c"),
             "Percentual Pro Soluto": r.get("PercentualdoProSoluto__c"),
             "Tem Pro Soluto": r.get("TemProSoluto__c"),
+            "Total Sinal Com": r.get("TotalSinalCom__c") if com_sinal else None,
             "Data de criação": r.get("CreatedDate"),
         })
     return pd.DataFrame(rows)
@@ -7882,6 +7897,7 @@ def render_aba_funil_empreendimentos(
     df_metas: pd.DataFrame,
     df_vendas: pd.DataFrame,
     col_contrato_gerado: Optional[str],
+    filtros_glob: Optional["FiltrosGlobais"] = None,
 ) -> None:
     """Aba: todos os empreendimentos · uma carga SOQL · seções empilhadas."""
     st.subheader("Funil por Empreendimento — Direcional · RJ")
@@ -7968,34 +7984,44 @@ def render_aba_funil_empreendimentos(
     canais_disp = sorted(set(mapa_emp_canal.values()) | {"RIO", "DIR", "PARC", "RJ"})
     default_emps = empreendimentos[: min(10, len(empreendimentos))]
 
-    st.markdown("#### Filtros")
-    fc1, fc2, fc3, fc4 = st.columns(4)
-    with fc1:
-        emps_sel = st.multiselect(
-            "Empreendimento",
-            empreendimentos,
-            default=default_emps,
-            key="funil_emp_sel",
+    if filtros_glob is not None:
+        emps_sel = filtros_glob.emps_sel or default_emps
+        canais_sel = [] if filtros_glob.canal_sel in ("Todos", "TODOS", "RIO", "") else [filtros_glob.canal_sel]
+        data_ini = filtros_glob.data_ini
+        data_fim = filtros_glob.data_fim
+        st.caption(
+            f"Filtros globais: {data_ini:%d/%m/%Y} → {data_fim:%d/%m/%Y} · "
+            f"Canal {filtros_glob.canal_sel or 'Todos'}"
         )
-    with fc2:
-        canais_sel = st.multiselect(
-            "Canal",
-            canais_disp,
-            default=[],
-            key="funil_canal_sel",
-        )
-    with fc3:
-        data_ini = st.date_input(
-            "Data inicial análise",
-            value=janelas["ini_mes"],
-            key="funil_data_ini",
-        )
-    with fc4:
-        data_fim = st.date_input(
-            "Data final análise",
-            value=janelas["fim"],
-            key="funil_data_fim",
-        )
+    else:
+        st.markdown("#### Filtros")
+        fc1, fc2, fc3, fc4 = st.columns(4)
+        with fc1:
+            emps_sel = st.multiselect(
+                "Empreendimento",
+                empreendimentos,
+                default=default_emps,
+                key="funil_emp_sel",
+            )
+        with fc2:
+            canais_sel = st.multiselect(
+                "Canal",
+                canais_disp,
+                default=[],
+                key="funil_canal_sel",
+            )
+        with fc3:
+            data_ini = st.date_input(
+                "Data inicial análise",
+                value=janelas["ini_mes"],
+                key="funil_data_ini",
+            )
+        with fc4:
+            data_fim = st.date_input(
+                "Data final análise",
+                value=janelas["fim"],
+                key="funil_data_fim",
+            )
 
     if canais_sel:
         emps_sel = [
@@ -8767,7 +8793,10 @@ def montar_tabela_analitica(
 def render_filtros_painel_v2(
     df_metas_coord: pd.DataFrame,
     cred_fp: str,
+    filtros_externos: Optional["FiltrosGlobais"] = None,
 ) -> FiltrosPainelV2:
+    if filtros_externos is not None:
+        return filtros_glob_to_v2(filtros_externos)
     hoje = date.today()
     ini_mes = date(hoje.year, hoje.month, 1)
     coords = sorted(
@@ -9002,6 +9031,7 @@ def render_painel_metas_v2(
     df_pastas_aprov: Optional[pd.DataFrame] = None,
     df_tabela_comp: Optional[pd.DataFrame] = None,
     proj: Optional[Dict[str, Any]] = None,
+    filtros_glob: Optional["FiltrosGlobais"] = None,
 ) -> FiltrosPainelV2:
     """Renderiza seção v2: estoque, velocímetros, tabela analítica."""
     v = _v()
@@ -9016,7 +9046,9 @@ def render_painel_metas_v2(
             "vendas", "Desafio", "RIO", [], [],
         )
 
-    filtros = render_filtros_painel_v2(df_metas_coord, cred_fp)
+    filtros = render_filtros_painel_v2(df_metas_coord, cred_fp, filtros_externos=filtros_glob)
+    if filtros_glob is not None:
+        st.caption(f"Filtros globais ativos · {filtros.data_ini:%d/%m/%Y} → {filtros.data_fim:%d/%m/%Y}")
     mapa_coord = mapa_emp_coordenador(df_metas_coord, filtros.mes_meta, filtros.ano_meta)
 
     kpi_est, enr = agregar_estoque(df_estoque if df_estoque is not None else pd.DataFrame())
@@ -9663,6 +9695,118 @@ class FiltrosDashboard:
     imobs_sel: List[str]
 
 
+@dataclass
+class FiltrosGlobais:
+    data_ini: date
+    data_fim: date
+    mes_meta: int
+    ano_meta: int
+    tipo_meta_col: str
+    tipo_indicador: str
+    canal_sel: str
+    canal_meta: str
+    coords_sel: List[str]
+    emps_sel: List[str]
+    imobs_sel: List[str]
+    status_estoque_sel: List[str]
+
+
+def filtros_glob_to_dashboard(fg: FiltrosGlobais) -> FiltrosDashboard:
+    return FiltrosDashboard(
+        data_ini=fg.data_ini,
+        data_fim=fg.data_fim,
+        mes_meta=fg.mes_meta,
+        ano_meta=fg.ano_meta,
+        tipo_meta_col=fg.tipo_meta_col,
+        emps_sel=fg.emps_sel,
+        coords_sel=fg.coords_sel,
+        canal_sel=fg.canal_sel,
+        imobs_sel=fg.imobs_sel,
+    )
+
+
+def filtros_glob_to_v2(fg: FiltrosGlobais) -> "FiltrosPainelV2":
+    return FiltrosPainelV2(
+        data_ini=fg.data_ini,
+        data_fim=fg.data_fim,
+        mes_meta=fg.mes_meta,
+        ano_meta=fg.ano_meta,
+        tipo_indicador=fg.tipo_indicador,
+        tipo_meta_col=fg.tipo_meta_col,
+        canal_meta=fg.canal_meta,
+        coordenadores_sel=fg.coords_sel,
+        emps_sel=fg.emps_sel,
+    )
+
+
+def render_filtros_globais(
+    df_metas_coord: pd.DataFrame,
+    df_vendas: pd.DataFrame,
+) -> FiltrosGlobais:
+    """Filtros únicos aplicados em todas as abas."""
+    hoje = date.today()
+    ini_mes = date(hoje.year, hoje.month, 1)
+    coords = sorted(
+        str(c).strip()
+        for c in (df_metas_coord.get("Coordenador") or pd.Series()).dropna().unique()
+        if str(c).strip()
+    )
+    emps = sorted(
+        str(e).strip()
+        for e in (df_metas_coord.get("Empreendimento") or pd.Series()).dropna().unique()
+        if str(e).strip()
+    )
+    imobs: List[str] = []
+    if "Imobiliária" in df_vendas.columns:
+        imobs = sorted(str(i).strip() for i in df_vendas["Imobiliária"].dropna().unique() if str(i).strip())
+    st.markdown("#### Filtros globais")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    with c1:
+        data_ini = st.date_input("Data inicial", value=ini_mes, key="glob_data_ini")
+    with c2:
+        data_fim = st.date_input("Data final", value=hoje, key="glob_data_fim")
+    with c3:
+        mes_meta = st.selectbox("Mês meta", list(range(1, 13)), index=hoje.month - 1, key="glob_mes_meta")
+    with c4:
+        ano_meta = st.number_input("Ano meta", min_value=2020, max_value=2035, value=hoje.year, key="glob_ano_meta")
+    with c5:
+        tipo_meta_col = st.selectbox("Tipo meta", TIPOS_META_COL, key="glob_tipo_meta")
+    c6, c7, c8, c9 = st.columns(4)
+    with c6:
+        canal_sel = st.selectbox("Canal", ["Todos", "RIO", "DIR", "GC", "PC"], key="glob_canal")
+    with c7:
+        canal_meta = st.selectbox("Canal meta (velocímetro)", CANAIS_META, key="glob_canal_meta")
+    with c8:
+        tipo_indicador = st.selectbox("Indicador funil/metas", TIPOS_INDICADOR, key="glob_tipo_ind")
+    with c9:
+        status_estoque_sel = st.multiselect(
+            "Status estoque",
+            list(ESTOQUE_STATUS_TODOS),
+            default=list(ESTOQUE_STATUS_VENDAVEL),
+            key="glob_status_est",
+        )
+    coords_sel = st.multiselect("Coordenador", coords, default=coords, key="glob_coords")
+    c10, c11 = st.columns(2)
+    with c10:
+        emps_sel = st.multiselect("Empreendimento", emps, default=[], key="glob_emps")
+    with c11:
+        imobs_sel = st.multiselect("Imobiliária", imobs, default=[], key="glob_imobs")
+    return FiltrosGlobais(
+        data_ini=data_ini,
+        data_fim=data_fim,
+        mes_meta=int(mes_meta),
+        ano_meta=int(ano_meta),
+        tipo_meta_col=tipo_meta_col,
+        tipo_indicador=tipo_indicador,
+        canal_sel=canal_sel,
+        canal_meta=canal_meta,
+        coords_sel=coords_sel,
+        emps_sel=emps_sel,
+        imobs_sel=imobs_sel,
+        status_estoque_sel=status_estoque_sel,
+    )
+
+
 
 
 def _prefixo_imob(val: Any) -> str:
@@ -9675,26 +9819,54 @@ def enriquecer_vendas_vcx(
     df_vendas: pd.DataFrame,
     df_cotacoes: Optional[pd.DataFrame],
 ) -> pd.DataFrame:
-    """Anexa valor de Volta ao Caixa (última cotação por oportunidade)."""
+    """Anexa VCX, PS e sinal (última cotação por oportunidade)."""
     out = df_vendas.copy()
+    out["Volta ao caixa"] = 0.0
+    out["Pct_PS"] = 0.0
+    out["PS_VGV"] = 0.0
+    out["Total_Sinal"] = 0.0
+    out["Sinais_VGV"] = 0.0
     if df_cotacoes is None or df_cotacoes.empty:
-        out["Volta ao caixa"] = 0.0
         return out
     col_opp = "ID da Oportunidade"
-    col_vcx = None
-    for c in ("Volta ao caixa", "VoltaAoCaixa__c"):
-        if c in df_cotacoes.columns:
-            col_vcx = c
-            break
-    if not col_vcx or col_opp not in df_cotacoes.columns or col_opp not in out.columns:
-        out["Volta ao caixa"] = 0.0
+    if col_opp not in df_cotacoes.columns or col_opp not in out.columns:
         return out
     cot = df_cotacoes.copy()
-    cot["_vcx"] = cot[col_vcx].map(_parse_num_br)
-    agg = cot.groupby(col_opp, as_index=False)["_vcx"].max()
-    agg = agg.rename(columns={"_vcx": "Volta ao caixa"})
-    out = out.merge(agg, on=col_opp, how="left")
-    out["Volta ao caixa"] = pd.to_numeric(out["Volta ao caixa"], errors="coerce").fillna(0.0)
+    col_vcx = next((c for c in ("Volta ao caixa", "VoltaAoCaixa__c") if c in cot.columns), None)
+    col_ps = next((c for c in ("Percentual Pro Soluto", "PercentualdoProSoluto__c") if c in cot.columns), None)
+    col_sinal = next((c for c in ("Total Sinal Com", "TotalSinalCom__c") if c in cot.columns), None)
+    if col_vcx:
+        cot["_vcx"] = cot[col_vcx].map(_parse_num_br)
+    if col_ps:
+        cot["_ps"] = pd.to_numeric(cot[col_ps], errors="coerce").fillna(0.0)
+    if col_sinal:
+        cot["_sinal"] = cot[col_sinal].map(_parse_num_br)
+    agg_spec: Dict[str, str] = {}
+    if col_vcx:
+        agg_spec["_vcx"] = "max"
+    if col_ps:
+        agg_spec["_ps"] = "max"
+    if col_sinal:
+        agg_spec["_sinal"] = "max"
+    if not agg_spec:
+        return out
+    g = cot.groupby(col_opp, as_index=False).agg(agg_spec)
+    out = out.merge(g, on=col_opp, how="left")
+    if "_vcx" in out.columns:
+        out["Volta ao caixa"] = pd.to_numeric(out["_vcx"], errors="coerce").fillna(0.0)
+        out = out.drop(columns=["_vcx"], errors="ignore")
+    if "_ps" in out.columns:
+        out["Pct_PS"] = out["_ps"].fillna(0.0)
+        out["PS_VGV"] = out["Pct_PS"] / 100.0
+        out = out.drop(columns=["_ps"], errors="ignore")
+    if "_sinal" in out.columns:
+        out["Total_Sinal"] = out["_sinal"].fillna(0.0)
+        out = out.drop(columns=["_sinal"], errors="ignore")
+    vgv_num = pd.to_numeric(
+        out["_vgv"] if "_vgv" in out.columns else out.get("Valor Real de Venda", 0),
+        errors="coerce",
+    ).fillna(0.0)
+    out["Sinais_VGV"] = np.where(vgv_num > 0, out["Total_Sinal"] / vgv_num, 0.0)
     return out
 
 
@@ -9977,7 +10149,10 @@ def montar_ranking(
 def render_filtros_dashboard(
     df_metas_coord: pd.DataFrame,
     df_vendas: pd.DataFrame,
+    filtros_externos: Optional["FiltrosGlobais"] = None,
 ) -> FiltrosDashboard:
+    if filtros_externos is not None:
+        return filtros_glob_to_dashboard(filtros_externos)
     hoje = date.today()
     ini_mes = date(hoje.year, hoje.month, 1)
     coords = sorted(
@@ -10497,12 +10672,419 @@ def render_tabela_radar_emp(df: pd.DataFrame) -> None:
     st.dataframe(df, use_container_width=True, hide_index=True)
 
 
+CANAIS_STACK = ["RIO", "DIR", "GC", "PC"]
+
+
+def _canal_stack(val: Any) -> str:
+    p = _prefixo_imob(val)
+    if p in CANAIS_DV:
+        return "DIR"
+    if p == "RJG":
+        return "GC"
+    if p == "RJ":
+        return "PC"
+    return "RIO"
+
+
+def _prep_vendas_canal(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    if "Canal_Stack" not in out.columns:
+        col = "Imobiliária" if "Imobiliária" in out.columns else "Canal"
+        if col in out.columns:
+            out["Canal_Stack"] = out[col].map(_canal_stack)
+        else:
+            out["Canal_Stack"] = "RIO"
+    return out
+
+
+def _aplicar_filtros_funil_df(
+    df: pd.DataFrame,
+    filtros: FiltrosDashboard,
+    mapa_coord: Dict[str, str],
+    col_data: str,
+) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    v = _v()
+    out = df.copy()
+    if filtros.emps_sel:
+        col_emp = v.achar_coluna(out, v.ALIASES_EMPREENDIMENTO) or "Empreendimento"
+        if col_emp in out.columns:
+            sel = {_limpar_emp(e) for e in filtros.emps_sel}
+            out = out[out[col_emp].map(_limpar_emp).isin(sel)]
+    if filtros.coords_sel and mapa_coord:
+        col_emp = v.achar_coluna(out, v.ALIASES_EMPREENDIMENTO) or "Empreendimento"
+        if col_emp in out.columns:
+            emps_c = {e for e, c in mapa_coord.items() if c in set(filtros.coords_sel)}
+            out = out[out[col_emp].map(_limpar_emp).isin(emps_c)]
+    if col_data and col_data in out.columns:
+        out = _filtrar_df_periodo(out, col_data, filtros.data_ini, filtros.data_fim)
+    return out
+
+
+def calcular_pastas_sem_visita(
+    df_ag: pd.DataFrame,
+    df_pastas: pd.DataFrame,
+    empreendimentos: Optional[List[str]] = None,
+) -> Tuple[int, int, float]:
+    """Pastas sem visita linkada (WhatId/AccountId) e percentual."""
+    v = _v()
+    if df_pastas is None or df_pastas.empty:
+        return 0, 0, 0.0
+    pas = v.deduplicar_pastas_funil(df_pastas)
+    linked: set = set()
+    if df_ag is not None and not df_ag.empty:
+        ag = v.deduplicar_agendamentos_funil(df_ag)
+        col_vis = v.achar_coluna(ag, v.ALIASES_DATA_VISITA) or "Data da visita"
+        col_emp = v.achar_coluna(ag, v.ALIASES_EMPREENDIMENTO) or "Empreendimento"
+        ag = ag.copy()
+        ag["_vis"] = _parse_dt_series(ag, col_vis)
+        ag = ag.dropna(subset=["_vis"])
+        ag["_emp"] = ag[col_emp].map(_limpar_emp) if col_emp in ag.columns else ""
+        for _, row in ag.iterrows():
+            emp = row["_emp"]
+            opp = _opp_id(row.get("WhatId"))
+            conta = str(row.get("AccountId") or "").strip()
+            if opp:
+                linked.add(("opp", emp, opp))
+            if conta and conta.lower() not in ("nan", "none", ""):
+                linked.add(("conta", emp, conta))
+    col_emp_p = v.achar_coluna(pas, v.ALIASES_EMPREENDIMENTO) or "Empreendimento"
+    col_opp = v.achar_coluna(pas, ALIASES_OPP_AVAL) or "Oportunidade"
+    col_conta = v.achar_coluna(pas, ["Conta__c", "Conta"]) or "Conta"
+    if empreendimentos:
+        sel = {_limpar_emp(e) for e in empreendimentos}
+        pas = pas[pas[col_emp_p].map(_limpar_emp).isin(sel)]
+    total = len(pas)
+    sem = 0
+    for _, row in pas.iterrows():
+        emp = _limpar_emp(row.get(col_emp_p))
+        opp = str(row.get(col_opp) or "").strip()
+        conta = str(row.get(col_conta) or "").strip()
+        ok = (opp and ("opp", emp, opp) in linked) or (
+            conta and conta.lower() not in ("nan", "none", "")
+            and ("conta", emp, conta) in linked
+        )
+        if not ok:
+            sem += 1
+    pct = (sem / total * 100.0) if total > 0 else 0.0
+    return sem, total, pct
+
+
+def _idx_pareto_corte(cum: np.ndarray, alvo: float) -> int:
+    for i, v in enumerate(cum):
+        if v >= alvo:
+            return i
+    return max(len(cum) - 1, 0)
+
+
+def _plot_pareto_abc(
+    df: pd.DataFrame,
+    dim_col: str,
+    titulo: str,
+    key_prefix: str,
+    top_n: int = 25,
+) -> None:
+    """Gráfico ABC: barras empilhadas por canal + linha % acumulada + cortes 75%/95%."""
+    if df.empty or dim_col not in df.columns:
+        st.info(f"Sem dados para {titulo}.")
+        return
+    prep = _prep_vendas_canal(df)
+    qcol = "_qtd_venda" if "_qtd_venda" in prep.columns else None
+    if not qcol:
+        prep["_q"] = 1.0
+        qcol = "_q"
+    agg = prep.groupby([dim_col, "Canal_Stack"], as_index=False)[qcol].sum()
+    pivot = agg.pivot(index=dim_col, columns="Canal_Stack", values=qcol).fillna(0)
+    for c in CANAIS_STACK:
+        if c not in pivot.columns:
+            pivot[c] = 0.0
+    pivot = pivot[CANAIS_STACK]
+    pivot["_tot"] = pivot.sum(axis=1)
+    pivot = pivot.sort_values("_tot", ascending=False).head(top_n)
+    if pivot.empty or pivot["_tot"].sum() <= 0:
+        st.info(f"Sem volume para {titulo}.")
+        return
+    labels = list(pivot.index.astype(str))
+    totals = pivot["_tot"].values.astype(float)
+    cum_pct = np.cumsum(totals) / totals.sum() * 100.0
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+    cores = {"RIO": "#2563eb", "DIR": "#16a34a", "GC": "#f59e0b", "PC": "#8b5cf6"}
+    for canal in CANAIS_STACK:
+        fig.add_trace(
+            go.Bar(x=labels, y=pivot[canal].values, name=canal, marker_color=cores.get(canal, "#64748b")),
+            secondary_y=False,
+        )
+    fig.add_trace(
+        go.Scatter(
+            x=labels, y=cum_pct, name="% acumulada", mode="lines+markers",
+            line=dict(color="#dc2626", width=2), marker=dict(size=6),
+        ),
+        secondary_y=True,
+    )
+    for alvo, cor in ((75.0, "#f59e0b"), (95.0, "#ef4444")):
+        idx = _idx_pareto_corte(cum_pct, alvo)
+        if idx < len(labels):
+            fig.add_vline(x=labels[idx], line_dash="dash", line_color=cor, annotation_text=f"{alvo:.0f}%")
+    fig.update_layout(
+        title=titulo, barmode="stack", height=460,
+        margin=dict(l=20, r=20, t=50, b=80),
+        legend=dict(orientation="h", y=-0.25),
+    )
+    fig.update_yaxes(title_text="Quantidade", secondary_y=False)
+    fig.update_yaxes(title_text="% acumulada", range=[0, 105], secondary_y=True)
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, key=_plotly_key(key_prefix))
+
+
+def _periodos_ps_sinais(hoje: Optional[date] = None) -> Dict[str, Tuple[date, date]]:
+    hoje = hoje or date.today()
+    ini_mtd = date(hoje.year, hoje.month, 1)
+    if hoje.month == 1:
+        ini_m1 = date(hoje.year - 1, 12, 1)
+        fim_m1 = date(hoje.year - 1, 12, 31)
+    else:
+        ini_m1 = date(hoje.year, hoje.month - 1, 1)
+        fim_m1 = date(hoje.year, hoje.month - 1, calendar.monthrange(hoje.year, hoje.month - 1)[1])
+    ini_12m = hoje - timedelta(days=365)
+    return {
+        "MTD": (ini_mtd, hoje),
+        "Mes_Anterior": (ini_m1, fim_m1),
+        "Ultimos_12m": (ini_12m, hoje),
+    }
+
+
+def _metricas_ps_sinais_periodo(sub: pd.DataFrame) -> Tuple[float, float]:
+    if sub.empty:
+        return 0.0, 0.0
+    vgv = float(sub["_vgv_venda"].sum()) if "_vgv_venda" in sub.columns else float(sub["_vgv"].sum()) if "_vgv" in sub.columns else 0.0
+    if vgv <= 0:
+        return 0.0, 0.0
+    ps_num = float((sub["PS_VGV"] * sub["_vgv_venda"]).sum()) if "PS_VGV" in sub.columns and "_vgv_venda" in sub.columns else 0.0
+    sinal = float(sub["Total_Sinal"].sum()) if "Total_Sinal" in sub.columns else 0.0
+    return ps_num / vgv, sinal / vgv
+
+
+def montar_tabela_ps_sinais_vgv(
+    df_vendas: pd.DataFrame,
+    col_data: str,
+    filtros: FiltrosDashboard,
+    mapa_coord: Dict[str, str],
+    hoje: Optional[date] = None,
+) -> pd.DataFrame:
+    """PS/VGV e Sinais/VGV por empreendimento — MTD, mês anterior, 12m (vs média 12m)."""
+    if not col_data or df_vendas.empty or "Empreendimento" not in df_vendas.columns:
+        return pd.DataFrame()
+    base = _aplicar_filtros_base(df_vendas, filtros, mapa_coord, col_data, usar_periodo=False)
+    base = _prep_vendas_canal(base)
+    hoje = hoje or date.today()
+    periodos = _periodos_ps_sinais(hoje)
+    emps = sorted(base["Empreendimento"].map(_limpar_emp).dropna().unique())
+    if filtros.emps_sel:
+        emps = [_limpar_emp(e) for e in filtros.emps_sel if _limpar_emp(e) in emps]
+    rows = []
+    for emp in emps:
+        sub_emp = base[base["Empreendimento"].map(_limpar_emp) == emp]
+        row: Dict[str, Any] = {"Empreendimento": emp}
+        vals_ps: List[float] = []
+        vals_si: List[float] = []
+        for chave, (ini, fim) in periodos.items():
+            sub = _filtrar_df_periodo(sub_emp, col_data, ini, fim)
+            ps, si = _metricas_ps_sinais_periodo(sub)
+            row[f"PS_VGV_{chave}"] = round(ps * 100, 2)
+            row[f"Sinais_VGV_{chave}"] = round(si * 100, 2)
+            if chave == "Ultimos_12m":
+                vals_ps.append(ps)
+                vals_si.append(si)
+        media_ps = float(np.mean(vals_ps)) if vals_ps else 0.0
+        media_si = float(np.mean(vals_si)) if vals_si else 0.0
+        row["PS_VGV_Media_12m"] = round(media_ps * 100, 2)
+        row["Sinais_VGV_Media_12m"] = round(media_si * 100, 2)
+        mtd_ps = row.get("PS_VGV_MTD", 0.0)
+        mtd_si = row.get("Sinais_VGV_MTD", 0.0)
+        row["PS_VGV_MTD_vs_12m"] = round(mtd_ps - row["PS_VGV_Media_12m"], 2)
+        row["Sinais_VGV_MTD_vs_12m"] = round(mtd_si - row["Sinais_VGV_Media_12m"], 2)
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def render_grafico_vendas_mes_canal(
+    df_vendas: pd.DataFrame,
+    col_data: str,
+    key_prefix: str = "vendas_mes",
+) -> None:
+    st.subheader("Quantidade de vendas por mês (empilhado por canal)")
+    if not col_data or df_vendas.empty:
+        st.info("Sem dados de vendas por mês.")
+        return
+    v = _v()
+    prep = _prep_vendas_canal(df_vendas)
+    prep["_dt"] = v.parse_data_serie(prep[col_data])
+    prep = prep.dropna(subset=["_dt"])
+    if prep.empty:
+        st.info("Sem datas válidas.")
+        return
+    prep["_mes"] = prep["_dt"].dt.to_period("M").astype(str)
+    qcol = "_qtd_venda" if "_qtd_venda" in prep.columns else None
+    if not qcol:
+        prep["_q"] = 1.0
+        qcol = "_q"
+    agg = prep.groupby(["_mes", "Canal_Stack"], as_index=False)[qcol].sum()
+    pivot = agg.pivot(index="_mes", columns="Canal_Stack", values=qcol).fillna(0).sort_index()
+    for c in CANAIS_STACK:
+        if c not in pivot.columns:
+            pivot[c] = 0.0
+    fig = go.Figure()
+    cores = {"RIO": "#2563eb", "DIR": "#16a34a", "GC": "#f59e0b", "PC": "#8b5cf6"}
+    for canal in CANAIS_STACK:
+        fig.add_trace(go.Bar(x=pivot.index, y=pivot[canal], name=canal, marker_color=cores.get(canal)))
+    fig.update_layout(barmode="stack", height=420, margin=dict(l=20, r=20, t=40, b=20))
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, key=_plotly_key(key_prefix, "mes"))
+
+
+def render_grafico_vendas_emp_canal(
+    df_vendas: pd.DataFrame,
+    key_prefix: str = "vendas_emp",
+    top_n: int = 20,
+) -> None:
+    st.subheader("Quantidade de vendas por empreendimento (empilhado por canal)")
+    if df_vendas.empty or "Empreendimento" not in df_vendas.columns:
+        st.info("Sem dados por empreendimento.")
+        return
+    prep = _prep_vendas_canal(df_vendas)
+    qcol = "_qtd_venda" if "_qtd_venda" in prep.columns else None
+    if not qcol:
+        prep["_q"] = 1.0
+        qcol = "_q"
+    agg = prep.groupby(["Empreendimento", "Canal_Stack"], as_index=False)[qcol].sum()
+    tot = agg.groupby("Empreendimento")[qcol].sum().sort_values(ascending=False).head(top_n)
+    agg = agg[agg["Empreendimento"].isin(tot.index)]
+    pivot = agg.pivot(index="Empreendimento", columns="Canal_Stack", values=qcol).fillna(0)
+    for c in CANAIS_STACK:
+        if c not in pivot.columns:
+            pivot[c] = 0.0
+    pivot = pivot.loc[tot.index]
+    fig = go.Figure()
+    cores = {"RIO": "#2563eb", "DIR": "#16a34a", "GC": "#f59e0b", "PC": "#8b5cf6"}
+    for canal in CANAIS_STACK:
+        fig.add_trace(go.Bar(x=pivot.index, y=pivot[canal], name=canal, marker_color=cores.get(canal)))
+    fig.update_layout(barmode="stack", height=460, margin=dict(l=20, r=20, t=40, b=100))
+    fig.update_xaxes(tickangle=-35)
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, key=_plotly_key(key_prefix, "emp"))
+
+
+def render_grafico_share_estoque_produto(
+    df_estoque: pd.DataFrame,
+    status_sel: List[str],
+    filtros: FiltrosDashboard,
+    mapa_coord: Dict[str, str],
+) -> None:
+    st.subheader("Representação do produto no estoque")
+    st.caption("Share = unidades do empreendimento (status filtrado) ÷ total filtrado.")
+    if df_estoque is None or df_estoque.empty:
+        st.info("Estoque indisponível.")
+        return
+    df = df_estoque.copy()
+    col_st = "StatusUnidade__c" if "StatusUnidade__c" in df.columns else None
+    if col_st and status_sel:
+        df = df[df[col_st].astype(str).str.strip().isin(status_sel)]
+    if filtros.emps_sel and "Empreendimento" in df.columns:
+        sel = {_limpar_emp(e) for e in filtros.emps_sel}
+        df = df[df["Empreendimento"].map(_limpar_emp).isin(sel)]
+    if filtros.coords_sel and mapa_coord and "Empreendimento" in df.columns:
+        emps_c = {e for e, c in mapa_coord.items() if c in set(filtros.coords_sel)}
+        df = df[df["Empreendimento"].map(_limpar_emp).isin(emps_c)]
+    if df.empty:
+        st.info("Nenhuma unidade após filtros de status/empreendimento.")
+        return
+    cont = df.groupby(df["Empreendimento"].map(_limpar_emp)).size().sort_values(ascending=False)
+    total = float(cont.sum())
+    pct = (cont / total * 100.0).round(1)
+    fig = go.Figure()
+    fig.add_trace(go.Bar(x=cont.index.astype(str), y=cont.values, name="Unidades", marker_color="#2563eb"))
+    fig.add_trace(go.Scatter(
+        x=pct.index.astype(str), y=pct.values, name="Share (%)", mode="lines+markers",
+        yaxis="y2", line=dict(color="#dc2626"),
+    ))
+    fig.update_layout(
+        height=440, margin=dict(l=20, r=20, t=40, b=100),
+        yaxis=dict(title="Unidades"),
+        yaxis2=dict(title="Share (%)", overlaying="y", side="right", range=[0, max(pct.max() * 1.1, 5)]),
+    )
+    fig.update_xaxes(tickangle=-35)
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, key=_plotly_key("share_estoque"))
+    st.dataframe(
+        pd.DataFrame({"Empreendimento": cont.index, "Unidades": cont.values, "Share_Pct": pct.values}),
+        use_container_width=True, hide_index=True,
+    )
+
+
+def render_secao_analises_avancadas(
+    df_vendas: pd.DataFrame,
+    df_estoque: pd.DataFrame,
+    df_ag: pd.DataFrame,
+    df_pastas: pd.DataFrame,
+    filtros: FiltrosDashboard,
+    mapa_coord: Dict[str, str],
+    col_data: str,
+    status_estoque: List[str],
+) -> None:
+    """KPIs e gráficos: pastas sem visita, Pareto, vendas/mês, PS/VGV, estoque."""
+    st.markdown("---")
+    st.subheader("Análises avançadas")
+    st.caption("Indicadores comparados com média dos últimos 12 meses quando aplicável.")
+
+    df_ag_f = _aplicar_filtros_funil_df(df_ag, filtros, mapa_coord, "Data de criação")
+    df_pas_f = _aplicar_filtros_funil_df(
+        df_pastas, filtros, mapa_coord,
+        _v().achar_coluna(df_pastas, COLUNAS_PASTAS_ALIASES) or "Data Primeiro Envio Análise",
+    )
+    emps = filtros.emps_sel or None
+    sem, tot, pct = calcular_pastas_sem_visita(df_ag_f, df_pas_f, emps)
+    st.markdown("##### Pastas sem visita linkada")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Pastas sem visita", sem)
+    c2.metric("Total pastas", tot)
+    c3.metric("% sem visita", f"{pct:.1f}%")
+
+    df_ctx = _aplicar_filtros_base(df_vendas, filtros, mapa_coord, col_data, usar_periodo=True)
+    df_ctx = _prep_vendas_canal(df_ctx)
+
+    st.markdown("##### Curvas de Pareto (ABC)")
+    p1, p2 = st.columns(2)
+    with p1:
+        _plot_pareto_abc(df_ctx, "Empreendimento", "Pareto por empreendimento", "pareto_emp")
+    with p2:
+        col_reg = "Gerente regional" if "Gerente regional" in df_ctx.columns else "Região"
+        if col_reg in df_ctx.columns:
+            _plot_pareto_abc(df_ctx, col_reg, "Pareto por regional", "pareto_reg")
+        else:
+            st.info("Coluna regional não disponível.")
+    if "Imobiliária" in df_ctx.columns:
+        _plot_pareto_abc(df_ctx, "Imobiliária", "Pareto por imobiliária", "pareto_imob", top_n=30)
+
+    g1, g2 = st.columns(2)
+    with g1:
+        render_grafico_vendas_mes_canal(df_ctx, col_data)
+    with g2:
+        render_grafico_vendas_emp_canal(df_ctx)
+
+    st.markdown("##### PS/VGV e Sinais/VGV por empreendimento (%)")
+    tab_ps = montar_tabela_ps_sinais_vgv(df_vendas, col_data, filtros, mapa_coord)
+    if tab_ps.empty:
+        st.info("Sem cotações/vendas para PS e sinais.")
+    else:
+        st.dataframe(tab_ps, use_container_width=True, hide_index=True)
+
+    render_grafico_share_estoque_produto(df_estoque, status_estoque, filtros, mapa_coord)
+
+
 def render_dashboard_comercial(
     df_vendas: pd.DataFrame,
     df_estoque: pd.DataFrame,
     df_cotacoes: Optional[pd.DataFrame],
     cred_fp: str,
     col_data_venda: Optional[str] = None,
+    filtros_glob: Optional["FiltrosGlobais"] = None,
 ) -> None:
     """Ponto de entrada do dashboard comercial."""
     v = _v()
@@ -10516,7 +11098,12 @@ def render_dashboard_comercial(
     df_vendas = enriquecer_vendas_vcx(df_vendas, df_cotacoes)
     col_data = col_data_venda or _col_data_venda(df_vendas)
 
-    filtros = render_filtros_dashboard(df_metas_coord, df_vendas)
+    filtros = render_filtros_dashboard(df_metas_coord, df_vendas, filtros_externos=filtros_glob)
+    if filtros_glob is not None:
+        st.caption(
+            f"Filtros globais: {filtros.data_ini:%d/%m/%Y} → {filtros.data_fim:%d/%m/%Y} · "
+            f"Canal {filtros.canal_sel} · Meta {filtros.tipo_meta_col}"
+        )
     mapa_coord = mapa_emp_coordenador(df_metas_coord, filtros.mes_meta, filtros.ano_meta)
 
     df_f = _aplicar_filtros_base(df_vendas, filtros, mapa_coord, col_data, usar_periodo=True)
@@ -10568,6 +11155,16 @@ def render_dashboard_comercial(
     render_rankings(df_f, col_data, filtros)
     render_share_diretor(df_f)
     render_tabela_detalhada(df_f, col_data, filtros)
+
+    status_est = (
+        filtros_glob.status_estoque_sel
+        if filtros_glob and filtros_glob.status_estoque_sel
+        else list(ESTOQUE_STATUS_TODOS)
+    )
+    render_secao_analises_avancadas(
+        df_vendas, df_estoque, df_ag_radar, df_pastas_radar,
+        filtros, mapa_coord, col_data, status_est,
+    )
 
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1.5rem 0;'/>", unsafe_allow_html=True)
     df_ag = pd.DataFrame()
@@ -11040,6 +11637,7 @@ def _corpo_painel_metas(
     col_canal: Optional[str],
     cred_fp: str,
     sid: str,
+    filtros_glob: Optional["FiltrosGlobais"] = None,
 ) -> None:
 
     df_estoque = pd.DataFrame()
@@ -11082,6 +11680,7 @@ def _corpo_painel_metas(
         df_pastas_aprov=df_pastas_aprov,
         df_tabela_comp=df_tabela_comp,
         proj=None,
+        filtros_glob=filtros_glob,
     )
 
     vendas_f = filtrar_vendas_painel_v2(
@@ -11555,6 +12154,13 @@ def main() -> None:
     df_vendas["_vgv_venda"] = df_vendas["_vgv"] * df_vendas["_peso_coord"]
     df_vendas_painel = df_vendas.copy()
 
+    df_metas_coord_g = pd.DataFrame()
+    try:
+        df_metas_coord_g = carregar_metas_coordenadores(cred_fp)
+    except Exception:
+        pass
+    filtros_glob = render_filtros_globais(df_metas_coord_g, df_vendas_painel)
+
     tab_metas, tab_dashboard, tab_funil_emp, tab_poder_compra = st.tabs(
         ["Metas & Projeção", "Dashboard Comercial", "Funil por Empreendimento", "Poder de Compra"]
     )
@@ -11563,6 +12169,7 @@ def main() -> None:
             df_metas=df_metas,
             df_vendas=df_vendas_painel,
             col_contrato_gerado=col_contrato_gerado,
+            filtros_glob=filtros_glob,
         )
     with tab_poder_compra:
         try:
@@ -11594,6 +12201,7 @@ def main() -> None:
             df_cotacoes=df_cot_dc,
             cred_fp=cred_fp,
             col_data_venda=col_data_venda,
+            filtros_glob=filtros_glob,
         )
     with tab_metas:
         _corpo_painel_metas(
@@ -11606,6 +12214,7 @@ def main() -> None:
             col_canal=col_canal,
             cred_fp=cred_fp,
             sid=sid,
+            filtros_glob=filtros_glob,
         )
 
 
