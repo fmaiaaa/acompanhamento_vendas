@@ -1,9 +1,12 @@
 # Feedbacks comerciais + Previsão de vendas (formulários Google Sheets)
 from __future__ import annotations
 
+import calendar
+import re
 from datetime import date, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -166,6 +169,7 @@ def carregar_previsao_vendas(cred_fp: str) -> pd.DataFrame:
 
 
 def sabado_referencia_de_data(dt: date) -> Optional[date]:
+    """Sexta/sábado/domingo → sábado de referência do fim de semana."""
     wd = dt.weekday()
     if wd == 4:
         return dt + timedelta(days=1)
@@ -174,6 +178,10 @@ def sabado_referencia_de_data(dt: date) -> Optional[date]:
     if wd == 6:
         return dt - timedelta(days=1)
     return None
+
+
+def janela_fim_de_semana(sabado: date) -> Tuple[date, date]:
+    return sabado - timedelta(days=1), sabado + timedelta(days=1)
 
 
 def grupo_canal_previsao(canal: Any) -> str:
@@ -213,13 +221,23 @@ def preparar_previsao_df(df: pd.DataFrame) -> pd.DataFrame:
     col_sem = _achar(out, ALIASES_PREV_SEM)
     col_ano = _achar(out, ALIASES_PREV_ANO)
 
-    out["_sabado"] = out[col_sab].map(_parse_data) if col_sab else pd.NaT
+    if col_sab:
+        out["_sabado"] = out[col_sab].map(_parse_data)
+    else:
+        out["_sabado"] = pd.NaT
+
+    # Vendas previstas: preferir coluna explícita; senão somar QTD normais + facilitadas
     if col_v:
         out["_prev_qtd"] = out[col_v].map(_parse_num)
     else:
         q_cols = [c for c in out.columns if "previst" in str(c).lower() and "qtd" in str(c).lower()]
         out["_prev_qtd"] = out[q_cols].apply(lambda r: sum(_parse_num(x) for x in r), axis=1) if q_cols else 0.0
-    out["_prev_vgv"] = out[col_vgv].map(_parse_num) if col_vgv else 0.0
+
+    if col_vgv:
+        out["_prev_vgv"] = out[col_vgv].map(_parse_num)
+    else:
+        out["_prev_vgv"] = 0.0
+
     out["_grupo_canal"] = out[col_canal].map(grupo_canal_previsao) if col_canal else "OUTROS"
     out["_emp"] = out[col_emp].astype(str).str.strip() if col_emp else ""
     out["_imob"] = out[col_imob].astype(str).str.strip() if col_imob else ""
@@ -230,9 +248,13 @@ def preparar_previsao_df(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def vendas_reais_por_fim_de_semana(df_vendas: pd.DataFrame, col_contrato: str) -> pd.DataFrame:
+def vendas_reais_por_fim_de_semana(
+    df_vendas: pd.DataFrame,
+    col_contrato: str,
+) -> pd.DataFrame:
     if df_vendas is None or df_vendas.empty or not col_contrato or col_contrato not in df_vendas.columns:
         return pd.DataFrame(columns=["_sabado", "_grupo_canal", "_real_qtd", "_real_vgv"])
+
     v = _v()
     ven = df_vendas.copy()
     ven["_dt"] = v.parse_data_serie(ven[col_contrato]) if v else pd.to_datetime(ven[col_contrato], errors="coerce")
@@ -240,26 +262,47 @@ def vendas_reais_por_fim_de_semana(df_vendas: pd.DataFrame, col_contrato: str) -
     ven["_date"] = ven["_dt"].dt.date
     ven["_sabado"] = ven["_date"].map(sabado_referencia_de_data)
     ven = ven.dropna(subset=["_sabado"])
+
     col_imob = "Imobiliária" if "Imobiliária" in ven.columns else None
     ven["_grupo_canal"] = ven[col_imob].map(grupo_canal_venda) if col_imob else "OUTROS"
+
     col_vgv = v.achar_coluna(ven, ["Valor Real de Venda", "Valor Real", "_vgv"]) if v else None
-    ven["_vgv_n"] = ven[col_vgv].map(_parse_num) if col_vgv else (ven["_vgv"].map(_parse_num) if "_vgv" in ven.columns else 0.0)
-    return ven.groupby(["_sabado", "_grupo_canal"], as_index=False).agg(
-        _real_qtd=("_date", "count"), _real_vgv=("_vgv_n", "sum"),
+    if col_vgv:
+        ven["_vgv_n"] = ven[col_vgv].map(_parse_num)
+    else:
+        ven["_vgv_n"] = ven["_vgv"].map(_parse_num) if "_vgv" in ven.columns else 0.0
+
+    g = ven.groupby(["_sabado", "_grupo_canal"], as_index=False).agg(
+        _real_qtd=("_date", "count"),
+        _real_vgv=("_vgv_n", "sum"),
     )
+    return g
 
 
-def cruzar_previsao_realizado(df_prev: pd.DataFrame, df_vendas: pd.DataFrame, col_contrato: str) -> pd.DataFrame:
+def cruzar_previsao_realizado(
+    df_prev: pd.DataFrame,
+    df_vendas: pd.DataFrame,
+    col_contrato: str,
+) -> pd.DataFrame:
     prev = preparar_previsao_df(df_prev)
     if prev.empty:
         return pd.DataFrame()
+
     prev = prev.dropna(subset=["_sabado"])
+    if prev.empty:
+        return pd.DataFrame()
+
     agg_prev = prev.groupby(["_sabado", "_grupo_canal"], as_index=False).agg(
-        prev_qtd=("_prev_qtd", "sum"), prev_vgv=("_prev_vgv", "sum"),
-        n_respostas=("_emp", "count"),
+        prev_qtd=("_prev_qtd", "sum"),
+        prev_vgv=("_prev_vgv", "sum"),
+        n_respostas=("_prev_qtd", "count"),
         n_imobs=("_imob", lambda s: len({x for x in s if str(x).strip() and str(x).lower() not in ("nan", "")})),
-        n_regionais=("_regional", lambda s: len({x for x in s if "regional" in str(x).lower()})),
+        n_regionais=("_regional", lambda s: len({
+            x for x in s
+            if str(x).strip().lower().startswith("regional") or "regional-" in str(x).lower()
+        })),
     )
+
     real = vendas_reais_por_fim_de_semana(df_vendas, col_contrato)
     if real.empty:
         merged = agg_prev.copy()
@@ -270,16 +313,23 @@ def cruzar_previsao_realizado(df_prev: pd.DataFrame, df_vendas: pd.DataFrame, co
         merged["real_qtd"] = merged["_real_qtd"].fillna(0.0)
         merged["real_vgv"] = merged["_real_vgv"].fillna(0.0)
         merged = merged.drop(columns=[c for c in ("_real_qtd", "_real_vgv") if c in merged.columns])
+
     merged["erro_qtd"] = merged["real_qtd"] - merged["prev_qtd"]
-    return merged[merged["n_respostas"] > 0].sort_values("_sabado")
+    merged = merged[merged["n_respostas"] > 0].copy()
+    return merged.sort_values("_sabado")
 
 
 def metricas_erro_previsao(df: pd.DataFrame, canal: str) -> Dict[str, Any]:
-    sub = df[df["_grupo_canal"] == canal]
+    sub = df[df["_grupo_canal"] == canal].copy()
     if sub.empty:
         return {}
     err = sub["erro_qtd"].astype(float)
-    out = {"n": len(sub), "erro_medio": float(err.mean()), "desvio_padrao": float(err.std()) if len(sub) > 1 else 0.0, "erro_maximo": float(err.abs().max())}
+    out = {
+        "n": len(sub),
+        "erro_medio": float(err.mean()),
+        "desvio_padrao": float(err.std()) if len(sub) > 1 else 0.0,
+        "erro_maximo": float(err.abs().max()),
+    }
     for tol in (1, 2, 3, 4, 5):
         out[f"acertos_pm_{tol}"] = int((err.abs() <= tol).sum())
     return out
@@ -294,8 +344,14 @@ def render_grafico_previsto_realizado_linha(df: pd.DataFrame) -> None:
         sub = df[df["_grupo_canal"] == canal].sort_values("_sabado")
         if sub.empty:
             continue
-        fig.add_trace(go.Scatter(x=sub["_sabado"], y=sub["prev_qtd"], name=f"Previsto {canal}", mode="lines+markers", line=dict(color=cor, dash="dash")))
-        fig.add_trace(go.Scatter(x=sub["_sabado"], y=sub["real_qtd"], name=f"Realizado {canal}", mode="lines+markers", line=dict(color=cor)))
+        fig.add_trace(go.Scatter(
+            x=sub["_sabado"], y=sub["prev_qtd"], name=f"Previsto {canal}",
+            mode="lines+markers", line=dict(color=cor, dash="dash"),
+        ))
+        fig.add_trace(go.Scatter(
+            x=sub["_sabado"], y=sub["real_qtd"], name=f"Realizado {canal}",
+            mode="lines+markers", line=dict(color=cor),
+        ))
     fig.update_layout(height=420, xaxis_title="Sábado de referência", yaxis_title="Vendas (qtd)")
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
@@ -306,13 +362,25 @@ def render_scatter_previsto_realizado(df: pd.DataFrame) -> None:
     fig = go.Figure()
     cores = {"IMOB": "#2563eb", "DV": "#dc2626"}
     max_val = max(df["prev_qtd"].max(), df["real_qtd"].max(), 1.0)
-    fig.add_trace(go.Scatter(x=[0, max_val * 1.1], y=[0, max_val * 1.1], mode="lines", name="Perfeição (y=x)", line=dict(color="#94a3b8", dash="dot")))
+    fig.add_trace(go.Scatter(
+        x=[0, max_val * 1.1], y=[0, max_val * 1.1],
+        mode="lines", name="Perfeição (y=x)", line=dict(color="#94a3b8", dash="dot"),
+    ))
     for canal in ("IMOB", "DV"):
         sub = df[df["_grupo_canal"] == canal]
         if sub.empty:
             continue
-        fig.add_trace(go.Scatter(x=sub["prev_qtd"], y=sub["real_qtd"], mode="markers", name=canal, marker=dict(size=10, color=cores[canal]), text=sub["_sabado"].astype(str)))
-    fig.update_layout(height=440, xaxis_title="Vendas previstas", yaxis_title="Vendas realizadas (SF)", yaxis=dict(scaleanchor="x", scaleratio=1))
+        fig.add_trace(go.Scatter(
+            x=sub["prev_qtd"], y=sub["real_qtd"],
+            mode="markers", name=canal,
+            marker=dict(size=10, color=cores[canal]),
+            text=sub["_sabado"].astype(str),
+            hovertemplate="Sábado %{text}<br>Prev: %{x}<br>Real: %{y}<extra></extra>",
+        ))
+    fig.update_layout(
+        height=440, xaxis_title="Vendas previstas", yaxis_title="Vendas realizadas (SF)",
+        yaxis=dict(scaleanchor="x", scaleratio=1),
+    )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
@@ -320,8 +388,20 @@ def render_tabela_erros(df: pd.DataFrame) -> None:
     rows = []
     for canal in ("IMOB", "DV"):
         m = metricas_erro_previsao(df, canal)
-        if m:
-            rows.append({"Canal": canal, "Semanas": m["n"], "Erro médio": round(m["erro_medio"], 2), "Desvio padrão": round(m["desvio_padrao"], 2), "Erro máximo (abs)": round(m["erro_maximo"], 2), "±1": m.get("acertos_pm_1", 0), "±2": m.get("acertos_pm_2", 0), "±3": m.get("acertos_pm_3", 0), "±4": m.get("acertos_pm_4", 0), "±5": m.get("acertos_pm_5", 0)})
+        if not m:
+            continue
+        rows.append({
+            "Canal": canal,
+            "Semanas": m["n"],
+            "Erro médio": round(m["erro_medio"], 2),
+            "Desvio padrão": round(m["desvio_padrao"], 2),
+            "Erro máximo (abs)": round(m["erro_maximo"], 2),
+            "±1": m.get("acertos_pm_1", 0),
+            "±2": m.get("acertos_pm_2", 0),
+            "±3": m.get("acertos_pm_3", 0),
+            "±4": m.get("acertos_pm_4", 0),
+            "±5": m.get("acertos_pm_5", 0),
+        })
     if rows:
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
@@ -338,7 +418,8 @@ def render_resumo_respondentes(df: pd.DataFrame) -> None:
     if df.empty:
         return
     c1, c2 = st.columns(2)
-    imob, reg = _stats_respondentes(df["n_imobs"]), _stats_respondentes(df["n_regionais"])
+    imob = _stats_respondentes(df["n_imobs"])
+    reg = _stats_respondentes(df["n_regionais"])
     with c1:
         st.markdown("**Imobiliárias respondentes / fim de semana**")
         st.metric("Média", f"{imob['media']:.1f}")
@@ -349,35 +430,60 @@ def render_resumo_respondentes(df: pd.DataFrame) -> None:
         st.caption(f"Mín (sem zero): {reg['min']:.0f} · Máx: {reg['max']:.0f}")
 
 
-def agregar_prev_real_periodo(df_prev: pd.DataFrame, df_vendas: pd.DataFrame, col_contrato: str, chave: str) -> pd.DataFrame:
+def agregar_prev_real_periodo(
+    df_prev: pd.DataFrame,
+    df_vendas: pd.DataFrame,
+    col_contrato: str,
+    chave: str,
+) -> pd.DataFrame:
+    """chave: _trimestre, _semestre ou mes_ano."""
     prev = preparar_previsao_df(df_prev)
     if prev.empty:
         return pd.DataFrame()
     if chave == "mes_ano":
-        prev["_periodo"] = prev["_sabado"].apply(lambda d: f"{d.month:02d}/{d.year}" if d is not None and pd.notna(d) else "")
+        prev["_periodo"] = prev["_sabado"].apply(
+            lambda d: f"{d.month:02d}/{d.year}" if d is not None and pd.notna(d) else ""
+        )
     else:
         prev["_periodo"] = prev[chave].astype(str).str.strip() + " · " + prev["_ano"].astype(str).str.strip()
+
     prev = prev[prev["_periodo"].astype(str).str.strip() != ""]
-    agg = prev.groupby(["_periodo", "_grupo_canal"], as_index=False).agg(prev_qtd=("_prev_qtd", "sum"), prev_vgv=("_prev_vgv", "sum"))
+    agg = prev.groupby(["_periodo", "_grupo_canal"], as_index=False).agg(
+        prev_qtd=("_prev_qtd", "sum"),
+        prev_vgv=("_prev_vgv", "sum"),
+    )
+
     real = vendas_reais_por_fim_de_semana(df_vendas, col_contrato)
     if real.empty:
         agg["real_qtd"] = 0.0
         agg["real_vgv"] = 0.0
         return agg
+
     if chave == "mes_ano":
-        real["_periodo"] = real["_sabado"].apply(lambda d: f"{d.month:02d}/{d.year}" if d else "")
+        real["_periodo"] = real["_sabado"].apply(
+            lambda d: f"{d.month:02d}/{d.year}" if d is not None else ""
+        )
     else:
-        real["_periodo"] = real["_sabado"].map(prev.drop_duplicates("_sabado").set_index("_sabado")["_periodo"])
-    agg_r = real.groupby(["_periodo", "_grupo_canal"], as_index=False).agg(real_qtd=("_real_qtd", "sum"), real_vgv=("_real_vgv", "sum"))
-    return agg.merge(agg_r, on=["_periodo", "_grupo_canal"], how="outer").fillna(0).sort_values("_periodo")
+        mapa = prev.drop_duplicates("_sabado").set_index("_sabado")["_periodo"]
+        real["_periodo"] = real["_sabado"].map(mapa)
+
+    real = real[real["_periodo"].astype(str).str.strip() != ""]
+    agg_r = real.groupby(["_periodo", "_grupo_canal"], as_index=False).agg(
+        real_qtd=("_real_qtd", "sum"),
+        real_vgv=("_real_vgv", "sum"),
+    )
+    agg = agg.merge(agg_r, on=["_periodo", "_grupo_canal"], how="outer").fillna(0)
+    return agg.sort_values("_periodo")
 
 
 def render_barras_prev_real(df: pd.DataFrame, titulo: str, metrica: str = "qtd") -> None:
     if df.empty:
         st.info(f"Sem dados para {titulo}.")
         return
-    fig = go.Figure()
-    prev_col, real_col = ("prev_qtd", "real_qtd") if metrica == "qtd" else ("prev_vgv", "real_vgv")
+    fig = make_subplots(specs=[[{"secondary_y": metrica == "vgv"}]])
+    x = df["_periodo"].astype(str)
+    prev_col = "prev_qtd" if metrica == "qtd" else "prev_vgv"
+    real_col = "real_qtd" if metrica == "qtd" else "real_vgv"
     for canal, cor in (("IMOB", "#2563eb"), ("DV", "#dc2626")):
         sub = df[df["_grupo_canal"] == canal]
         if sub.empty:
@@ -393,13 +499,21 @@ def render_aba_feedbacks_comerciais(df: pd.DataFrame) -> None:
     if df is None or df.empty:
         st.warning("Não foi possível carregar a planilha de feedbacks.")
         return
-    col_coord, col_obs = _achar(df, ALIASES_COORD_FEEDBACK), _achar(df, ALIASES_OBS_FEEDBACK)
-    col_nota, col_nota_cca = _achar(df, ALIASES_NOTA_ATEND), _achar(df, ALIASES_NOTA_CCA)
-    col_prom_com, col_prom_cca = _achar(df, ALIASES_PROMOTOR_COM), _achar(df, ALIASES_PROMOTOR_CCA)
+
+    col_coord = _achar(df, ALIASES_COORD_FEEDBACK)
+    col_obs = _achar(df, ALIASES_OBS_FEEDBACK)
+    col_nota = _achar(df, ALIASES_NOTA_ATEND)
+    col_nota_cca = _achar(df, ALIASES_NOTA_CCA)
+    col_prom_com = _achar(df, ALIASES_PROMOTOR_COM)
+    col_prom_cca = _achar(df, ALIASES_PROMOTOR_CCA)
+
     st.markdown("##### NPS e nota média por coordenador")
-    if col_coord:
+    if not col_coord:
+        st.info("Coluna de coordenador não encontrada na planilha.")
+    else:
+        coords = sorted(df[col_coord].dropna().astype(str).str.strip().unique())
         rows = []
-        for c in sorted(df[col_coord].dropna().astype(str).str.strip().unique()):
+        for c in coords:
             sub = df[df[col_coord].astype(str).str.strip() == c]
             row = {"Coordenador": c, "Respostas": len(sub)}
             if col_nota:
@@ -414,39 +528,71 @@ def render_aba_feedbacks_comerciais(df: pd.DataFrame) -> None:
                 row["NPS CCA"] = round(nps, 1) if nps is not None else None
             rows.append(row)
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+
     st.markdown("##### Temas dos comentários (classificação automática)")
-    st.caption("Cada observação pode ter mais de um tema.")
+    st.caption(
+        "Cada observação pode ter mais de um tema. "
+        "A classificação usa palavras-chave em português (equivalente a um resumo do sentido)."
+    )
     if not col_obs:
+        st.info("Coluna de observações não encontrada.")
         return
-    contagem, exemplos = {}, {}
-    for txt in df[col_obs].dropna().astype(str):
-        if txt.strip().lower() in ("", "nan", "não", "nao", "."):
-            continue
+
+    obs = df[col_obs].dropna().astype(str)
+    obs = obs[~obs.str.strip().isin(["", "nan", "Não", "Não.", "."])]
+    contagem: Dict[str, int] = {}
+    exemplos: Dict[str, List[str]] = {}
+    for txt in obs:
         for tema in classificar_temas_comentario(txt):
             contagem[tema] = contagem.get(tema, 0) + 1
             exemplos.setdefault(tema, [])
             if len(exemplos[tema]) < 3:
                 exemplos[tema].append(txt[:120])
-    if contagem:
-        st.dataframe(pd.DataFrame([{"Tema": k, "Quantidade": v, "Exemplo": exemplos.get(k, [""])[0]} for k, v in sorted(contagem.items(), key=lambda x: -x[1])]), use_container_width=True, hide_index=True)
+
+    if not contagem:
+        st.info("Nenhum comentário textual para classificar.")
+        return
+
+    tab_temas = pd.DataFrame([
+        {"Tema": k, "Quantidade": v, "Exemplo": exemplos.get(k, [""])[0]}
+        for k, v in sorted(contagem.items(), key=lambda x: -x[1])
+    ])
+    st.dataframe(tab_temas, use_container_width=True, hide_index=True)
+
+    fig = go.Figure(go.Bar(
+        x=list(contagem.values()), y=list(contagem.keys()), orientation="h", marker_color="#2563eb",
+    ))
+    fig.update_layout(height=max(280, len(contagem) * 36), margin=dict(l=20, r=20, t=30, b=20))
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
 
-def render_aba_previsao_vendas(df_prev: pd.DataFrame, df_vendas: pd.DataFrame, col_contrato: str) -> None:
+def render_aba_previsao_vendas(
+    df_prev: pd.DataFrame,
+    df_vendas: pd.DataFrame,
+    col_contrato: str,
+) -> None:
     st.subheader("Previsão de Vendas")
     if df_prev is None or df_prev.empty:
         st.warning("Planilha de previsão indisponível.")
         return
+
     prev = preparar_previsao_df(df_prev)
-    c1, c2, c3, c4 = st.columns(4)
+    emps = sorted({e for e in prev["_emp"].unique() if str(e).strip() and str(e).lower() != "nan"})
+    canais = ["Todos", "IMOB", "DV"]
+
+    c1, c2, c3 = st.columns(3)
     with c1:
-        emp_sel = st.multiselect("Empreendimento", sorted({e for e in prev["_emp"].unique() if str(e).strip() and str(e).lower() != "nan"}), default=[])
+        emp_sel = st.multiselect("Empreendimento", emps, default=[])
     with c2:
-        canal_sel = st.selectbox("Canal", ["Todos", "IMOB", "DV"], index=0)
-    datas = sorted(prev["_sabado"].dropna().unique())
+        canal_sel = st.selectbox("Canal", canais, index=0)
     with c3:
-        d_ini = st.date_input("Sábado inicial", value=min(datas) if datas else date.today())
-    with c4:
-        d_fim = st.date_input("Sábado final", value=max(datas) if datas else date.today())
+        datas = sorted(prev["_sabado"].dropna().unique())
+        if datas:
+            d_ini = st.date_input("Data inicial (sábado)", value=min(datas), min_value=min(datas), max_value=max(datas))
+            d_fim = st.date_input("Data final (sábado)", value=max(datas), min_value=min(datas), max_value=max(datas))
+        else:
+            d_ini = d_fim = date.today()
+
     filtro = prev.copy()
     if emp_sel:
         filtro = filtro[filtro["_emp"].isin(emp_sel)]
@@ -454,17 +600,21 @@ def render_aba_previsao_vendas(df_prev: pd.DataFrame, df_vendas: pd.DataFrame, c
         filtro = filtro[filtro["_grupo_canal"] == canal_sel]
     if datas:
         filtro = filtro[(filtro["_sabado"] >= d_ini) & (filtro["_sabado"] <= d_fim)]
+
     cruz = cruzar_previsao_realizado(filtro, df_vendas, col_contrato)
     if canal_sel != "Todos":
         cruz = cruz[cruz["_grupo_canal"] == canal_sel]
-    st.markdown("##### Previsto × realizado por fim de semana")
-    st.caption("Realizado SF = Contrato Gerado Em (sexta a domingo).")
+
+    st.markdown("##### Previsto × realizado por fim de semana (sábado de referência)")
+    st.caption("Realizado SF = Contrato Gerado Em na sexta, sábado e domingo do fim de semana.")
     render_grafico_previsto_realizado_linha(cruz)
+
     st.markdown("##### Dispersão previsto × realizado")
     render_scatter_previsto_realizado(cruz)
     render_tabela_erros(cruz)
     render_resumo_respondentes(cruz)
-    st.markdown("##### Agregado")
+
+    st.markdown("##### Previsto × realizado agregado")
     t1, t2, t3 = st.tabs(["Trimestre · Ano", "Mês · Ano", "Semestre · Ano"])
     with t1:
         agg = agregar_prev_real_periodo(filtro, df_vendas, col_contrato, "_trimestre")

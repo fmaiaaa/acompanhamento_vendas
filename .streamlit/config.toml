@@ -1,0 +1,7 @@
+# Força tema claro independentemente do modo do sistema do usuário
+[theme]
+base = "light"
+primaryColor = "#0d3b8e"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f8fafc"
+textColor = "#000000"
