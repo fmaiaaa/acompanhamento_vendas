@@ -8,14 +8,16 @@ Funcionalidade: Engenharia Reversa, Comparativo MTD e Pesos de Coordenadores.
 from __future__ import annotations
 
 import base64
+import calendar
 import html
 import math
 import os
 import re
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
+import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -41,8 +43,9 @@ COR_VERMELHO = "#cb0935"
 COR_VERMELHO_ESCURO = "#9e0828"
 COR_FUNDO_CARD = "rgba(255, 255, 255, 0.78)"
 COR_BORDA = "#eef2f6"
-COR_TEXTO_MUTED = "#64748b"
-COR_TEXTO_LABEL = "#1e293b"
+COR_TEXTO_PRETO = "#000000"
+COR_TEXTO_MUTED = "#000000"
+COR_TEXTO_LABEL = "#000000"
 COR_INPUT_BG = "#f0f2f6"
 
 MESES_TEXTO_MAP = {
@@ -163,7 +166,6 @@ def _cabecalho_pagina() -> None:
         f'<div class="ficha-hero-stack">'
         f'<div class="ficha-hero">'
         f'<p class="ficha-title">Acompanhamento de metas de vendas</p>'
-        f'<p class="ficha-sub">Realizado vs metas por período.</p>'
         f"</div>"
         f'<div class="ficha-hero-bar-wrap" aria-hidden="true">'
         f'<div class="ficha-hero-bar"></div>'
@@ -291,11 +293,63 @@ def aplicar_estilo() -> None:
                 inset 0 1px 0 rgba(255, 255, 255, 0.55) !important;
             animation: fichaFadeIn 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
         }}
-        h1, h2, h3, h4 {{
+        /* Títulos de seção do dashboard: azuis (inclui spans internos do Streamlit) */
+        h1, h2, h3, h4,
+        h1 *, h2 *, h3 *, h4 *,
+        [data-testid="stMarkdownContainer"] h1,
+        [data-testid="stMarkdownContainer"] h2,
+        [data-testid="stMarkdownContainer"] h3,
+        [data-testid="stMarkdownContainer"] h4,
+        [data-testid="stMarkdownContainer"] h1 *,
+        [data-testid="stMarkdownContainer"] h2 *,
+        [data-testid="stMarkdownContainer"] h3 *,
+        [data-testid="stMarkdownContainer"] h4 *,
+        [data-testid="stHeadingWithAction"],
+        [data-testid="stHeadingWithAction"] *,
+        .stHeading, .stHeading * {{
             font-family: 'Montserrat', sans-serif !important;
             color: {COR_AZUL_ESC} !important;
             font-weight: 800 !important;
+        }}
+        h1, h2, h3, h4,
+        [data-testid="stHeadingWithAction"],
+        .stHeading {{
             text-align: center !important;
+        }}
+        /* Títulos de gráficos (#####): pretos */
+        h5, h6,
+        h5 *, h6 *,
+        [data-testid="stMarkdownContainer"] h5,
+        [data-testid="stMarkdownContainer"] h6,
+        [data-testid="stMarkdownContainer"] h5 *,
+        [data-testid="stMarkdownContainer"] h6 * {{
+            font-family: 'Montserrat', sans-serif !important;
+            color: {COR_TEXTO_PRETO} !important;
+            font-weight: 700 !important;
+            text-align: center !important;
+        }}
+        /* Texto geral do dashboard: preto (não sobrescreve títulos) */
+        .block-container,
+        .block-container > div p,
+        .block-container label,
+        .block-container li,
+        [data-testid="stMarkdownContainer"] > p,
+        [data-testid="stCaption"],
+        [data-testid="stCaptionContainer"],
+        [data-testid="stCaptionContainer"] p,
+        [data-testid="stWidgetLabel"] p,
+        [data-testid="stWidgetLabel"] label,
+        div[data-baseweb="select"] span,
+        .stSelectbox label,
+        .stMultiSelect label {{
+            color: {COR_TEXTO_PRETO} !important;
+        }}
+        .block-container span:not(h1 span):not(h2 span):not(h3 span):not(h4 span) {{
+            color: {COR_TEXTO_PRETO};
+        }}
+        h1 span, h2 span, h3 span, h4 span,
+        [data-testid="stHeadingWithAction"] span {{
+            color: {COR_AZUL_ESC} !important;
         }}
         .ficha-logo-wrap {{
             text-align: center;
@@ -331,12 +385,6 @@ def aplicar_estilo() -> None:
             margin: 0;
             line-height: 1.25;
             letter-spacing: -0.02em;
-        }}
-        .ficha-hero .ficha-sub {{
-            color: #475569;
-            font-size: 0.95rem;
-            margin: 0.45rem 0 0 0;
-            line-height: 1.45;
         }}
         .ficha-hero-bar-wrap {{
             width: 100%;
@@ -379,14 +427,15 @@ def aplicar_estilo() -> None:
             font-weight: 700;
             text-transform: uppercase;
             letter-spacing: 0.08em;
-            color: {COR_AZUL_ESC};
+            color: {COR_TEXTO_PRETO};
             opacity: 0.85;
         }}
+        /* Valores dos boxes (rótulos de dados): mantêm azul / vermelho */
         .vel-kpi .val {{
             font-family: 'Montserrat', sans-serif;
             font-size: 1.35rem;
             font-weight: 800;
-            color: {COR_AZUL_ESC};
+            color: {COR_AZUL_ESC} !important;
             margin-top: 6px;
         }}
         .vel-kpi .val--red {{ color: {COR_VERMELHO} !important; }}
@@ -663,6 +712,1023 @@ def fmt_qtd(v: float) -> str:
     return f"{v:.1f}" if abs(v % 1) > 0.01 else str(int(v))
 
 
+DIAS_SEMANA_PT = {
+    0: "segunda",
+    1: "terça",
+    2: "quarta",
+    3: "quinta",
+    4: "sexta",
+    5: "sábado",
+    6: "domingo",
+}
+MESES_PT = {
+    1: "janeiro", 2: "fevereiro", 3: "março", 4: "abril",
+    5: "maio", 6: "junho", 7: "julho", 8: "agosto",
+    9: "setembro", 10: "outubro", 11: "novembro", 12: "dezembro",
+}
+
+
+def janela_treino_meses_exatos(hoje: Optional[date] = None) -> Tuple[date, date]:
+    """
+    Janela de treino em meses calendário exatos, excluindo o mês atual.
+    Ex.: se hoje = julho/2026 → 01/07/2025 a 30/06/2026.
+    """
+    hoje = hoje or date.today()
+    inicio = date(hoje.year - 1, hoje.month, 1)
+    if hoje.month == 1:
+        fim = date(hoje.year - 1, 12, 31)
+    else:
+        ano_fim, mes_fim = hoje.year, hoje.month - 1
+        fim = date(ano_fim, mes_fim, calendar.monthrange(ano_fim, mes_fim)[1])
+    return inicio, fim
+
+
+def janela_treino_52_semanas(hoje: Optional[date] = None) -> Tuple[date, date]:
+    """Compatibilidade: encaminha para janela de meses exatos."""
+    return janela_treino_meses_exatos(hoje)
+
+
+def serie_diaria_contratos(
+    df_vendas: pd.DataFrame,
+    col_contrato: str,
+    col_qtd: str = "_qtd_venda",
+    col_vgv: str = "_vgv_venda",
+) -> pd.DataFrame:
+    """Agrega vendas comerciais por data de 'Contrato gerado em'."""
+    base = df_vendas.copy()
+    base["_dt_contrato"] = pd.to_datetime(base[col_contrato], dayfirst=True, errors="coerce")
+    base = base.dropna(subset=["_dt_contrato"])
+    if base.empty:
+        return pd.DataFrame(columns=["data", "qtd", "vgv"])
+
+    base["_data"] = base["_dt_contrato"].dt.normalize()
+    qtd_col = col_qtd if col_qtd in base.columns else None
+    vgv_col = col_vgv if col_vgv in base.columns else None
+
+    if qtd_col:
+        base["_q"] = pd.to_numeric(base[qtd_col], errors="coerce").fillna(0.0)
+    else:
+        base["_q"] = 1.0
+    if vgv_col:
+        base["_v"] = pd.to_numeric(base[vgv_col], errors="coerce").fillna(0.0)
+    else:
+        base["_v"] = 0.0
+
+    agg = (
+        base.groupby("_data", as_index=False)
+        .agg(qtd=("_q", "sum"), vgv=("_v", "sum"))
+        .rename(columns={"_data": "data"})
+    )
+    agg["data"] = pd.to_datetime(agg["data"]).dt.date
+    return agg
+
+
+def calendario_diario(inicio: date, fim: date, serie: pd.DataFrame) -> pd.DataFrame:
+    """Calendário completo com zeros nos dias sem venda (necessário para a regressão)."""
+    idx = pd.date_range(inicio, fim, freq="D")
+    cal = pd.DataFrame({"data": [d.date() for d in idx]})
+    mapa = {r["data"]: (float(r["qtd"]), float(r["vgv"])) for _, r in serie.iterrows()}
+    cal["qtd"] = cal["data"].map(lambda d: mapa.get(d, (0.0, 0.0))[0])
+    cal["vgv"] = cal["data"].map(lambda d: mapa.get(d, (0.0, 0.0))[1])
+    cal["dia_mes"] = cal["data"].map(lambda d: d.day)
+    cal["dia_semana"] = cal["data"].map(lambda d: DIAS_SEMANA_PT[d.weekday()])
+    cal["mes"] = cal["data"].map(lambda d: MESES_PT[d.month])
+    return cal
+
+
+def _matriz_explicativas(df: pd.DataFrame, incluir_mes: bool = True) -> np.ndarray:
+    """One-hot (numpy) de dia do mês + dia da semana (+ mês opcional) + intercepto."""
+    n = len(df)
+    n_cols = 31 + 7 + (12 if incluir_mes else 0) + 1
+    X = np.zeros((n, n_cols), dtype=float)
+    X[:, -1] = 1.0  # intercepto
+
+    dias_semana_idx = {nome: i for i, nome in DIAS_SEMANA_PT.items()}
+    meses_idx = {nome: i for i, nome in MESES_PT.items()}
+
+    for i, row in enumerate(df.itertuples(index=False)):
+        dia = int(row.dia_mes)
+        if 1 <= dia <= 31:
+            X[i, dia - 1] = 1.0
+        ds = dias_semana_idx.get(str(row.dia_semana), None)
+        if ds is not None:
+            X[i, 31 + ds] = 1.0
+        if incluir_mes:
+            ms = meses_idx.get(str(row.mes), None)
+            if ms is not None:
+                X[i, 31 + 7 + (ms - 1)] = 1.0
+    return X
+
+
+def treinar_regressao_vendas_diarias(
+    treino: pd.DataFrame,
+    incluir_mes: bool = True,
+) -> np.ndarray:
+    """OLS via numpy.linalg.lstsq. Retorna vetor de coeficientes."""
+    X = _matriz_explicativas(treino, incluir_mes=incluir_mes)
+    y = treino["qtd"].astype(float).values
+    coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+    return coef
+
+
+def prever_qtd_dias(
+    coef: np.ndarray,
+    datas: List[date],
+    incluir_mes: bool = True,
+) -> np.ndarray:
+    if not datas:
+        return np.array([])
+    df = pd.DataFrame({"data": datas})
+    df["dia_mes"] = df["data"].map(lambda d: d.day)
+    df["dia_semana"] = df["data"].map(lambda d: DIAS_SEMANA_PT[d.weekday()])
+    df["mes"] = df["data"].map(lambda d: MESES_PT[d.month])
+    X = _matriz_explicativas(df, incluir_mes=incluir_mes)
+    pred = X @ coef
+    return np.maximum(pred, 0.0)
+
+
+def _r2_treino(
+    treino: pd.DataFrame,
+    coef: np.ndarray,
+    incluir_mes: bool = True,
+) -> float:
+    X = _matriz_explicativas(treino, incluir_mes=incluir_mes)
+    y = treino["qtd"].astype(float).values
+    y_hat = X @ coef
+    ss_res = float(np.sum((y - y_hat) ** 2))
+    ss_tot = float(np.sum((y - y.mean()) ** 2))
+    if ss_tot <= 0:
+        return 0.0
+    return 1.0 - (ss_res / ss_tot)
+
+
+def calcular_medias_sazonais(
+    treino: pd.DataFrame,
+    incluir_mes: bool = True,
+) -> Dict[str, Any]:
+    """Médias históricas por dia da semana, dia do mês e (opcionalmente) mês."""
+    mu = float(treino["qtd"].mean()) if len(treino) else 0.0
+    if mu <= 0:
+        mu = 1e-9
+    out: Dict[str, Any] = {
+        "mu": mu,
+        "incluir_mes": incluir_mes,
+        "media_dia_semana": {
+            k: float(v) for k, v in treino.groupby("dia_semana")["qtd"].mean().items()
+        },
+        "media_dia_mes": {
+            int(k): float(v) for k, v in treino.groupby("dia_mes")["qtd"].mean().items()
+        },
+    }
+    if incluir_mes:
+        out["media_mes"] = {
+            k: float(v) for k, v in treino.groupby("mes")["qtd"].mean().items()
+        }
+    return out
+
+
+def prever_qtd_medias(
+    datas: List[date],
+    medias: Dict[str, Any],
+    incluir_mes: bool = True,
+) -> np.ndarray:
+    """
+    Combinação multiplicativa das médias.
+    Com mês:   pred = m_ds × m_dm × m_mes / μ²
+    Sem mês:   pred = m_ds × m_dm / μ
+    """
+    if not datas:
+        return np.array([])
+    mu = float(medias["mu"])
+    m_ds = medias["media_dia_semana"]
+    m_dm = medias["media_dia_mes"]
+    m_mes = medias.get("media_mes") or {}
+    usar_mes = incluir_mes and bool(m_mes)
+    out: List[float] = []
+    for d in datas:
+        a = float(m_ds.get(DIAS_SEMANA_PT[d.weekday()], mu))
+        b = float(m_dm.get(d.day, mu))
+        if usar_mes:
+            c = float(m_mes.get(MESES_PT[d.month], mu))
+            out.append(max((a * b * c) / (mu * mu), 0.0))
+        else:
+            out.append(max((a * b) / mu, 0.0))
+    return np.asarray(out, dtype=float)
+
+
+def _matriz_explicativas_relativa(df: pd.DataFrame) -> np.ndarray:
+    """
+    One-hot com categorias de referência omitidas:
+      dia do mês → dia 1
+      dia da semana → segunda
+      mês → janeiro
+    + intercepto (= nível esperado em segunda + dia 1 + janeiro).
+    """
+    n = len(df)
+    # 30 dias (2–31) + 6 dias semana (terça–domingo) + 11 meses (fev–dez) + intercepto
+    X = np.zeros((n, 30 + 6 + 11 + 1), dtype=float)
+    X[:, -1] = 1.0
+
+    dias_semana_idx = {nome: i for i, nome in DIAS_SEMANA_PT.items()}  # 0=segunda
+    meses_idx = {nome: i for i, nome in MESES_PT.items()}  # 1=janeiro
+
+    for i, row in enumerate(df.itertuples(index=False)):
+        dia = int(row.dia_mes)
+        if 2 <= dia <= 31:
+            X[i, dia - 2] = 1.0  # colunas 0..29
+        ds = dias_semana_idx.get(str(row.dia_semana), None)
+        if ds is not None and ds >= 1:  # terça=1 .. domingo=6
+            X[i, 30 + (ds - 1)] = 1.0
+        ms = meses_idx.get(str(row.mes), None)
+        if ms is not None and ms >= 2:  # fevereiro=2 .. dezembro=12
+            X[i, 30 + 6 + (ms - 2)] = 1.0
+    return X
+
+
+def estimar_efeitos_sazonais(treino: pd.DataFrame) -> Optional[Dict[str, Any]]:
+    """
+    OLS com referência em segunda-feira, dia 1 e janeiro.
+    Retorna efeitos aditivos (qtd) e índices relativos (baseline = 1.0).
+    """
+    if treino.empty or float(treino["qtd"].sum()) <= 0 or len(treino) < 30:
+        return None
+
+    X = _matriz_explicativas_relativa(treino)
+    y = treino["qtd"].astype(float).values
+    coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+    intercepto = float(coef[-1])
+    base = intercepto if abs(intercepto) > 1e-9 else 1.0
+
+    # dia do mês
+    e_dm = [0.0]  # dia 1
+    for d in range(2, 32):
+        e_dm.append(float(coef[d - 2]))
+    df_dm = pd.DataFrame({
+        "categoria": [str(d) for d in range(1, 32)],
+        "efeito": e_dm,
+        "indice": [(base + e) / base for e in e_dm],
+    })
+
+    # dia da semana (ordem: segunda → domingo)
+    nomes_ds = [DIAS_SEMANA_PT[i] for i in range(7)]
+    e_ds = [0.0]  # segunda
+    for i in range(1, 7):
+        e_ds.append(float(coef[30 + (i - 1)]))
+    df_ds = pd.DataFrame({
+        "categoria": nomes_ds,
+        "efeito": e_ds,
+        "indice": [(base + e) / base for e in e_ds],
+    })
+
+    # mês (ordem: janeiro → dezembro)
+    nomes_mes = [MESES_PT[i] for i in range(1, 13)]
+    e_mes = [0.0]  # janeiro
+    for m in range(2, 13):
+        e_mes.append(float(coef[30 + 6 + (m - 2)]))
+    df_mes = pd.DataFrame({
+        "categoria": nomes_mes,
+        "efeito": e_mes,
+        "indice": [(base + e) / base for e in e_mes],
+    })
+
+    y_hat = X @ coef
+    ss_res = float(np.sum((y - y_hat) ** 2))
+    ss_tot = float(np.sum((y - y.mean()) ** 2))
+    r2 = (1.0 - ss_res / ss_tot) if ss_tot > 0 else 0.0
+
+    return {
+        "intercepto": intercepto,
+        "r2": r2,
+        "dia_mes": df_dm,
+        "dia_semana": df_ds,
+        "mes": df_mes,
+    }
+
+
+def _distribuir_gap_por_pesos(
+    gap: float,
+    pesos: np.ndarray,
+    dias: List[date],
+    qtd_mtd: float,
+    dia_hoje: int,
+    arredondar_cima: bool = False,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    ritmo_diario: List[Dict[str, Any]] = []
+    ritmo_acum: List[Dict[str, Any]] = [{"dia": dia_hoje, "acum": qtd_mtd}]
+    if not dias:
+        return pd.DataFrame(ritmo_diario), pd.DataFrame(ritmo_acum)
+    w = np.maximum(np.asarray(pesos, dtype=float), 0.0)
+    soma = float(w.sum())
+    if soma <= 1e-9:
+        w = np.ones(len(dias), dtype=float)
+        soma = float(len(dias))
+    nec = gap * (w / soma)
+    if arredondar_cima and gap > 0:
+        nec = np.ceil(nec)
+    running = qtd_mtd
+    for i, d in enumerate(dias):
+        v = float(nec[i])
+        ritmo_diario.append({"dia": d.day, "qtd": v})
+        running += v
+        ritmo_acum.append({"dia": d.day, "acum": running})
+    return pd.DataFrame(ritmo_diario), pd.DataFrame(ritmo_acum)
+
+
+JANELAS_FIM_MES = (15, 10, 5)
+
+
+def calcular_intensidade_fim_mes(treino: pd.DataFrame, janela: int = 15) -> float:
+    """
+    Razão empírica: média dos últimos `janela` dias do mês / média do restante.
+    """
+    if treino.empty:
+        return 1.4
+    limiar = max(1, 31 - janela + 1)
+    early = treino[treino["dia_mes"] < limiar]["qtd"]
+    late = treino[treino["dia_mes"] >= limiar]["qtd"]
+    m_early = float(early.mean()) if len(early) else 0.0
+    m_late = float(late.mean()) if len(late) else 0.0
+    if m_early <= 1e-9:
+        return 1.4
+    ratio = m_late / m_early
+    return float(np.clip(ratio, 1.10, 2.8))
+
+
+def calcular_intensidades_fim_mes(
+    treino: pd.DataFrame,
+    janelas: Tuple[int, ...] = JANELAS_FIM_MES,
+) -> Dict[int, float]:
+    return {int(j): calcular_intensidade_fim_mes(treino, janela=int(j)) for j in janelas}
+
+
+def fatores_sazonalidade_fim_mes(
+    dias: List[date],
+    ultimo_dia: int,
+    intensidades: Dict[int, float],
+    janelas: Tuple[int, ...] = JANELAS_FIM_MES,
+) -> np.ndarray:
+    """
+    Combina sazonalidades de 15, 10 e 5 dias (produto de rampas).
+    Quanto mais perto do fim do mês, maior o fator.
+    """
+    if not dias:
+        return np.array([])
+    out: List[float] = []
+    for d in dias:
+        f = 1.0
+        for janela in janelas:
+            intens = float(intensidades.get(int(janela), 1.0))
+            inicio_boost = max(1, ultimo_dia - int(janela) + 1)
+            if d.day >= inicio_boost:
+                span = max(1, ultimo_dia - inicio_boost)
+                t = (d.day - inicio_boost) / span  # 0 → 1
+                f *= 1.0 + (intens - 1.0) * t
+        out.append(f)
+    return np.asarray(out, dtype=float)
+
+
+def aplicar_sazonalidade_fim_mes(
+    pesos: np.ndarray,
+    dias: List[date],
+    ultimo_dia: int,
+    intensidades: Dict[int, float],
+    janelas: Tuple[int, ...] = JANELAS_FIM_MES,
+) -> np.ndarray:
+    """Multiplica pesos pela sazonalidade combinada (15/10/5 dias)."""
+    if len(pesos) == 0:
+        return pesos
+    fat = fatores_sazonalidade_fim_mes(dias, ultimo_dia, intensidades, janelas=janelas)
+    return np.maximum(np.asarray(pesos, dtype=float), 0.0) * fat
+
+
+def _series_atingido_projetado(
+    dias_passados: List[date],
+    dias_futuros: List[date],
+    mapa_real: Dict[Any, float],
+    pred_futuro: np.ndarray,
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    diaria: List[Dict[str, Any]] = []
+    acum: List[Dict[str, Any]] = []
+    running = 0.0
+    for d in dias_passados:
+        q = float(mapa_real.get(d, 0.0))
+        diaria.append({"dia": d.day, "qtd": q, "tipo": "Atingida"})
+        running += q
+        acum.append({"dia": d.day, "acum": running, "tipo": "Atingida"})
+    for i, d in enumerate(dias_futuros):
+        q = float(pred_futuro[i]) if i < len(pred_futuro) else 0.0
+        diaria.append({"dia": d.day, "qtd": q, "tipo": "Projetada"})
+        running += q
+        acum.append({"dia": d.day, "acum": running, "tipo": "Projetada"})
+    return pd.DataFrame(diaria), pd.DataFrame(acum)
+
+
+def projetar_vendas_mes_atual(
+    df_vendas: pd.DataFrame,
+    col_contrato: str,
+    meta_vgv_mes: float,
+    meta_qtd_mes: float = 0.0,
+    hoje: Optional[date] = None,
+    incluir_mes: bool = True,
+) -> Optional[Dict[str, Any]]:
+    """
+    Projeção do mês corrente com duas lógicas (mesma janela de meses exatos):
+      1) Regressão OLS (dia_mês + dia_semana [+ mês])
+      2) Médias sazonais combinadas (multiplicativo)
+    Com incluir_mes=False, remove o efeito/beta de mês (só dia do mês e dia da semana).
+    Treino: do mês atual − 1 ano até o fim do mês anterior
+    (ex.: jul/2026 → 01/07/2025 a 30/06/2026).
+    """
+    hoje = hoje or date.today()
+    inicio, fim_treino = janela_treino_meses_exatos(hoje)
+    serie = serie_diaria_contratos(df_vendas, col_contrato)
+    if serie.empty:
+        return None
+
+    treino = calendario_diario(inicio, fim_treino, serie)
+    if treino["qtd"].sum() <= 0 or len(treino) < 30:
+        return None
+
+    modelo = treinar_regressao_vendas_diarias(treino, incluir_mes=incluir_mes)
+    medias = calcular_medias_sazonais(treino, incluir_mes=incluir_mes)
+
+    ano, mes = hoje.year, hoje.month
+    ultimo_dia = calendar.monthrange(ano, mes)[1]
+    dias_mes = [date(ano, mes, d) for d in range(1, ultimo_dia + 1)]
+    dias_passados = [d for d in dias_mes if d <= hoje]
+    dias_futuros = [d for d in dias_mes if d > hoje]
+
+    mapa_real = {r["data"]: float(r["qtd"]) for _, r in serie.iterrows()}
+    mapa_vgv = {r["data"]: float(r["vgv"]) for _, r in serie.iterrows()}
+
+    qtd_mtd = float(sum(mapa_real.get(d, 0.0) for d in dias_passados))
+    vgv_mtd = float(sum(mapa_vgv.get(d, 0.0) for d in dias_passados))
+
+    pred_reg_mes = prever_qtd_dias(modelo, dias_mes, incluir_mes=incluir_mes)
+    pred_med_mes = prever_qtd_medias(dias_mes, medias, incluir_mes=incluir_mes)
+
+    # Reforço explícito de fim de mês: sazonalidade em 15, 10 e 5 dias
+    intensidades_fim = calcular_intensidades_fim_mes(treino, janelas=JANELAS_FIM_MES)
+    pred_reg_mes = aplicar_sazonalidade_fim_mes(pred_reg_mes, dias_mes, ultimo_dia, intensidades_fim)
+    pred_med_mes = aplicar_sazonalidade_fim_mes(pred_med_mes, dias_mes, ultimo_dia, intensidades_fim)
+
+    n_passados = len(dias_passados)
+    pred_reg = pred_reg_mes[n_passados:] if len(pred_reg_mes) else np.array([])
+    pred_med = pred_med_mes[n_passados:] if len(pred_med_mes) else np.array([])
+
+    # Comparativo dia a dia: projetado (modelo) × realizado (mês atual)
+    comp_reg: List[Dict[str, Any]] = []
+    comp_med: List[Dict[str, Any]] = []
+    for i, d in enumerate(dias_mes):
+        real = float(mapa_real.get(d, 0.0)) if d <= hoje else None
+        p_reg = float(pred_reg_mes[i]) if i < len(pred_reg_mes) else 0.0
+        p_med = float(pred_med_mes[i]) if i < len(pred_med_mes) else 0.0
+        comp_reg.append({"dia": d.day, "realizado": real, "projetado": p_reg})
+        comp_med.append({"dia": d.day, "realizado": real, "projetado": p_med})
+
+    qtd_proj_reg = qtd_mtd + float(pred_reg.sum() if len(pred_reg) else 0.0)
+    qtd_proj_med = qtd_mtd + float(pred_med.sum() if len(pred_med) else 0.0)
+
+    # Ticket médio dos 30 dias anteriores à projeção (estoque muda constantemente)
+    fim_ticket = hoje - timedelta(days=1)
+    inicio_ticket = hoje - timedelta(days=30)
+    qtd_30 = float(sum(mapa_real.get(inicio_ticket + timedelta(days=i), 0.0) for i in range(30)))
+    vgv_30 = float(sum(mapa_vgv.get(inicio_ticket + timedelta(days=i), 0.0) for i in range(30)))
+    ticket_medio = (vgv_30 / qtd_30) if qtd_30 > 0 else 0.0
+    if ticket_medio <= 0:
+        q_tr = float(treino["qtd"].sum())
+        v_tr = float(treino["vgv"].sum())
+        ticket_medio = (v_tr / q_tr) if q_tr > 0 else 0.0
+
+    rest_reg = qtd_proj_reg - qtd_mtd
+    rest_med = qtd_proj_med - qtd_mtd
+    vgv_proj_reg = vgv_mtd + rest_reg * ticket_medio
+    vgv_proj_med = vgv_mtd + rest_med * ticket_medio
+    pct_vgv_reg = (vgv_proj_reg / meta_vgv_mes * 100.0) if meta_vgv_mes and meta_vgv_mes > 0 else 0.0
+    pct_vgv_med = (vgv_proj_med / meta_vgv_mes * 100.0) if meta_vgv_mes and meta_vgv_mes > 0 else 0.0
+
+    meta_qtd = float(meta_qtd_mes or 0.0)
+    gap_qtd = max(0.0, meta_qtd - qtd_mtd)
+
+    ritmo_reg_d, ritmo_reg_a = _distribuir_gap_por_pesos(
+        gap_qtd, pred_reg, dias_futuros, qtd_mtd, hoje.day, arredondar_cima=True
+    )
+    ritmo_med_d, ritmo_med_a = _distribuir_gap_por_pesos(
+        gap_qtd, pred_med, dias_futuros, qtd_mtd, hoje.day, arredondar_cima=True
+    )
+
+    diaria_reg, acum_reg = _series_atingido_projetado(
+        dias_passados, dias_futuros, mapa_real, pred_reg
+    )
+    diaria_med, acum_med = _series_atingido_projetado(
+        dias_passados, dias_futuros, mapa_real, pred_med
+    )
+
+    intensidade_resumo = float(np.mean(list(intensidades_fim.values()))) if intensidades_fim else 1.0
+
+    return {
+        "hoje": hoje,
+        "inicio_treino": inicio,
+        "fim_treino": fim_treino,
+        "incluir_mes": incluir_mes,
+        "qtd_mtd": qtd_mtd,
+        "vgv_mtd": vgv_mtd,
+        "ticket_medio": ticket_medio,
+        "inicio_ticket_30d": inicio_ticket,
+        "fim_ticket_30d": fim_ticket,
+        "ultimo_dia": ultimo_dia,
+        "meta_vgv_mes": meta_vgv_mes,
+        "meta_qtd_mes": meta_qtd,
+        "gap_qtd_meta": gap_qtd,
+        "r2_treino": _r2_treino(treino, modelo, incluir_mes=incluir_mes),
+        "medias": medias,
+        "intensidades_fim_mes": intensidades_fim,
+        "intensidade_fim_mes": intensidade_resumo,
+        "qtd_projetada_mes": qtd_proj_reg,
+        "vgv_projetado": vgv_proj_reg,
+        "pct_vgv_meta": pct_vgv_reg,
+        "diaria": diaria_reg,
+        "acumulado": acum_reg,
+        "ritmo_meta_diario": ritmo_reg_d,
+        "ritmo_meta_acum": ritmo_reg_a,
+        "qtd_projetada_medias": qtd_proj_med,
+        "vgv_projetado_medias": vgv_proj_med,
+        "pct_vgv_medias": pct_vgv_med,
+        "diaria_medias": diaria_med,
+        "acumulado_medias": acum_med,
+        "ritmo_meta_diario_medias": ritmo_med_d,
+        "ritmo_meta_acum_medias": ritmo_med_a,
+        "comparativo_diario_reg": pd.DataFrame(comp_reg),
+        "comparativo_diario_medias": pd.DataFrame(comp_med),
+    }
+
+
+def _plot_projecao_mes(
+    titulo: str,
+    caption: str,
+    proj: Dict[str, Any],
+    diaria: pd.DataFrame,
+    acumulado: pd.DataFrame,
+) -> None:
+    """Gráfico de projeção: realizado até hoje + projetado a partir de amanhã (sem meta)."""
+    st.markdown(f"##### {titulo}")
+    if caption:
+        st.caption(caption)
+
+    dia_hoje = proj["hoje"].day
+    ating_d = diaria[diaria["tipo"] == "Atingida"] if not diaria.empty else diaria
+    proj_d = diaria[diaria["tipo"] == "Projetada"] if not diaria.empty else diaria
+    ating_a = acumulado[acumulado["tipo"] == "Atingida"] if not acumulado.empty else acumulado
+    proj_a = acumulado[acumulado["tipo"] == "Projetada"] if not acumulado.empty else acumulado
+
+    fig = make_subplots(specs=[[{"secondary_y": True}]])
+
+    if not ating_d.empty:
+        fig.add_trace(
+            go.Bar(
+                x=ating_d["dia"], y=ating_d["qtd"], name="Realizado (dia)",
+                marker_color=COR_AZUL_ESC, opacity=0.85,
+            ),
+            secondary_y=False,
+        )
+    if not proj_d.empty:
+        fig.add_trace(
+            go.Bar(
+                x=proj_d["dia"], y=proj_d["qtd"], name="Projetado (dia)",
+                marker_color="rgba(203, 9, 53, 0.45)",
+            ),
+            secondary_y=False,
+        )
+
+    if not ating_a.empty:
+        fig.add_trace(
+            go.Scatter(
+                x=ating_a["dia"], y=ating_a["acum"], mode="lines+markers",
+                name="Acumulado realizado",
+                line=dict(color=COR_AZUL_ESC, width=3), marker=dict(size=7),
+            ),
+            secondary_y=True,
+        )
+    if not proj_a.empty:
+        x_proj = [dia_hoje] + proj_a["dia"].tolist()
+        y_proj = [float(ating_a["acum"].iloc[-1]) if not ating_a.empty else 0.0] + proj_a["acum"].tolist()
+        fig.add_trace(
+            go.Scatter(
+                x=x_proj, y=y_proj, mode="lines+markers",
+                name="Acumulado projetado",
+                line=dict(color=COR_VERMELHO, width=3, dash="dash"),
+                marker=dict(size=7, color=COR_VERMELHO),
+            ),
+            secondary_y=True,
+        )
+
+    fig.add_vline(
+        x=dia_hoje, line_width=1, line_dash="dot", line_color="#64748b",
+        annotation_text="Hoje", annotation_position="top",
+        annotation_font=dict(color=COR_TEXTO_PRETO, size=11, family="Inter"),
+    )
+    fig.update_layout(
+        barmode="group",
+        margin=dict(l=20, r=20, t=40, b=20),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter", color=COR_TEXTO_PRETO),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.08, xanchor="center", x=0.5,
+            font=dict(color=COR_TEXTO_PRETO, family="Inter", size=12),
+        ),
+        hovermode="x unified",
+        height=420,
+    )
+    fig.update_xaxes(
+        title_text="Dia do mês",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        dtick=1,
+        range=[0.5, proj["ultimo_dia"] + 0.5],
+    )
+    fig.update_yaxes(
+        title_text="Qtd. no dia",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        secondary_y=False,
+        showgrid=False,
+    )
+    fig.update_yaxes(
+        title_text="Qtd. acumulada",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        secondary_y=True,
+        showgrid=True,
+        gridcolor="rgba(226,232,240,0.5)",
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def _plot_meta_diaria_integrada(proj: Dict[str, Any]) -> None:
+    """
+    Um único gráfico com 3 linhas (somente diário, sem acumulado):
+      1) Realizado até hoje
+      2) Meta diária (regressão) a partir de amanhã
+      3) Meta diária (médias) a partir de amanhã
+    """
+    ints = proj.get("intensidades_fim_mes") or {}
+    st.caption(
+        " · ".join(f"Sazonalidade {j}d: {float(ints.get(j, 1)):.2f}x" for j in JANELAS_FIM_MES)
+    )
+
+    dia_hoje = proj["hoje"].day
+    diaria = proj.get("diaria", pd.DataFrame())
+    ating_d = (
+        diaria[diaria["tipo"] == "Atingida"]
+        if (not diaria.empty and "tipo" in diaria.columns)
+        else pd.DataFrame()
+    )
+    ritmo_reg = proj.get("ritmo_meta_diario", pd.DataFrame())
+    ritmo_med = proj.get("ritmo_meta_diario_medias", pd.DataFrame())
+
+    fig = go.Figure()
+
+    if not ating_d.empty:
+        textos_real = [fmt_qtd(float(v)) for v in ating_d["qtd"]]
+        fig.add_trace(
+            go.Scatter(
+                x=ating_d["dia"],
+                y=ating_d["qtd"],
+                mode="lines+markers+text",
+                name="Realizado até hoje",
+                text=textos_real,
+                textposition="top center",
+                textfont=dict(size=10, color=COR_AZUL_ESC, family="Inter"),
+                line=dict(color=COR_AZUL_ESC, width=3),
+                marker=dict(size=8, color=COR_AZUL_ESC),
+            )
+        )
+
+    if ritmo_reg is not None and not ritmo_reg.empty:
+        textos_reg = [fmt_qtd(float(v)) for v in ritmo_reg["qtd"]]
+        fig.add_trace(
+            go.Scatter(
+                x=ritmo_reg["dia"],
+                y=ritmo_reg["qtd"],
+                mode="lines+markers+text",
+                name="Meta diária (regressão)",
+                text=textos_reg,
+                textposition="top center",
+                textfont=dict(size=10, color=COR_VERMELHO, family="Inter"),
+                line=dict(color=COR_VERMELHO, width=3),
+                marker=dict(size=8, color=COR_VERMELHO),
+            )
+        )
+
+    if ritmo_med is not None and not ritmo_med.empty:
+        textos_med = [fmt_qtd(float(v)) for v in ritmo_med["qtd"]]
+        fig.add_trace(
+            go.Scatter(
+                x=ritmo_med["dia"],
+                y=ritmo_med["qtd"],
+                mode="lines+markers+text",
+                name="Meta diária (médias)",
+                text=textos_med,
+                textposition="bottom center",
+                textfont=dict(size=10, color="#0f766e", family="Inter"),
+                line=dict(color="#0f766e", width=3, dash="dash"),
+                marker=dict(size=8, symbol="diamond", color="#0f766e"),
+            )
+        )
+
+    fig.add_vline(
+        x=dia_hoje, line_width=1, line_dash="dot", line_color="#64748b",
+        annotation_text="Hoje", annotation_position="top",
+        annotation_font=dict(color=COR_TEXTO_PRETO, size=11, family="Inter"),
+    )
+    fig.update_layout(
+        margin=dict(l=20, r=20, t=50, b=20),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter", color=COR_TEXTO_PRETO),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.10, xanchor="center", x=0.5,
+            font=dict(color=COR_TEXTO_PRETO, family="Inter", size=12),
+        ),
+        hovermode="x unified",
+        height=460,
+    )
+    fig.update_xaxes(
+        title_text="Dia do mês",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        dtick=1,
+        range=[0.5, proj["ultimo_dia"] + 0.5],
+    )
+    fig.update_yaxes(
+        title_text="Qtd. no dia",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        showgrid=True,
+        gridcolor="rgba(226,232,240,0.5)",
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def _plot_comparativo_realizado_projetado(proj: Dict[str, Any]) -> None:
+    """Gráfico: projetado × realizado por dia no mês atual (regressão e médias)."""
+    st.markdown("##### Projetado × realizado por dia (mês atual)")
+
+    dia_hoje = proj["hoje"].day
+    df_reg = proj.get("comparativo_diario_reg", pd.DataFrame())
+    df_med = proj.get("comparativo_diario_medias", pd.DataFrame())
+    if (df_reg is None or df_reg.empty) and (df_med is None or df_med.empty):
+        st.info("Sem dados para o comparativo diário.")
+        return
+
+    fig = go.Figure()
+
+    # Realizado (uma série; igual em reg e médias)
+    base = df_reg if (df_reg is not None and not df_reg.empty) else df_med
+    real = base.dropna(subset=["realizado"]) if "realizado" in base.columns else pd.DataFrame()
+    if not real.empty:
+        textos_real = [fmt_qtd(float(v)) for v in real["realizado"]]
+        fig.add_trace(
+            go.Scatter(
+                x=real["dia"],
+                y=real["realizado"],
+                mode="lines+markers+text",
+                name="Realizado",
+                text=textos_real,
+                textposition="top center",
+                textfont=dict(size=10, color=COR_AZUL_ESC, family="Inter"),
+                line=dict(color=COR_AZUL_ESC, width=3),
+                marker=dict(size=8, color=COR_AZUL_ESC),
+            )
+        )
+
+    if df_reg is not None and not df_reg.empty:
+        textos_reg = [fmt_qtd(float(v)) for v in df_reg["projetado"]]
+        fig.add_trace(
+            go.Scatter(
+                x=df_reg["dia"],
+                y=df_reg["projetado"],
+                mode="lines+markers+text",
+                name="Projetado (regressão)",
+                text=textos_reg,
+                textposition="bottom center",
+                textfont=dict(size=10, color=COR_VERMELHO, family="Inter"),
+                line=dict(color=COR_VERMELHO, width=3, dash="dash"),
+                marker=dict(size=8, color=COR_VERMELHO),
+            )
+        )
+
+    if df_med is not None and not df_med.empty:
+        textos_med = [fmt_qtd(float(v)) for v in df_med["projetado"]]
+        fig.add_trace(
+            go.Scatter(
+                x=df_med["dia"],
+                y=df_med["projetado"],
+                mode="lines+markers+text",
+                name="Projetado (médias)",
+                text=textos_med,
+                textposition="top center",
+                textfont=dict(size=10, color="#0f766e", family="Inter"),
+                line=dict(color="#0f766e", width=3, dash="dot"),
+                marker=dict(size=8, symbol="diamond", color="#0f766e"),
+            )
+        )
+
+    fig.add_vline(
+        x=dia_hoje, line_width=1, line_dash="dot", line_color="#64748b",
+        annotation_text="Hoje", annotation_position="top",
+        annotation_font=dict(color=COR_TEXTO_PRETO, size=11, family="Inter"),
+    )
+    fig.update_layout(
+        margin=dict(l=20, r=20, t=50, b=20),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter", color=COR_TEXTO_PRETO),
+        legend=dict(
+            orientation="h", yanchor="bottom", y=1.10, xanchor="center", x=0.5,
+            font=dict(color=COR_TEXTO_PRETO, family="Inter", size=12),
+        ),
+        hovermode="x unified",
+        height=460,
+    )
+    fig.update_xaxes(
+        title_text="Dia do mês",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        dtick=1,
+        range=[0.5, proj["ultimo_dia"] + 0.5],
+    )
+    fig.update_yaxes(
+        title_text="Qtd. no dia",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        showgrid=True,
+        gridcolor="rgba(226,232,240,0.5)",
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def render_projecao_vendas(
+    proj: Dict[str, Any],
+    titulo: Optional[str] = None,
+) -> None:
+    """Seção Streamlit: cartões + gráficos de projeção e gráfico único de meta diária."""
+    incluir_mes = bool(proj.get("incluir_mes", True))
+    if titulo is None:
+        titulo = (
+            "Projeção de Vendas"
+            if incluir_mes
+            else "Projeção de Vendas (sem efeito de mês)"
+        )
+
+    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
+    st.subheader(titulo)
+
+    st.markdown(
+        f"""
+        <div class="vel-kpi-row">
+            <div class="vel-kpi">
+                <div class="lbl">Qtd. (regressão)</div>
+                <div class="val">{fmt_qtd(proj['qtd_projetada_mes'])}</div>
+            </div>
+            <div class="vel-kpi">
+                <div class="lbl">Qtd. (médias)</div>
+                <div class="val">{fmt_qtd(proj.get('qtd_projetada_medias', 0))}</div>
+            </div>
+            <div class="vel-kpi">
+                <div class="lbl">VGV (regressão)</div>
+                <div class="val val--red">{fmt_br_milhoes(proj['vgv_projetado'])}</div>
+            </div>
+            <div class="vel-kpi">
+                <div class="lbl">VGV (médias)</div>
+                <div class="val val--red">{fmt_br_milhoes(proj.get('vgv_projetado_medias', 0))}</div>
+            </div>
+            <div class="vel-kpi">
+                <div class="lbl">% VGV reg. / médias</div>
+                <div class="val">{proj['pct_vgv_meta']:.1f}% / {proj.get('pct_vgv_medias', 0):.1f}%</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    _plot_projecao_mes(
+        "Projeção por regressão",
+        f"R² treino: {proj['r2_treino']:.2f}",
+        proj,
+        proj["diaria"],
+        proj["acumulado"],
+    )
+
+    med = proj.get("medias") or {}
+    mu = float(med.get("mu") or 0.0)
+    _plot_projecao_mes(
+        "Projeção por médias sazonais",
+        f"μ: {mu:.2f}",
+        proj,
+        proj.get("diaria_medias", pd.DataFrame()),
+        proj.get("acumulado_medias", pd.DataFrame()),
+    )
+
+    st.markdown("<br/>", unsafe_allow_html=True)
+    _plot_comparativo_realizado_projetado(proj)
+
+    st.markdown("<br/>", unsafe_allow_html=True)
+    st.subheader(
+        "Meta diária para bater a quantidade"
+        if incluir_mes
+        else "Meta diária para bater a quantidade (sem efeito de mês)"
+    )
+    _plot_meta_diaria_integrada(proj)
+
+
+def _plot_barra_efeitos(
+    titulo: str,
+    df: pd.DataFrame,
+    cor: str,
+    referencia: str,
+) -> None:
+    """Barra de efeitos relativos (índice; referência = 1.0)."""
+    st.markdown(f"##### {titulo}")
+    st.caption(f"Referência: {referencia} = 1,00")
+    if df is None or df.empty:
+        return
+
+    textos = [f"{float(v):.2f}" for v in df["indice"]]
+    cores = [COR_TEXTO_PRETO if abs(float(v) - 1.0) < 1e-9 else cor for v in df["indice"]]
+
+    fig = go.Figure(
+        go.Bar(
+            x=df["categoria"],
+            y=df["indice"],
+            text=textos,
+            textposition="outside",
+            textfont=dict(size=10, color=COR_TEXTO_PRETO, family="Inter"),
+            marker_color=cores,
+            name="Índice",
+            hovertemplate="%{x}<br>Índice: %{y:.2f}<br>Efeito (qtd): %{customdata:.2f}<extra></extra>",
+            customdata=df["efeito"],
+        )
+    )
+    fig.add_hline(
+        y=1.0, line_width=1, line_dash="dot", line_color="#64748b",
+        annotation_text="Ref. = 1", annotation_position="top left",
+        annotation_font=dict(color=COR_TEXTO_PRETO, size=10),
+    )
+    fig.update_layout(
+        margin=dict(l=20, r=20, t=40, b=20),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter", color=COR_TEXTO_PRETO),
+        showlegend=False,
+        height=360,
+        bargap=0.25,
+    )
+    fig.update_xaxes(
+        title_text="",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter", size=11),
+    )
+    fig.update_yaxes(
+        title_text="Índice (ref. = 1)",
+        title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+        showgrid=True,
+        gridcolor="rgba(226,232,240,0.5)",
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
+def render_efeitos_sazonais(efeitos: Dict[str, Any]) -> None:
+    """Seção: efeitos de dia da semana, dia do mês e mês (relativos à referência)."""
+    st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
+    st.subheader("Efeitos sazonais (regressão)")
+    st.caption(
+        f"R²: {float(efeitos.get('r2', 0)):.2f} · "
+        f"Baseline (segunda + dia 1 + janeiro): {float(efeitos.get('intercepto', 0)):.2f} vendas/dia"
+    )
+
+    _plot_barra_efeitos(
+        "Efeito de dia da semana",
+        efeitos.get("dia_semana", pd.DataFrame()),
+        COR_AZUL_ESC,
+        "segunda-feira",
+    )
+    _plot_barra_efeitos(
+        "Efeito de dia do mês",
+        efeitos.get("dia_mes", pd.DataFrame()),
+        COR_VERMELHO,
+        "dia 1",
+    )
+    _plot_barra_efeitos(
+        "Efeito de mês",
+        efeitos.get("mes", pd.DataFrame()),
+        "#0f766e",
+        "janeiro",
+    )
+
+
 def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_vgv: float, vendas_qtd: float) -> None:
     meta_f = float(meta) if meta and meta > 0 else 0.0
     true_perc = (realizado / meta_f * 100.0) if meta_f > 0 else 0.0
@@ -693,10 +1759,15 @@ def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_v
             },
             title={
                 "text": titulo,
-                "font": {"size": 16, "family": "Montserrat", "color": COR_AZUL_ESC},
+                "font": {"size": 16, "family": "Montserrat", "color": COR_TEXTO_PRETO},
             },
             gauge={
-                "axis": {"range": [0, axis_max], "tickwidth": 1, "tickcolor": COR_TEXTO_MUTED},
+                "axis": {
+                    "range": [0, axis_max],
+                    "tickwidth": 1,
+                    "tickcolor": "#64748b",
+                    "tickfont": {"color": COR_TEXTO_PRETO, "family": "Inter"},
+                },
                 "bar": {"color": "rgba(0,0,0,0)"},
                 "bgcolor": "white",
                 "borderwidth": 2,
@@ -716,12 +1787,13 @@ def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_v
         margin=dict(l=24, r=24, t=56, b=24),
         paper_bgcolor="rgba(0,0,0,0)",
         plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter", color=COR_TEXTO_PRETO),
     )
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
     st.markdown(
         f"""
-        <div style="text-align:center;font-size:0.85rem;color:{COR_TEXTO_LABEL};margin-top:-8px;line-height:1.4;">
+        <div style="text-align:center;font-size:0.85rem;color:{COR_TEXTO_PRETO};margin-top:-8px;line-height:1.4;">
             <strong>Qtd:</strong> {fmt_qtd(vendas_qtd)} / {fmt_qtd(meta_f)} <br/>
             <strong>VGV:</strong> {fmt_br_milhoes(float(vgv))} / {fmt_br_milhoes(float(meta_vgv))}
         </div>
@@ -1069,7 +2141,13 @@ def main() -> None:
             marker={"color": ["#022654", "#04428f", "#1e60b3", "#cb0935", "#9e0828"]},
             connector={"fillcolor": "rgba(4, 66, 143, 0.15)"}
         ))
-        fig_ideal.update_layout(margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=350, font=dict(family="Inter", color=COR_TEXTO_LABEL))
+        fig_ideal.update_layout(
+            margin=dict(l=20, r=20, t=30, b=20),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            height=350,
+            font=dict(family="Inter", color=COR_TEXTO_PRETO),
+        )
         st.plotly_chart(fig_ideal, use_container_width=True, config={"displayModeBar": False})
 
     st.markdown("<br><hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
@@ -1084,7 +2162,13 @@ def main() -> None:
             marker={"color": ["#022654", "#1e60b3", "#cb0935"]},
             connector={"fillcolor": "rgba(4, 66, 143, 0.15)"}
         ))
-        fig_mkt.update_layout(margin=dict(l=20, r=20, t=30, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=300, font=dict(family="Inter", color=COR_TEXTO_LABEL))
+        fig_mkt.update_layout(
+            margin=dict(l=20, r=20, t=30, b=20),
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            height=300,
+            font=dict(family="Inter", color=COR_TEXTO_PRETO),
+        )
         st.plotly_chart(fig_mkt, use_container_width=True, config={"displayModeBar": False})
 
     st.markdown("<br><hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
@@ -1099,6 +2183,86 @@ def main() -> None:
         """,
         unsafe_allow_html=True,
     )
+
+    # -------------------------------------------------------------------------
+    # Projeção de Vendas (regressão diária — Contrato gerado em)
+    # -------------------------------------------------------------------------
+    mes_corrente = datetime.now().month
+    metas_mes_atual = metas_f[metas_f["Mes_Num"] == mes_corrente] if "Mes_Num" in metas_f.columns else metas_f.iloc[0:0]
+    if metas_mes_atual.empty and "Mes_Num" in df_metas.columns:
+        # fallback: meta do mês corrente na base completa, com mesmos filtros de região/emp e fator de canal
+        metas_mes_atual = df_metas[df_metas["Mes_Num"] == mes_corrente].copy()
+        if regioes_sel:
+            metas_mes_atual = metas_mes_atual[metas_mes_atual["Regiao_Coord"].isin(regioes_sel)]
+        if emps_sel:
+            metas_mes_atual = metas_mes_atual[metas_mes_atual["Empreendimento"].isin(emps_sel)]
+        metas_mes_atual["Meta_VGV"] = metas_mes_atual["Meta_VGV"] * fator_meta
+        if "Meta_Qtd" in metas_mes_atual.columns:
+            metas_mes_atual["Meta_Qtd"] = (metas_mes_atual["Meta_Qtd"] * fator_meta).apply(math.floor)
+    meta_vgv_proj = float(metas_mes_atual["Meta_VGV"].sum()) if not metas_mes_atual.empty else float(total_meta_vgv)
+    meta_qtd_proj = float(metas_mes_atual["Meta_Qtd"].sum()) if (not metas_mes_atual.empty and "Meta_Qtd" in metas_mes_atual.columns) else float(total_meta_qtd)
+
+    if col_contrato_gerado:
+        # Base comercial; mesmos filtros de região/emp/canal do painel (RIO = todas as vendas).
+        base_proj = df_vendas.copy()
+        if regioes_sel:
+            if "Região" in base_proj.columns:
+                regioes_base = [r.split(" - ")[0].strip() for r in regioes_sel]
+                base_proj = base_proj[
+                    base_proj["Regiao_Coord"].isin(regioes_sel) | base_proj["Região"].isin(regioes_base)
+                ]
+            else:
+                base_proj = base_proj[base_proj["Regiao_Coord"].isin(regioes_sel)]
+        if emps_sel:
+            base_proj = base_proj[base_proj["Empreendimento"].isin(emps_sel)]
+
+        # Mesma regra do KPI: RIO (ou vazio) = 100% das vendas comerciais; senão, recorte por canal.
+        if canais_sel and "RIO" not in canais_sel:
+            mask_p = pd.Series(False, index=base_proj.index)
+            if "DIR" in canais_sel:
+                mask_p |= (base_proj["Canal_Agrupado"] == "DV RJ")
+            if "PARC" in canais_sel and col_canal:
+                mask_p |= base_proj[col_canal].astype(str).str.upper().str.strip().apply(
+                    lambda x: x.split("-")[0].strip() == "RJG" or x == "RJG"
+                )
+            if "RJ" in canais_sel and col_canal:
+                mask_p |= base_proj[col_canal].astype(str).str.upper().str.strip().apply(
+                    lambda x: x.split("-")[0].strip() == "RJ" or x == "RJ"
+                )
+            base_proj = base_proj[mask_p]
+
+        try:
+            proj = projetar_vendas_mes_atual(
+                base_proj, col_contrato_gerado, meta_vgv_proj, meta_qtd_mes=meta_qtd_proj
+            )
+            if proj:
+                render_projecao_vendas(proj)
+            else:
+                st.info("Dados insuficientes para treinar a projeção de vendas (janela de meses exatos).")
+
+            proj_sem_mes = projetar_vendas_mes_atual(
+                base_proj,
+                col_contrato_gerado,
+                meta_vgv_proj,
+                meta_qtd_mes=meta_qtd_proj,
+                incluir_mes=False,
+            )
+            if proj_sem_mes:
+                render_projecao_vendas(proj_sem_mes)
+
+            # Efeitos sazonais relativos a segunda / dia 1 / janeiro
+            hoje_ef = date.today()
+            ini_ef, fim_ef = janela_treino_meses_exatos(hoje_ef)
+            serie_ef = serie_diaria_contratos(base_proj, col_contrato_gerado)
+            if not serie_ef.empty:
+                treino_ef = calendario_diario(ini_ef, fim_ef, serie_ef)
+                efeitos = estimar_efeitos_sazonais(treino_ef)
+                if efeitos:
+                    render_efeitos_sazonais(efeitos)
+        except Exception as exc:
+            st.warning(f"Não foi possível calcular a projeção de vendas: {exc}")
+    else:
+        st.warning("Coluna 'Contrato gerado em' não encontrada — seção de Projeção de Vendas indisponível.")
 
     # -------------------------------------------------------------------------
     # Comparativo de Vendas Eficiência Isolado (Janela Histórica: Dia 1 ao Dia Atual MTD)
@@ -1165,14 +2329,33 @@ def main() -> None:
                 margin=dict(l=20, r=20, t=40, b=20),
                 paper_bgcolor="rgba(0,0,0,0)",
                 plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(family="Inter", color=COR_TEXTO_LABEL),
-                legend=dict(orientation="h", yanchor="bottom", y=1.08, xanchor="center", x=0.5),
-                hovermode="x unified"
+                font=dict(family="Inter", color=COR_TEXTO_PRETO),
+                legend=dict(
+                    orientation="h", yanchor="bottom", y=1.08, xanchor="center", x=0.5,
+                    font=dict(color=COR_TEXTO_PRETO, family="Inter", size=12),
+                ),
+                hovermode="x unified",
             )
-            
-            fig_linha.update_yaxes(title_text="Quantidade (Vendas)", secondary_y=False, showgrid=False)
-            fig_linha.update_yaxes(title_text="VGV Real (R$)", secondary_y=True, showgrid=True, gridcolor="rgba(226, 232, 240, 0.5)")
-            
+
+            fig_linha.update_xaxes(
+                title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+                tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+            )
+            fig_linha.update_yaxes(
+                title_text="Quantidade (Vendas)",
+                title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+                tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+                secondary_y=False,
+                showgrid=False,
+            )
+            fig_linha.update_yaxes(
+                title_text="VGV Real (R$)",
+                title_font=dict(color=COR_TEXTO_PRETO, family="Inter"),
+                tickfont=dict(color=COR_TEXTO_PRETO, family="Inter"),
+                secondary_y=True,
+                showgrid=True,
+                gridcolor="rgba(226, 232, 240, 0.5)",
+            )
             st.plotly_chart(fig_linha, use_container_width=True, config={"displayModeBar": False})
         else:
             st.info("Não há dados de vendas no período acumulado de eficiência para exibir.")
@@ -1180,7 +2363,7 @@ def main() -> None:
         st.warning("A coluna de Contrato Gerado em não foi encontrada. Impossível renderizar a linha do tempo.")
 
     st.markdown(
-        f'<div class="footer" style="text-align:center;padding:1rem 0;color:{COR_TEXTO_MUTED};font-size:0.82rem;">'
+        f'<div class="footer" style="text-align:center;padding:1rem 0;color:{COR_TEXTO_PRETO};font-size:0.82rem;">'
         f"Direcional Engenharia · Vendas — Acompanhamento de metas</div>",
         unsafe_allow_html=True,
     )
