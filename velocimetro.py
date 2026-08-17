@@ -391,7 +391,7 @@ def aplicar_estilo() -> None:
         }}
         .vel-kpi .val--red {{ color: {COR_VERMELHO} !important; }}
         div[data-testid="stMetric"] {{
-            background: rgba(255,255,255,0.6);
+            background: rgba(255,255,256,0.6);
             padding: 12px;
             border-radius: 12px;
             border: 1px solid {COR_BORDA};
@@ -529,7 +529,7 @@ def _fingerprint_credenciais(info: Dict[str, Any]) -> str:
 def ler_planilha_aba_df(spreadsheet_id: str, worksheet: str, _cred_fp: str) -> pd.DataFrame:
     raw = _secrets_connections_gsheets()
     info = montar_service_account_info(raw)
-    if not info: raise ValueError("Credenciais [connections.gsheets] ausentes ou incompletas.")
+    if not info: raise ValueError("Credenciais [connections.gsheets] ausentes ou incompleta.")
     return ler_aba_gsheets(info, spreadsheet_id, worksheet)
 
 
@@ -868,13 +868,6 @@ def main() -> None:
     else:
         df_vendas['Canal_Agrupado'] = 'DV RJ'
 
-    # --- FILTRO DEFENSIVO DE DATAS FUTURAS ---
-    if col_data_venda:
-        df_vendas["_data_dt"] = pd.to_datetime(df_vendas[col_data_venda], dayfirst=True, errors="coerce")
-        hoje_limite = datetime.now().replace(hour=23, minute=59, second=59)
-        df_vendas = df_vendas[df_vendas["_data_dt"] <= hoje_limite]
-    # -----------------------------------------------------------------------------
-
     # -------------------------------------------------------------------------
     # Multiplicação e Distribuição Segura das Vendas com Coordenador
     # -------------------------------------------------------------------------
@@ -943,7 +936,11 @@ def main() -> None:
         
     if regioes_sel:
         metas_f = metas_f[metas_f["Regiao_Coord"].isin(regioes_sel)]
-        vendas_f = vendas_f[vendas_f["Regiao_Coord"].isin(regioes_sel)]
+        if not emps_sel:
+            regioes_base = [r.split(" - ")[0].strip() for r in regioes_sel]
+            vendas_f = vendas_f[vendas_f["Regiao_Coord"].isin(regioes_sel) | vendas_f["Região"].isin(regioes_base)]
+        else:
+            vendas_f = vendas_f[vendas_f["Regiao_Coord"].isin(regioes_sel)]
     
     if emps_sel:
         metas_f = metas_f[metas_f["Empreendimento"].isin(emps_sel)]
@@ -1104,10 +1101,11 @@ def main() -> None:
     )
 
     # -------------------------------------------------------------------------
-    # Comparativo de Vendas Eficiência Isolado (Janela Histórica: Dia 1 ao Dia 30 Fixos)
+    # Comparativo de Vendas Eficiência Isolado (Janela Histórica: Dia 1 ao Dia Atual MTD)
     # -------------------------------------------------------------------------
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
-    st.subheader("Comparativo de Vendas (Dia 01 ao Dia 30 do Mês)")
+    dia_atual_janela = datetime.now().day
+    st.subheader(f"Comparativo de Vendas (Dia 01 ao Dia {dia_atual_janela:02d} do Mês)")
     
     if col_contrato_gerado:
         # Base de espelho limpa para o gráfico de eficiência temporal sem interferência de filtros de UI de competência
@@ -1116,8 +1114,8 @@ def main() -> None:
         df_grafico_eficiencia = df_grafico_eficiencia.dropna(subset=["Data_Contrato_DT"])
         
         if not df_grafico_eficiencia.empty:
-            # Trava a janela da série histórica estritamente do dia 01 ao dia 30 de cada mês para medição justa de ritmo
-            df_parcial_janela = df_grafico_eficiencia[df_grafico_eficiencia["Data_Contrato_DT"].dt.day <= 30].copy()
+            # Trava a janela da série histórica estritamente do dia 01 ao dia atual de cada mês para medição justa de ritmo MTD
+            df_parcial_janela = df_grafico_eficiencia[df_grafico_eficiencia["Data_Contrato_DT"].dt.day <= dia_atual_janela].copy()
             
             df_parcial_janela["_ano_c"] = df_parcial_janela["Data_Contrato_DT"].dt.year
             df_parcial_janela["_mes_c"] = df_parcial_janela["Data_Contrato_DT"].dt.month
