@@ -26,6 +26,7 @@ def _identity_decorator(*_a, **_k):
 
 _st.cache_data = _identity_decorator
 _st.cache_resource = _identity_decorator
+_st.dialog = _identity_decorator
 _st.set_page_config = lambda **_k: None
 _st.markdown = lambda *_a, **_k: None
 _st.caption = lambda *_a, **_k: None
