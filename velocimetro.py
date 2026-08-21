@@ -48,6 +48,7 @@ if str(_mod_dir) not in sys.path:
     sys.path.insert(0, str(_mod_dir))
 
 try:
+    import velocimetro_feedbacks_previsao as vfp
     from velocimetro_feedbacks_previsao import (
         carregar_feedbacks_comerciais,
         carregar_previsao_vendas,
