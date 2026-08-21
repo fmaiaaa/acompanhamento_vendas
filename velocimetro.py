@@ -14272,6 +14272,12 @@ def main() -> None:
             try:
                 df_fb = carregar_feedbacks_comerciais(cred_fp)
                 render_aba_feedbacks_comerciais(df_fb)
+            except PermissionError:
+                st.error(
+                    "Sem permissão na planilha de **Feedbacks**. Compartilhe com o "
+                    f"`client_email` dos secrets: **{info.get('client_email', '?')}** · "
+                    f"planilha `{vfp.SPREADSHEET_FEEDBACK_ID}` · aba «{vfp.WS_FEEDBACK}»."
+                )
             except Exception as exc:
                 st.error(f"Não foi possível carregar Feedbacks Comerciais: {exc}")
         else:
@@ -14281,6 +14287,12 @@ def main() -> None:
             try:
                 df_pr = carregar_previsao_vendas(cred_fp)
                 render_aba_previsao_vendas(df_pr, df_vendas_painel, col_contrato_gerado or "")
+            except PermissionError:
+                st.error(
+                    "Sem permissão na planilha de **Previsão de Vendas**. Compartilhe com o "
+                    f"`client_email` dos secrets: **{info.get('client_email', '?')}** · "
+                    f"planilha `{vfp.SPREADSHEET_PREVISAO_ID}` · aba «{vfp.WS_PREVISAO}»."
+                )
             except Exception as exc:
                 st.error(f"Não foi possível carregar Previsão de Vendas: {exc}")
         else:
