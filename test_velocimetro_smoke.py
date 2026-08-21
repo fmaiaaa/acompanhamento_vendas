@@ -478,6 +478,17 @@ def test_metas_fallback_vgv_e_mes():
     assert v._parse_mes_num("8") == 8
     m = v._filtrar_metas_mes_ano(adapt, 8, 2026)
     assert len(m) == 2
+    # Coordenadores com qtd mas sem VGV → fallback legado
+    coord_sem_vgv = pd.DataFrame({
+        "Empreendimento": ["Emp A"],
+        "Coordenador": ["Dutra"],
+        "Mes_Num": [8],
+        "Ano_Num": [2026],
+        "Meta Vendas Desafio": [5.0],
+        "Meta VGV Desafio (Caixa Único)": [0.0],
+    })
+    assert not v._metas_coord_tem_vgv_mes(coord_sem_vgv, 8, 2026)
+    assert v._metas_coord_tem_dados_mes(coord_sem_vgv, 8, 2026)
 
 
 def main():

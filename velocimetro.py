@@ -93,6 +93,7 @@ SPREADSHEET_METAS_COORD_ID = SPREADSHEET_CONSOLIDADA_ID
 WS_METAS_COORD = "Metas Coordenadores Comerciais"
 SPREADSHEET_BASES_IVAN_ID = SPREADSHEET_CONSOLIDADA_ID
 WS_CANAL = "Canal"
+WS_CANAL_ALIASES = ("Canal", "Cópia de Canal", "Copia de Canal", "Cópia de canal")
 
 # Funil comercial — mesma planilha consolidada
 SPREADSHEET_FUNIL_ID = SPREADSHEET_CONSOLIDADA_ID
@@ -1579,6 +1580,7 @@ def ler_aba_gsheets(
     service_account_info: Dict[str, Any],
     spreadsheet_id: str,
     worksheet: str,
+    aliases: Optional[Tuple[str, ...]] = None,
 ) -> pd.DataFrame:
     import gspread
     from google.oauth2.service_account import Credentials
@@ -1589,20 +1591,37 @@ def ler_aba_gsheets(
     sh = gc.open_by_key(spreadsheet_id.strip())
     nome = worksheet.strip()
 
-    def _abrir() -> Any:
-        try:
-            return sh.worksheet(nome)
-        except gspread.WorksheetNotFound:
-            for w in sh.worksheets():
-                if w.title.strip() == nome: return w
-            for w in sh.worksheets():
-                if w.title.strip().lower() == nome.lower(): return w
-            titulos = [w.title for w in sh.worksheets()]
-            raise gspread.WorksheetNotFound(
-                f"Aba {nome!r} não encontrada. Abas: {titulos}"
-            ) from None
+    def _resolver_aba() -> Any:
+        candidatos: List[str] = [nome]
+        if aliases:
+            candidatos.extend(list(aliases))
+        vistos: set = set()
+        ordem: List[str] = []
+        for c in candidatos:
+            c = c.strip()
+            if not c or c.lower() in vistos:
+                continue
+            vistos.add(c.lower())
+            ordem.append(c)
+        titulos_map = {w.title.strip().lower(): w for w in sh.worksheets()}
+        for cand in ordem:
+            cl = cand.lower()
+            if cl in titulos_map:
+                return titulos_map[cl]
+        for cand in ordem:
+            cl = cand.lower()
+            for tl, w in titulos_map.items():
+                if tl == cl:
+                    return w
+            for tl, w in titulos_map.items():
+                if tl.endswith(cl) or cl in tl:
+                    return w
+        titulos = [w.title for w in sh.worksheets()]
+        raise gspread.WorksheetNotFound(
+            f"Aba {nome!r} não encontrada. Abas: {titulos}"
+        )
 
-    ws = _abrir()
+    ws = _resolver_aba()
     return valores_para_dataframe(ws.get_all_values())
 
 
@@ -1612,11 +1631,16 @@ def _fingerprint_credenciais(info: Dict[str, Any]) -> str:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def ler_planilha_aba_df(spreadsheet_id: str, worksheet: str, _cred_fp: str) -> pd.DataFrame:
+def ler_planilha_aba_df(
+    spreadsheet_id: str,
+    worksheet: str,
+    _cred_fp: str,
+    aliases: Optional[Tuple[str, ...]] = None,
+) -> pd.DataFrame:
     raw = _secrets_connections_gsheets()
     info = montar_service_account_info(raw)
     if not info: raise ValueError("Credenciais [connections.gsheets] ausentes ou incompleta.")
-    return ler_aba_gsheets(info, spreadsheet_id, worksheet)
+    return ler_aba_gsheets(info, spreadsheet_id, worksheet, aliases=aliases)
 
 
 def _cabecalho_tem_coluna(header: List[str], aliases: List[str]) -> bool:
@@ -8923,9 +8947,9 @@ def soma_meta_vgv_coord(
     coordenadores: Optional[List[str]] = None,
     empreendimentos: Optional[List[str]] = None,
 ) -> float:
-    col = coluna_meta_vgv_coord(df_metas, tipo_meta_col)
-    if not col or df_metas is None or df_metas.empty:
+    if df_metas is None or df_metas.empty:
         return 0.0
+    col = coluna_meta_vgv_coord(df_metas, tipo_meta_col)
     m = _filtrar_metas_mes_ano(df_metas, mes, ano)
     if coordenadores:
         m = m[m["Coordenador"].astype(str).str.strip().isin(coordenadores)]
@@ -8933,7 +8957,25 @@ def soma_meta_vgv_coord(
         v = _v()
         emps_norm = {v._limpar_emp(e) for e in empreendimentos}
         m = m[m["Empreendimento"].map(lambda x: v._limpar_emp(x) in emps_norm)]
-    return float(pd.to_numeric(m[col], errors="coerce").fillna(0.0).sum())
+    total = 0.0
+    if col and col in m.columns:
+        total = float(pd.to_numeric(m[col], errors="coerce").fillna(0.0).sum())
+    if total <= 0 and "Meta_VGV" in df_metas.columns:
+        m2 = _filtrar_metas_mes_ano(df_metas, mes, ano)
+        if coordenadores:
+            m2 = m2[m2["Coordenador"].astype(str).str.strip().isin(coordenadores)]
+        if empreendimentos:
+            v = _v()
+            emps_norm = {v._limpar_emp(e) for e in empreendimentos}
+            m2 = m2[m2["Empreendimento"].map(lambda x: v._limpar_emp(x) in emps_norm)]
+        vgv = float(pd.to_numeric(m2["Meta_VGV"], errors="coerce").fillna(0.0).sum())
+        if vgv > 0:
+            if tipo_meta_col == "BP":
+                vgv *= 0.85
+            elif tipo_meta_col == "BP 70%":
+                vgv *= 0.7
+            return vgv
+    return total
 
 
 def adaptar_metas_melt_para_coord(
@@ -8989,6 +9031,21 @@ def adaptar_metas_melt_para_coord(
     return out
 
 
+def _metas_coord_tem_vgv_mes(df: pd.DataFrame, mes: int, ano: int) -> bool:
+    """True se há meta VGV > 0 no mês/ano (colunas Caixa Único ou Meta_VGV legado)."""
+    if df is None or df.empty:
+        return False
+    m = _filtrar_metas_mes_ano(df, mes, ano)
+    if m.empty:
+        return False
+    for col in COL_META_VGV_MAP.values():
+        if col in m.columns and float(pd.to_numeric(m[col], errors="coerce").fillna(0.0).sum()) > 0:
+            return True
+    if "Meta_VGV" in m.columns and float(pd.to_numeric(m["Meta_VGV"], errors="coerce").fillna(0.0).sum()) > 0:
+        return True
+    return False
+
+
 def _metas_coord_tem_dados_mes(df: pd.DataFrame, mes: int, ano: int) -> bool:
     if df is None or df.empty:
         return False
@@ -9018,8 +9075,13 @@ def carregar_metas_coordenadores_com_fallback(
         if df_coord is not None and not df_coord.empty:
             mes_ref = int(mes_meta or date.today().month)
             ano_ref = int(ano_meta or date.today().year)
-            if _metas_coord_tem_dados_mes(df_coord, mes_ref, ano_ref):
+            if _metas_coord_tem_vgv_mes(df_coord, mes_ref, ano_ref):
                 return df_coord, None
+            if df_metas_legacy is not None and not df_metas_legacy.empty:
+                aviso = "Metas coordenadores sem VGV — usando planilha Metas legado."
+                return adaptar_metas_melt_para_coord(df_metas_legacy, ano_meta), aviso
+            if _metas_coord_tem_dados_mes(df_coord, mes_ref, ano_ref):
+                return df_coord, "Metas coordenadores sem colunas VGV preenchidas."
             aviso = "Metas coordenadores sem valores para o mês/ano selecionado."
     except Exception as exc:
         aviso = str(exc)
@@ -9152,7 +9214,9 @@ def carregar_metas_coordenadores(_cred_fp: str) -> pd.DataFrame:
 @st.cache_data(ttl=300, show_spinner=False)
 def carregar_metas_canal(_cred_fp: str) -> pd.DataFrame:
     v = _v()
-    df = v.ler_planilha_aba_df(SPREADSHEET_BASES_IVAN_ID, WS_CANAL, _cred_fp)
+    df = v.ler_planilha_aba_df(
+        SPREADSHEET_BASES_IVAN_ID, WS_CANAL, _cred_fp, aliases=WS_CANAL_ALIASES,
+    )
     df = v.normalizar_colunas(df)
     if df.empty:
         return df
@@ -13080,8 +13144,8 @@ def render_dashboard_comercial(
     try:
         df_canal = carregar_metas_canal(cred_fp)
     except Exception as exc:
-        st.error(f"Erro ao carregar metas canal: {exc}")
-        return
+        st.warning(f"Metas canal indisponíveis (aba Canal): {exc}")
+        df_canal = pd.DataFrame()
     if df_metas_coord.empty:
         st.error(f"Erro ao carregar metas: {aviso_coord or 'sem dados'}")
         return
