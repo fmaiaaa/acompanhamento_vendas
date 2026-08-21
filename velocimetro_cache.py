@@ -53,6 +53,41 @@ DATASETS: Dict[str, str] = {
     "funil_emp_est": WS_FUNIL_EMP_EST,
 }
 
+# Limite de linhas ao publicar no Google Sheets (evita QUOTA_EXCEEDED — máx. 10M células/planilha)
+SHEETS_ROW_LIMITS: Dict[str, int] = {
+    "funil_hist_ag": 30_000,
+    "funil_hist_pastas": 15_000,
+    "pc_pastas": 15_000,
+    "funil_ag": 20_000,
+}
+
+_SHEETS_DATE_COLS: Dict[str, List[str]] = {
+    "funil_hist_ag": ["Data da visita", "Data de criação", "CreatedDate"],
+    "funil_hist_pastas": ["Data de criação", "CreatedDate", "dataPrimeiroEnvioAnalise__c"],
+    "pc_pastas": ["Data de criação", "CreatedDate", "dataAprovacaoSAFI__c"],
+    "funil_ag": ["Data da visita", "Data de criação", "CreatedDate"],
+}
+
+
+def _truncar_para_sheets(dataset: str, df: pd.DataFrame) -> pd.DataFrame:
+    """Recorta datasets grandes antes de gravar no Sheets (pickle local mantém completo)."""
+    cap = SHEETS_ROW_LIMITS.get(dataset)
+    if not cap or df is None or df.empty or len(df) <= cap:
+        return df if df is not None else pd.DataFrame()
+    out = df.copy()
+    for col in _SHEETS_DATE_COLS.get(dataset, []):
+        if col in out.columns:
+            dt = pd.to_datetime(out[col], errors="coerce", utc=True)
+            if dt.notna().any():
+                out = out.assign(_ord=dt).sort_values("_ord", ascending=False, na_position="last")
+                out = out.drop(columns=["_ord"])
+                break
+    else:
+        out = out.iloc[::-1]
+    trunc = out.head(cap).copy()
+    print(f"  Sheets {dataset}: {len(df):,} → {len(trunc):,} linhas (limite quota)")
+    return trunc
+
 
 def cache_dir() -> Path:
     _CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -101,7 +136,10 @@ def gravar_aba_gsheets(
         ncols = max(len(df.columns) + 2, 10) if df is not None and not df.empty else 10
         ws = sh.add_worksheet(title=nome[:99], rows=nrows, cols=ncols)
     matriz = _df_para_matriz(df if df is not None else pd.DataFrame())
+    nrows = max(len(matriz), 2)
+    ncols = max(len(matriz[0]) if matriz else 1, 1)
     ws.clear()
+    ws.resize(rows=nrows, cols=ncols)
     if matriz:
         ws.update(values=matriz, range_name="A1", value_input_option="USER_ENTERED")
 
@@ -196,7 +234,8 @@ def gravar_dataset(
     df.to_pickle(_pickle_path(dataset))
     ws = DATASETS.get(dataset)
     if gravar_sheets and ws and service_account_info:
-        gravar_aba_gsheets(service_account_info, spreadsheet_id, ws, df)
+        df_sheets = _truncar_para_sheets(dataset, df)
+        gravar_aba_gsheets(service_account_info, spreadsheet_id, ws, df_sheets)
 
 
 def ler_dataset_local(dataset: str) -> Optional[pd.DataFrame]:
