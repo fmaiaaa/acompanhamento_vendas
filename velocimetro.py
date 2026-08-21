@@ -9045,6 +9045,45 @@ def _parse_num_br(val: Any) -> float:
     return float(v.parse_valor_br(val))
 
 
+def _sum_col_num(df: pd.DataFrame, col: str, default: float = 0.0) -> float:
+    """Soma coluna numérica tolerando strings vindas do Google Sheets."""
+    if df is None or df.empty or col not in df.columns:
+        return default
+    return float(pd.to_numeric(df[col], errors="coerce").fillna(0.0).sum())
+
+
+def assegurar_metricas_vendas(df: pd.DataFrame) -> pd.DataFrame:
+    """Garante tipos numéricos nas métricas de venda após leitura do cache Sheets."""
+    if df is None or df.empty:
+        return df
+    out = df.copy()
+    for col in ("_vgv", "_peso_coord", "_qtd_venda", "_vgv_venda"):
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+    if "_peso_coord" in out.columns:
+        out["_peso_coord"] = out["_peso_coord"].fillna(1.0)
+    else:
+        out["_peso_coord"] = 1.0
+    if "_vgv" in out.columns:
+        out["_vgv"] = out["_vgv"].fillna(0.0)
+    if "_qtd_venda" not in out.columns:
+        vgv_base = out["_vgv"] if "_vgv" in out.columns else 0.0
+        out["_qtd_venda"] = 1.0 * out["_peso_coord"]
+        if "_vgv_venda" not in out.columns:
+            out["_vgv_venda"] = vgv_base * out["_peso_coord"]
+    else:
+        out["_qtd_venda"] = out["_qtd_venda"].fillna(out["_peso_coord"])
+    if "_vgv_venda" not in out.columns:
+        vgv_base = out["_vgv"] if "_vgv" in out.columns else 0.0
+        out["_vgv_venda"] = vgv_base * out["_peso_coord"]
+    else:
+        out["_vgv_venda"] = out["_vgv_venda"].fillna(0.0)
+    for col in ("_mes", "_ano"):
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce")
+    return out
+
+
 @st.cache_data(ttl=300, show_spinner=False)
 def carregar_metas_coordenadores(_cred_fp: str) -> pd.DataFrame:
     v = _v()
@@ -9287,8 +9326,12 @@ def realizado_vendas_periodo(
     if empreendimentos and "Empreendimento" in base.columns:
         emps = {v._limpar_emp(e) for e in empreendimentos}
         base = base[base["Empreendimento"].map(v._limpar_emp).isin(emps)]
-    qtd = float(base["_qtd_venda"].sum()) if "_qtd_venda" in base.columns else float(len(base))
-    vgv = float(base["_vgv_venda"].sum()) if "_vgv_venda" in base.columns else 0.0
+    qtd = (
+        _sum_col_num(base, "_qtd_venda", float(len(base)))
+        if "_qtd_venda" in base.columns
+        else float(len(base))
+    )
+    vgv = _sum_col_num(base, "_vgv_venda", 0.0)
     return qtd, vgv
 
 
@@ -10156,12 +10199,12 @@ def render_perfil_vendas_mtd(vendas_f: pd.DataFrame) -> None:
     """KPIs de vendas facilitadas vs normais no período filtrado."""
     st.subheader("Perfil das Vendas")
     qtd_facilitada = (
-        float(vendas_f[vendas_f["Tipo_Venda"] == "Facilitada"]["_qtd_venda"].sum())
+        _sum_col_num(vendas_f[vendas_f["Tipo_Venda"] == "Facilitada"], "_qtd_venda", 0.0)
         if "Tipo_Venda" in vendas_f.columns and "_qtd_venda" in vendas_f.columns
         else 0.0
     )
     qtd_normal = (
-        float(vendas_f[vendas_f["Tipo_Venda"] == "Normal"]["_qtd_venda"].sum())
+        _sum_col_num(vendas_f[vendas_f["Tipo_Venda"] == "Normal"], "_qtd_venda", 0.0)
         if "Tipo_Venda" in vendas_f.columns and "_qtd_venda" in vendas_f.columns
         else 0.0
     )
@@ -11698,8 +11741,17 @@ def _filtrar_canal_velocimetro(df: pd.DataFrame, canal_key: str) -> pd.DataFrame
 
 
 def _qtd_vgv(df: pd.DataFrame) -> Tuple[float, float]:
-    qtd = float(df["_qtd_venda"].sum()) if "_qtd_venda" in df.columns else float(len(df))
-    vgv = float(df["_vgv_venda"].sum()) if "_vgv_venda" in df.columns else float(df["_vgv"].sum()) if "_vgv" in df.columns else 0.0
+    qtd = (
+        _sum_col_num(df, "_qtd_venda", float(len(df)))
+        if "_qtd_venda" in df.columns
+        else float(len(df))
+    )
+    if "_vgv_venda" in df.columns:
+        vgv = _sum_col_num(df, "_vgv_venda", 0.0)
+    elif "_vgv" in df.columns:
+        vgv = _sum_col_num(df, "_vgv", 0.0)
+    else:
+        vgv = 0.0
     return qtd, vgv
 
 
@@ -11748,7 +11800,11 @@ def calcular_vso_por_emp(
                 sub = _filtrar_canal_velocimetro(sub, canal if canal in FATORES_VGV else "RIO")
             if col_data and col_data in sub.columns:
                 sub = _filtrar_df_periodo(sub, col_data, ini, ref_fim)
-            vendas = float(sub["_qtd_venda"].sum()) if "_qtd_venda" in sub.columns else float(len(sub))
+            vendas = (
+                _sum_col_num(sub, "_qtd_venda", float(len(sub)))
+                if "_qtd_venda" in sub.columns
+                else float(len(sub))
+            )
             denom = vendas + unidades
             row[f"VSO_{dias}d"] = (vendas / denom * 100.0) if denom > 0 else 0.0
             row[f"Vendas_{dias}d"] = vendas
@@ -12285,8 +12341,17 @@ def render_radar_polaroid(
     base_mes = df_vendas.copy()
     if col_data and col_data in base_mes.columns:
         base_mes = _filtrar_df_periodo(base_mes, col_data, ini_mes, fim_mes)
-    real_vgv = float(base_mes["_vgv_venda"].sum()) if "_vgv_venda" in base_mes.columns else float(base_mes["_vgv"].sum()) if "_vgv" in base_mes.columns else 0.0
-    real_qtd = float(base_mes["_qtd_venda"].sum()) if "_qtd_venda" in base_mes.columns else float(len(base_mes))
+    if "_vgv_venda" in base_mes.columns:
+        real_vgv = _sum_col_num(base_mes, "_vgv_venda", 0.0)
+    elif "_vgv" in base_mes.columns:
+        real_vgv = _sum_col_num(base_mes, "_vgv", 0.0)
+    else:
+        real_vgv = 0.0
+    real_qtd = (
+        _sum_col_num(base_mes, "_qtd_venda", float(len(base_mes)))
+        if "_qtd_venda" in base_mes.columns
+        else float(len(base_mes))
+    )
 
     pct_desafio = (real_vgv / meta_vgv_desafio * 100.0) if meta_vgv_desafio > 0 else 0.0
     pct_bp = (real_vgv / meta_vgv_bp * 100.0) if meta_vgv_bp > 0 else 0.0
@@ -12653,10 +12718,20 @@ def _periodos_ps_sinais(hoje: Optional[date] = None) -> Dict[str, Tuple[date, da
 def _metricas_ps_sinais_periodo(sub: pd.DataFrame) -> Tuple[float, float]:
     if sub.empty:
         return 0.0, 0.0
-    vgv = float(sub["_vgv_venda"].sum()) if "_vgv_venda" in sub.columns else float(sub["_vgv"].sum()) if "_vgv" in sub.columns else 0.0
+    if "_vgv_venda" in sub.columns:
+        vgv = _sum_col_num(sub, "_vgv_venda", 0.0)
+    elif "_vgv" in sub.columns:
+        vgv = _sum_col_num(sub, "_vgv", 0.0)
+    else:
+        vgv = 0.0
     if vgv <= 0:
         return 0.0, 0.0
-    ps_num = float((sub["PS_VGV"] * sub["_vgv_venda"]).sum()) if "PS_VGV" in sub.columns and "_vgv_venda" in sub.columns else 0.0
+    if "PS_VGV" in sub.columns and "_vgv_venda" in sub.columns:
+        ps = pd.to_numeric(sub["PS_VGV"], errors="coerce").fillna(0.0)
+        vgv_col = pd.to_numeric(sub["_vgv_venda"], errors="coerce").fillna(0.0)
+        ps_num = float((ps * vgv_col).sum())
+    else:
+        ps_num = 0.0
     sinal = float(sub["Total_Sinal"].sum()) if "Total_Sinal" in sub.columns else 0.0
     return ps_num / vgv, sinal / vgv
 
@@ -13481,8 +13556,12 @@ def _corpo_painel_metas(
         )
 
     fator_meta = FATORES_CANAL.get((filtros_v2.canal_meta or "RIO").strip().upper(), 0.0)
-    total_realizado_qtd = float(vendas_f["_qtd_venda"].sum()) if "_qtd_venda" in vendas_f.columns else float(len(vendas_f))
-    total_vgv_realizado = float(vendas_f["_vgv_venda"].sum()) if "_vgv_venda" in vendas_f.columns else 0.0
+    total_realizado_qtd = (
+        _sum_col_num(vendas_f, "_qtd_venda", float(len(vendas_f)))
+        if "_qtd_venda" in vendas_f.columns
+        else float(len(vendas_f))
+    )
+    total_vgv_realizado = _sum_col_num(vendas_f, "_vgv_venda", 0.0)
 
     # -------------------------------------------------------------------------
     # FUNIL IDEAL E ENGENHARIA REVERSA (dois funis lado a lado)
@@ -13873,6 +13952,7 @@ def main() -> None:
     df_metas = preparar_metas_painel(df_metas_raw)
     df_vendas_painel, origem_vp = _ler_dado_painel("vendas_painel", cred_fp)
     if not df_vendas_painel.empty:
+        df_vendas_painel = assegurar_metricas_vendas(df_vendas_painel)
         df_vendas = df_vendas_painel.copy()
         col_contrato_gerado = (
             str(manifest.get("col_contrato_gerado") or "").strip()
@@ -13902,7 +13982,7 @@ def main() -> None:
         for aviso in prep.get("avisos") or []:
             st.warning(aviso)
         df_vendas = prep["df_vendas"]
-        df_vendas_painel = prep["df_vendas_painel"]
+        df_vendas_painel = assegurar_metricas_vendas(prep["df_vendas_painel"])
         col_contrato_gerado = prep.get("col_contrato_gerado")
         col_canal = prep.get("col_canal")
         col_data_venda = prep.get("col_data_venda")

@@ -446,6 +446,22 @@ def test_cache_manifest():
     vc.limpar_cache_local()
 
 
+def test_metricas_vendas_cache_sheets():
+    """Colunas numéricas como string (Google Sheets) não devem quebrar KPIs."""
+    df = _df_vendas()
+    df["_qtd_venda"] = df["_qtd_venda"].astype(str)
+    df["_vgv_venda"] = df["_vgv_venda"].astype(str)
+    df["_peso_coord"] = df["_peso_coord"].astype(str)
+    norm = v.assegurar_metricas_vendas(df)
+    assert pd.api.types.is_numeric_dtype(norm["_qtd_venda"])
+    col_c = "Contrato Gerado Em"
+    qtd, vgv = v.realizado_vendas_periodo(
+        norm, col_c, date(2026, 8, 1), date(2026, 8, 21),
+    )
+    assert qtd >= 0
+    assert vgv >= 0
+
+
 def main():
     print("=" * 60)
     print("Smoke tests — velocimetro (transformações)")
@@ -466,6 +482,7 @@ def main():
         ("Comparativos MTD", test_comparativos_mtd),
         ("Preparar vendas painel", test_preparar_vendas_painel),
         ("Cache manifest", test_cache_manifest),
+        ("Métricas vendas cache Sheets", test_metricas_vendas_cache_sheets),
     ]
     for name, fn in tests:
         run(name, fn)
