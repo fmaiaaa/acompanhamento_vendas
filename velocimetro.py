@@ -66,6 +66,7 @@ except ImportError:
             _fb_mod = importlib.util.module_from_spec(_spec)
             assert _spec.loader is not None
             _spec.loader.exec_module(_fb_mod)
+            vfp = _fb_mod  # type: ignore
             carregar_feedbacks_comerciais = _fb_mod.carregar_feedbacks_comerciais
             carregar_previsao_vendas = _fb_mod.carregar_previsao_vendas
             render_aba_feedbacks_comerciais = _fb_mod.render_aba_feedbacks_comerciais
