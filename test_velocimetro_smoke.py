@@ -462,6 +462,24 @@ def test_metricas_vendas_cache_sheets():
     assert vgv >= 0
 
 
+def test_metas_fallback_vgv_e_mes():
+    legacy = pd.DataFrame({
+        "Empreendimento": ["Emp A", "Emp B"],
+        "Coordenador": ["Dutra", "Leo"],
+        "Mes_Num": [8, 8],
+        "Meta_Qtd": [10.0, 20.0],
+        "Meta_VGV": [1_000_000.0, 2_000_000.0],
+    })
+    adapt = v.adaptar_metas_melt_para_coord(legacy, 2026)
+    assert "Meta VGV Desafio (Caixa Único)" in adapt.columns
+    total = v.soma_meta_vgv_coord(adapt, 8, 2026, "Desafio")
+    assert total == 3_000_000.0
+    assert v._parse_mes_num("Agosto") == 8
+    assert v._parse_mes_num("8") == 8
+    m = v._filtrar_metas_mes_ano(adapt, 8, 2026)
+    assert len(m) == 2
+
+
 def main():
     print("=" * 60)
     print("Smoke tests — velocimetro (transformações)")
@@ -483,6 +501,7 @@ def main():
         ("Preparar vendas painel", test_preparar_vendas_painel),
         ("Cache manifest", test_cache_manifest),
         ("Métricas vendas cache Sheets", test_metricas_vendas_cache_sheets),
+        ("Metas fallback VGV e mês", test_metas_fallback_vgv_e_mes),
     ]
     for name, fn in tests:
         run(name, fn)

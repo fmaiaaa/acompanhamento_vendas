@@ -8926,11 +8926,7 @@ def soma_meta_vgv_coord(
     col = coluna_meta_vgv_coord(df_metas, tipo_meta_col)
     if not col or df_metas is None or df_metas.empty:
         return 0.0
-    m = df_metas.copy()
-    if "Mes_Num" in m.columns:
-        m = m[m["Mes_Num"] == mes]
-    if "Ano_Num" in m.columns:
-        m = m[m["Ano_Num"] == ano]
+    m = _filtrar_metas_mes_ano(df_metas, mes, ano)
     if coordenadores:
         m = m[m["Coordenador"].astype(str).str.strip().isin(coordenadores)]
     if empreendimentos:
@@ -8957,10 +8953,16 @@ def adaptar_metas_melt_para_coord(
     if "Coordenador" not in out.columns:
         out["Coordenador"] = "Não Informado"
     if "Mes_Num" not in out.columns and "Mes" in out.columns:
-        out["Mes_Num"] = pd.to_numeric(out["Mes"], errors="coerce").fillna(0).astype(int)
+        out["Mes_Num"] = out["Mes"].map(_parse_mes_num)
+    elif "Mes_Num" in out.columns:
+        out["Mes_Num"] = out["Mes_Num"].map(_parse_mes_num)
     out["Ano_Num"] = ano
     qtd = pd.to_numeric(
         out["Meta_Qtd"] if "Meta_Qtd" in out.columns else 0,
+        errors="coerce",
+    ).fillna(0.0)
+    vgv = pd.to_numeric(
+        out["Meta_VGV"] if "Meta_VGV" in out.columns else 0,
         errors="coerce",
     ).fillna(0.0)
     for (ind, tipo), col_name in COL_META_MAP.items():
@@ -8975,25 +8977,57 @@ def adaptar_metas_melt_para_coord(
                 out[col_name] = qtd * 0.7
         else:
             out[col_name] = 0.0
+    for tipo, col_name in COL_META_VGV_MAP.items():
+        if col_name in out.columns:
+            continue
+        if tipo == "Desafio":
+            out[col_name] = vgv
+        elif tipo == "BP":
+            out[col_name] = vgv * 0.85
+        elif tipo == "BP 70%":
+            out[col_name] = vgv * 0.7
     return out
+
+
+def _metas_coord_tem_dados_mes(df: pd.DataFrame, mes: int, ano: int) -> bool:
+    if df is None or df.empty:
+        return False
+    m = _filtrar_metas_mes_ano(df, mes, ano)
+    if m.empty:
+        return False
+    for col in list(COL_META_VGV_MAP.values()) + [c for c in COL_META_MAP.values() if c.startswith("Meta Vendas")]:
+        if col in m.columns and float(pd.to_numeric(m[col], errors="coerce").fillna(0.0).sum()) > 0:
+            return True
+    if "Meta_VGV" in m.columns and float(pd.to_numeric(m["Meta_VGV"], errors="coerce").fillna(0.0).sum()) > 0:
+        return True
+    if "Meta_Qtd" in m.columns and float(pd.to_numeric(m["Meta_Qtd"], errors="coerce").fillna(0.0).sum()) > 0:
+        return True
+    return False
 
 
 def carregar_metas_coordenadores_com_fallback(
     cred_fp: str,
     df_metas_legacy: Optional[pd.DataFrame] = None,
     ano_meta: Optional[int] = None,
+    mes_meta: Optional[int] = None,
 ) -> Tuple[pd.DataFrame, Optional[str]]:
     aviso: Optional[str] = None
+    df_coord: Optional[pd.DataFrame] = None
     try:
-        df = carregar_metas_coordenadores(cred_fp)
-        if df is not None and not df.empty:
-            return df, None
-        aviso = "Planilha Metas Coordenadores vazia ou inacessível."
+        df_coord = carregar_metas_coordenadores(cred_fp)
+        if df_coord is not None and not df_coord.empty:
+            mes_ref = int(mes_meta or date.today().month)
+            ano_ref = int(ano_meta or date.today().year)
+            if _metas_coord_tem_dados_mes(df_coord, mes_ref, ano_ref):
+                return df_coord, None
+            aviso = "Metas coordenadores sem valores para o mês/ano selecionado."
     except Exception as exc:
         aviso = str(exc)
     if df_metas_legacy is not None and not df_metas_legacy.empty:
         return adaptar_metas_melt_para_coord(df_metas_legacy, ano_meta), aviso
-    return pd.DataFrame(), aviso
+    if df_coord is not None and not df_coord.empty:
+        return df_coord, aviso
+    return pd.DataFrame(), aviso or "Planilha Metas Coordenadores vazia ou inacessível."
 
 ALIASES_ESTOQUE_VFK = ["Valor Final com Kit", "ValorFinalComKit__c", "Valor Final Com Kit"]
 ALIASES_ESTOQUE_AVAL = ["Valor de Avaliação Bancária", "Valor de Avaliação", "Valor_de_Avalia_o_Banc_ria__c"]
@@ -9109,7 +9143,7 @@ def carregar_metas_coordenadores(_cred_fp: str) -> pd.DataFrame:
         if str(col).startswith("Meta VGV"):
             df[col] = df[col].map(_parse_num_br)
     if "Mes" in df.columns:
-        df["Mes_Num"] = pd.to_numeric(df["Mes"], errors="coerce").fillna(0).astype(int)
+        df["Mes_Num"] = df["Mes"].map(_parse_mes_num)
     if "Ano" in df.columns:
         df["Ano_Num"] = pd.to_numeric(df["Ano"], errors="coerce").fillna(0).astype(int)
     return df
@@ -9142,7 +9176,7 @@ def carregar_metas_canal(_cred_fp: str) -> pd.DataFrame:
         if col in df.columns:
             df[col] = df[col].map(_parse_num_br)
     if "Mes" in df.columns:
-        df["Mes_Num"] = pd.to_numeric(df["Mes"], errors="coerce").fillna(0).astype(int)
+        df["Mes_Num"] = df["Mes"].map(_parse_mes_num)
     if "Ano" in df.columns:
         df["Ano_Num"] = pd.to_numeric(df["Ano"], errors="coerce").fillna(0).astype(int)
     if "Canal" in df.columns:
@@ -9150,18 +9184,115 @@ def carregar_metas_canal(_cred_fp: str) -> pd.DataFrame:
     return df
 
 
+def _parse_mes_num(val: Any) -> int:
+    """Converte mês numérico ou nome (ex.: 'Agosto', '8') para 1–12."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return 0
+    s = str(val).strip().lower()
+    if not s:
+        return 0
+    if s.isdigit():
+        n = int(s)
+        return n if 1 <= n <= 12 else 0
+    meses = {
+        "jan": 1, "janeiro": 1,
+        "fev": 2, "fevereiro": 2,
+        "mar": 3, "março": 3, "marco": 3,
+        "abr": 4, "abril": 4,
+        "mai": 5, "maio": 5,
+        "jun": 6, "junho": 6,
+        "jul": 7, "julho": 7,
+        "ago": 8, "agosto": 8,
+        "set": 9, "setembro": 9,
+        "out": 10, "outubro": 10,
+        "nov": 11, "novembro": 11,
+        "dez": 12, "dezembro": 12,
+    }
+    if s in meses:
+        return meses[s]
+    for nome, num in meses.items():
+        if s.startswith(nome):
+            return num
+    dig = re.search(r"(\d+)", s)
+    if dig:
+        n = int(dig.group(1))
+        return n if 1 <= n <= 12 else 0
+    return 0
+
+
+def _filtrar_metas_mes_ano(df: pd.DataFrame, mes: int, ano: int) -> pd.DataFrame:
+    """Filtra metas por mês/ano com fallback quando o recorte exato está vazio."""
+    if df is None or df.empty:
+        return df if df is not None else pd.DataFrame()
+    m = df.copy()
+    tem_mes = "Mes_Num" in m.columns
+    tem_ano = "Ano_Num" in m.columns
+    if tem_mes and tem_ano:
+        exato = m[(m["Mes_Num"] == mes) & (m["Ano_Num"] == ano)]
+        if not exato.empty:
+            return exato
+        por_mes = m[m["Mes_Num"] == mes]
+        if not por_mes.empty:
+            max_ano = int(pd.to_numeric(por_mes["Ano_Num"], errors="coerce").max())
+            if max_ano > 0:
+                return por_mes[por_mes["Ano_Num"] == max_ano]
+            return por_mes
+        por_ano = m[m["Ano_Num"] == ano]
+        if not por_ano.empty:
+            return por_ano
+    elif tem_mes:
+        por_mes = m[m["Mes_Num"] == mes]
+        if not por_mes.empty:
+            return por_mes
+    return m
+
+
 def coluna_meta_coord(tipo_indicador: str, tipo_meta_col: str) -> str:
     return COL_META_MAP.get((tipo_indicador, tipo_meta_col), "")
+
+
+def _empreendimentos_para_analitico(
+    filtros: "FiltrosPainelV2",
+    mapa_coord: Dict[str, str],
+    df_vendas: pd.DataFrame,
+    df_metas_fallback: Optional[pd.DataFrame] = None,
+) -> List[str]:
+    """Lista empreendimentos para tabela analítica, com fallbacks se mapa de metas vazio."""
+    v = _v()
+    emps = list(filtros.emps_sel or [])
+    if not emps:
+        emps = sorted(set(mapa_coord.keys()))
+    if not emps and df_metas_fallback is not None and not df_metas_fallback.empty:
+        m = _filtrar_metas_mes_ano(df_metas_fallback, filtros.mes_meta, filtros.ano_meta)
+        if "Empreendimento" in m.columns:
+            emps = sorted(
+                {v._limpar_emp(e) for e in m["Empreendimento"].dropna() if v._limpar_emp(e)}
+            )
+    if not emps and df_vendas is not None and not df_vendas.empty and "Empreendimento" in df_vendas.columns:
+        emps = sorted(
+            {v._limpar_emp(e) for e in df_vendas["Empreendimento"].dropna() if v._limpar_emp(e)}
+        )
+    if filtros.coordenadores_sel:
+        coords = set(filtros.coordenadores_sel)
+        if mapa_coord:
+            emps = sorted(
+                e for e in emps
+                if mapa_coord.get(v._limpar_emp(e), "") in coords
+            )
+        elif df_metas_fallback is not None and not df_metas_fallback.empty:
+            m = _filtrar_metas_mes_ano(df_metas_fallback, filtros.mes_meta, filtros.ano_meta)
+            if "Coordenador" in m.columns and "Empreendimento" in m.columns:
+                mask = m["Coordenador"].astype(str).str.strip().isin(coords)
+                emps = sorted(
+                    {v._limpar_emp(e) for e in m.loc[mask, "Empreendimento"].dropna() if v._limpar_emp(e)}
+                )
+    return emps
 
 
 def mapa_emp_coordenador(df_metas: pd.DataFrame, mes: int, ano: int) -> Dict[str, str]:
     if df_metas is None or df_metas.empty:
         return {}
-    m = df_metas.copy()
-    if "Mes_Num" in m.columns:
-        m = m[m["Mes_Num"] == mes]
-    if "Ano_Num" in m.columns:
-        m = m[m["Ano_Num"] == ano]
+    m = _filtrar_metas_mes_ano(df_metas, mes, ano)
     out: Dict[str, str] = {}
     v = _v()
     for _, row in m.iterrows():
@@ -9181,11 +9312,7 @@ def meta_canal_vgv_vendas(
     """Retorna (meta_vgv, meta_vendas) escalados pelo fator do canal sobre linha RIO."""
     if df_canal is None or df_canal.empty:
         return 0.0, 0.0
-    base = df_canal.copy()
-    if "Mes_Num" in base.columns:
-        base = base[base["Mes_Num"] == mes]
-    if "Ano_Num" in base.columns:
-        base = base[base["Ano_Num"] == ano]
+    base = _filtrar_metas_mes_ano(df_canal, mes, ano)
     if base.empty or "Canal" not in base.columns:
         return 0.0, 0.0
     rio = base[base["Canal"].astype(str).str.strip().str.upper() == "RIO"]
@@ -9209,11 +9336,7 @@ def soma_meta_coord(
     col = coluna_meta_coord(tipo_indicador, tipo_meta_col)
     if not col or df_metas is None or df_metas.empty or col not in df_metas.columns:
         return 0.0
-    m = df_metas.copy()
-    if "Mes_Num" in m.columns:
-        m = m[m["Mes_Num"] == mes]
-    if "Ano_Num" in m.columns:
-        m = m[m["Ano_Num"] == ano]
+    m = _filtrar_metas_mes_ano(df_metas, mes, ano)
     if coordenadores:
         m = m[m["Coordenador"].astype(str).str.strip().isin(coordenadores)]
     if empreendimentos:
@@ -10551,8 +10674,9 @@ def render_painel_metas_v2(
     """Renderiza seção v2: estoque, velocímetros, tabela analítica."""
     v = _v()
     ano_fb = filtros_glob.ano_meta if filtros_glob else date.today().year
+    mes_fb = filtros_glob.mes_meta if filtros_glob else date.today().month
     df_metas_coord, aviso_coord = carregar_metas_coordenadores_com_fallback(
-        cred_fp, df_metas_fallback, ano_fb,
+        cred_fp, df_metas_fallback, ano_fb, mes_fb,
     )
     try:
         df_canal = carregar_metas_canal(cred_fp)
@@ -10640,12 +10764,9 @@ def render_painel_metas_v2(
         col_contrato_gerado or "", mapa_coord,
     )
 
-    emps_tab = filtros.emps_sel or sorted(set(mapa_coord.keys()))
-    if filtros.coordenadores_sel:
-        emps_tab = sorted(
-            e for e in emps_tab
-            if mapa_coord.get(v._limpar_emp(e), "") in filtros.coordenadores_sel
-        )
+    emps_tab = _empreendimentos_para_analitico(
+        filtros, mapa_coord, df_vendas, df_metas_fallback,
+    )
     tab = montar_tabela_analitica(
         emps_tab[:80],
         enr, resumo_est,
@@ -12952,8 +13073,9 @@ def render_dashboard_comercial(
     """Ponto de entrada do dashboard comercial."""
     v = _v()
     ano_fb = filtros_glob.ano_meta if filtros_glob else date.today().year
+    mes_fb = filtros_glob.mes_meta if filtros_glob else date.today().month
     df_metas_coord, aviso_coord = carregar_metas_coordenadores_com_fallback(
-        cred_fp, df_metas_fallback, ano_fb,
+        cred_fp, df_metas_fallback, ano_fb, mes_fb,
     )
     try:
         df_canal = carregar_metas_canal(cred_fp)
@@ -13531,7 +13653,7 @@ def _corpo_painel_metas(
     )
 
     df_metas_coord, _ = carregar_metas_coordenadores_com_fallback(
-        cred_fp, df_metas, filtros_v2.ano_meta,
+        cred_fp, df_metas, filtros_v2.ano_meta, filtros_v2.mes_meta,
     )
     try:
         df_canal = carregar_metas_canal(cred_fp)
@@ -13714,10 +13836,18 @@ def _corpo_painel_metas(
             df_vendas_funil = pd.DataFrame()
             serie_vendas_funil = None
             try:
-                df_vendas_funil = df_vendas_raw.copy()
-                df_vendas_funil = normalizar_colunas(df_vendas_funil)
+                base_ven = (
+                    df_vendas_raw.copy()
+                    if df_vendas_raw is not None and not df_vendas_raw.empty
+                    else df_vendas_painel.copy()
+                )
+                if base_ven.empty:
+                    raise RuntimeError("Sem vendas no cache.")
+                df_vendas_funil = normalizar_colunas(base_ven)
                 n_ven_bruto = len(df_vendas_funil)
-                df_vendas_funil = filtrar_vendas_comerciais(df_vendas_funil)
+                from_raw = df_vendas_raw is not None and not df_vendas_raw.empty
+                if from_raw:
+                    df_vendas_funil = filtrar_vendas_comerciais(df_vendas_funil)
                 n_ven_comercial = len(df_vendas_funil)
                 df_vendas_funil = deduplicar_vendas_funil(df_vendas_funil)
                 st.caption(
@@ -13989,12 +14119,17 @@ def main() -> None:
 
     st.caption(f"Base de vendas: {origem_vendas_painel} · Google Sheets (sem Salesforce ao vivo)")
 
-    df_metas_coord_g, _ = carregar_metas_coordenadores_com_fallback(
-        cred_fp, df_metas, date.today().year,
+    df_metas_coord_opts, _ = carregar_metas_coordenadores_com_fallback(
+        cred_fp, df_metas, date.today().year, date.today().month,
     )
     filtros_glob = render_filtros_globais(
-        df_metas_coord_g, df_vendas_painel, df_metas_fallback=df_metas,
+        df_metas_coord_opts, df_vendas_painel, df_metas_fallback=df_metas,
     )
+    df_metas_coord_g, aviso_metas = carregar_metas_coordenadores_com_fallback(
+        cred_fp, df_metas, filtros_glob.ano_meta, filtros_glob.mes_meta,
+    )
+    if aviso_metas:
+        st.warning(f"Metas coordenadores: {aviso_metas}")
 
     df_estoque_kpi = pd.DataFrame()
     try:
