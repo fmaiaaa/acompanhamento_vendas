@@ -2124,12 +2124,27 @@ def _rotulo_coluna_tabela(nome: str) -> str:
     return chave.replace("_", " ")
 
 
+def _nomes_colunas_unicos(nomes: List[str]) -> List[str]:
+    """Evita colunas duplicadas após renomear (quebra Styler do pandas/Streamlit)."""
+    vistos: Dict[str, int] = {}
+    out: List[str] = []
+    for nome in nomes:
+        base = str(nome or "").strip() or "Coluna"
+        n = vistos.get(base, 0)
+        if n == 0:
+            out.append(base)
+        else:
+            out.append(f"{base} ({n + 1})")
+        vistos[base] = n + 1
+    return out
+
+
 def preparar_df_tabela_exibicao(df: pd.DataFrame) -> pd.DataFrame:
     """Renomeia estatísticas por extenso e formata números (0 ou 1 decimal)."""
     if df is None or df.empty:
         return df if df is not None else pd.DataFrame()
     out = df.copy()
-    novos_nomes = [_rotulo_coluna_tabela(c) for c in out.columns]
+    novos_nomes = _nomes_colunas_unicos([_rotulo_coluna_tabela(c) for c in out.columns])
     out.columns = novos_nomes
     for col_orig, col_novo in zip(df.columns, novos_nomes):
         if _coluna_tabela_texto(col_orig):
@@ -2169,12 +2184,43 @@ def _exibir_dataframe_preparada(
     ocultar_indice: bool = True,
 ) -> None:
     cfg = _config_colunas_tabela(disp.columns)
-    st.dataframe(
-        styler if styler is not None else disp,
-        use_container_width=True,
-        hide_index=ocultar_indice,
-        column_config=cfg,
-    )
+    try:
+        st.dataframe(
+            styler if styler is not None else disp,
+            use_container_width=True,
+            hide_index=ocultar_indice,
+            column_config=cfg,
+        )
+    except (KeyError, ValueError, TypeError):
+        st.dataframe(
+            disp,
+            use_container_width=True,
+            hide_index=ocultar_indice,
+            column_config=cfg,
+        )
+
+
+def _styler_desenquadramento(disp: pd.DataFrame, col_display: str) -> Optional[Any]:
+    """Destaca desenquadramento > 50%; tolerante a colunas duplicadas / Streamlit."""
+    if disp is None or disp.empty or col_display not in disp.columns:
+        return None
+
+    def _style_desenq(val: Any) -> str:
+        try:
+            s = str(val).replace(",", ".")
+            if float(s) > 50:
+                return "color: #cb0935; font-weight: bold"
+        except (TypeError, ValueError):
+            pass
+        return ""
+
+    try:
+        base = disp.loc[:, ~disp.columns.duplicated()].copy()
+        if col_display not in base.columns:
+            return None
+        return base.style.map(_style_desenq, subset=[col_display])
+    except (KeyError, ValueError, TypeError):
+        return None
 
 
 def exibir_tabela(
@@ -10366,19 +10412,7 @@ def render_tabela_analitica(df: pd.DataFrame) -> None:
 
     disp = _ordenar_empreendimento_primeiro(preparar_df_tabela_exibicao(df))
     col_desenq = ROTULOS_COLUNAS_TABELA["Desenquadramento_Pct"]
-
-    def _style_desenq(val: Any) -> str:
-        try:
-            s = str(val).replace(",", ".")
-            if float(s) > 50:
-                return "color: #cb0935; font-weight: bold"
-        except (TypeError, ValueError):
-            pass
-        return ""
-
-    styler = None
-    if col_desenq in disp.columns:
-        styler = disp.style.map(_style_desenq, subset=[col_desenq])
+    styler = _styler_desenquadramento(disp, col_desenq)
     _exibir_dataframe_preparada(disp, styler=styler)
 
 
@@ -10775,14 +10809,19 @@ def render_painel_metas_v2(
         total_unidades_v2 = {}
 
     if filtros.tipo_indicador == "vendas":
-        meta_vgv, meta_qtd = meta_canal_vgv_vendas(
+        meta_vgv, meta_qtd_canal = meta_canal_vgv_vendas(
             df_canal, filtros.mes_meta, filtros.ano_meta, filtros.canal_meta,
         )
-        if meta_qtd <= 0:
-            meta_qtd = soma_meta_coord(
-                df_metas_coord, filtros.mes_meta, filtros.ano_meta,
-                "vendas", filtros.tipo_meta_col,
+        meta_qtd = soma_meta_coord(
+            df_metas_coord, filtros.mes_meta, filtros.ano_meta,
+            "vendas", filtros.tipo_meta_col,
+        )
+        if meta_vgv <= 0:
+            meta_vgv = soma_meta_vgv_coord(
+                df_metas_coord, filtros.mes_meta, filtros.ano_meta, filtros.tipo_meta_col,
             )
+        if meta_qtd <= 0 and 0 < meta_qtd_canal <= 5_000:
+            meta_qtd = meta_qtd_canal
         real_qtd, real_vgv = realizado_vendas_periodo(
             df_vendas, col_contrato_gerado or "", filtros.data_ini, filtros.data_fim,
             filtros.emps_sel or None,
@@ -13725,14 +13764,20 @@ def _corpo_painel_metas(
         df_canal = pd.DataFrame()
 
     if filtros_v2.tipo_indicador == "vendas":
-        total_meta_vgv, total_meta_qtd = meta_canal_vgv_vendas(
+        total_meta_vgv, total_meta_qtd_canal = meta_canal_vgv_vendas(
             df_canal, filtros_v2.mes_meta, filtros_v2.ano_meta, filtros_v2.canal_meta,
         )
-        if total_meta_qtd <= 0:
-            total_meta_qtd = soma_meta_coord(
+        total_meta_qtd = soma_meta_coord(
+            df_metas_coord, filtros_v2.mes_meta, filtros_v2.ano_meta,
+            "vendas", filtros_v2.tipo_meta_col, filtros_v2.emps_sel or None,
+        )
+        if total_meta_vgv <= 0:
+            total_meta_vgv = soma_meta_vgv_coord(
                 df_metas_coord, filtros_v2.mes_meta, filtros_v2.ano_meta,
-                "vendas", filtros_v2.tipo_meta_col, filtros_v2.emps_sel or None,
+                filtros_v2.tipo_meta_col, empreendimentos=filtros_v2.emps_sel or None,
             )
+        if total_meta_qtd <= 0 and 0 < total_meta_qtd_canal <= 5_000:
+            total_meta_qtd = total_meta_qtd_canal
     else:
         total_meta_vgv = 0.0
         total_meta_qtd = soma_meta_coord(

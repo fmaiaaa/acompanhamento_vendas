@@ -56,6 +56,15 @@ _st.session_state = MagicMock()
 _st.secrets = {"connections": {"gsheets": {}}}
 
 
+class _TextColumnMock:
+    def __init__(self, *_a, **_k):
+        pass
+
+
+_st.column_config = MagicMock()
+_st.column_config.TextColumn = _TextColumnMock
+
+
 class _ColMock:
     def __init__(self, *args, **kwargs):
         pass
@@ -491,6 +500,21 @@ def test_metas_fallback_vgv_e_mes():
     assert v._metas_coord_tem_dados_mes(coord_sem_vgv, 8, 2026)
 
 
+def test_tabela_analitica_styler():
+    df = pd.DataFrame({
+        "Empreendimento": ["Emp A", "Emp B"],
+        "Desenquadramento_Pct": [30.0, 75.0],
+        "Meta_Mes": [10.0, 20.0],
+        "Meta_Dia": [10.0, 20.0],
+    })
+    prep = v.preparar_df_tabela_exibicao(df)
+    assert prep.columns.is_unique
+    col = v.ROTULOS_COLUNAS_TABELA["Desenquadramento_Pct"]
+    styler = v._styler_desenquadramento(prep, col)
+    assert styler is not None or col not in prep.columns
+    v.render_tabela_analitica(df)
+
+
 def main():
     print("=" * 60)
     print("Smoke tests — velocimetro (transformações)")
@@ -513,6 +537,7 @@ def main():
         ("Cache manifest", test_cache_manifest),
         ("Métricas vendas cache Sheets", test_metricas_vendas_cache_sheets),
         ("Metas fallback VGV e mês", test_metas_fallback_vgv_e_mes),
+        ("Tabela analítica styler", test_tabela_analitica_styler),
     ]
     for name, fn in tests:
         run(name, fn)
