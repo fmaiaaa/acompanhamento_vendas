@@ -31,24 +31,11 @@ import streamlit as st
 
 import velocimetro_cache as vc
 
-
-def _st_dialog_decorator(title: str = "", **kwargs):
-    """Compatível com Streamlit antigo e imports offline (mock sem st.dialog)."""
-    dialog_fn = getattr(st, "dialog", None)
-    if callable(dialog_fn):
-        return dialog_fn(title, **kwargs)
-
-    def _identity(fn):
-        return fn
-
-    return _identity
-
 _mod_dir = Path(__file__).resolve().parent
 if str(_mod_dir) not in sys.path:
     sys.path.insert(0, str(_mod_dir))
 
 try:
-    import velocimetro_feedbacks_previsao as vfp
     from velocimetro_feedbacks_previsao import (
         carregar_feedbacks_comerciais,
         carregar_previsao_vendas,
@@ -66,7 +53,6 @@ except ImportError:
             _fb_mod = importlib.util.module_from_spec(_spec)
             assert _spec.loader is not None
             _spec.loader.exec_module(_fb_mod)
-            vfp = _fb_mod  # type: ignore
             carregar_feedbacks_comerciais = _fb_mod.carregar_feedbacks_comerciais
             carregar_previsao_vendas = _fb_mod.carregar_previsao_vendas
             render_aba_feedbacks_comerciais = _fb_mod.render_aba_feedbacks_comerciais
@@ -95,7 +81,6 @@ SPREADSHEET_METAS_COORD_ID = SPREADSHEET_CONSOLIDADA_ID
 WS_METAS_COORD = "Metas Coordenadores Comerciais"
 SPREADSHEET_BASES_IVAN_ID = SPREADSHEET_CONSOLIDADA_ID
 WS_CANAL = "Canal"
-WS_CANAL_ALIASES = ("Canal", "Cópia de Canal", "Copia de Canal", "Cópia de canal")
 
 # Funil comercial — mesma planilha consolidada
 SPREADSHEET_FUNIL_ID = SPREADSHEET_CONSOLIDADA_ID
@@ -1582,7 +1567,6 @@ def ler_aba_gsheets(
     service_account_info: Dict[str, Any],
     spreadsheet_id: str,
     worksheet: str,
-    aliases: Optional[Tuple[str, ...]] = None,
 ) -> pd.DataFrame:
     import gspread
     from google.oauth2.service_account import Credentials
@@ -1593,37 +1577,20 @@ def ler_aba_gsheets(
     sh = gc.open_by_key(spreadsheet_id.strip())
     nome = worksheet.strip()
 
-    def _resolver_aba() -> Any:
-        candidatos: List[str] = [nome]
-        if aliases:
-            candidatos.extend(list(aliases))
-        vistos: set = set()
-        ordem: List[str] = []
-        for c in candidatos:
-            c = c.strip()
-            if not c or c.lower() in vistos:
-                continue
-            vistos.add(c.lower())
-            ordem.append(c)
-        titulos_map = {w.title.strip().lower(): w for w in sh.worksheets()}
-        for cand in ordem:
-            cl = cand.lower()
-            if cl in titulos_map:
-                return titulos_map[cl]
-        for cand in ordem:
-            cl = cand.lower()
-            for tl, w in titulos_map.items():
-                if tl == cl:
-                    return w
-            for tl, w in titulos_map.items():
-                if tl.endswith(cl) or cl in tl:
-                    return w
-        titulos = [w.title for w in sh.worksheets()]
-        raise gspread.WorksheetNotFound(
-            f"Aba {nome!r} não encontrada. Abas: {titulos}"
-        )
+    def _abrir() -> Any:
+        try:
+            return sh.worksheet(nome)
+        except gspread.WorksheetNotFound:
+            for w in sh.worksheets():
+                if w.title.strip() == nome: return w
+            for w in sh.worksheets():
+                if w.title.strip().lower() == nome.lower(): return w
+            titulos = [w.title for w in sh.worksheets()]
+            raise gspread.WorksheetNotFound(
+                f"Aba {nome!r} não encontrada. Abas: {titulos}"
+            ) from None
 
-    ws = _resolver_aba()
+    ws = _abrir()
     return valores_para_dataframe(ws.get_all_values())
 
 
@@ -1633,16 +1600,11 @@ def _fingerprint_credenciais(info: Dict[str, Any]) -> str:
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def ler_planilha_aba_df(
-    spreadsheet_id: str,
-    worksheet: str,
-    _cred_fp: str,
-    aliases: Optional[Tuple[str, ...]] = None,
-) -> pd.DataFrame:
+def ler_planilha_aba_df(spreadsheet_id: str, worksheet: str, _cred_fp: str) -> pd.DataFrame:
     raw = _secrets_connections_gsheets()
     info = montar_service_account_info(raw)
     if not info: raise ValueError("Credenciais [connections.gsheets] ausentes ou incompleta.")
-    return ler_aba_gsheets(info, spreadsheet_id, worksheet, aliases=aliases)
+    return ler_aba_gsheets(info, spreadsheet_id, worksheet)
 
 
 def _cabecalho_tem_coluna(header: List[str], aliases: List[str]) -> bool:
@@ -2126,27 +2088,12 @@ def _rotulo_coluna_tabela(nome: str) -> str:
     return chave.replace("_", " ")
 
 
-def _nomes_colunas_unicos(nomes: List[str]) -> List[str]:
-    """Evita colunas duplicadas após renomear (quebra Styler do pandas/Streamlit)."""
-    vistos: Dict[str, int] = {}
-    out: List[str] = []
-    for nome in nomes:
-        base = str(nome or "").strip() or "Coluna"
-        n = vistos.get(base, 0)
-        if n == 0:
-            out.append(base)
-        else:
-            out.append(f"{base} ({n + 1})")
-        vistos[base] = n + 1
-    return out
-
-
 def preparar_df_tabela_exibicao(df: pd.DataFrame) -> pd.DataFrame:
     """Renomeia estatísticas por extenso e formata números (0 ou 1 decimal)."""
     if df is None or df.empty:
         return df if df is not None else pd.DataFrame()
     out = df.copy()
-    novos_nomes = _nomes_colunas_unicos([_rotulo_coluna_tabela(c) for c in out.columns])
+    novos_nomes = [_rotulo_coluna_tabela(c) for c in out.columns]
     out.columns = novos_nomes
     for col_orig, col_novo in zip(df.columns, novos_nomes):
         if _coluna_tabela_texto(col_orig):
@@ -2186,43 +2133,12 @@ def _exibir_dataframe_preparada(
     ocultar_indice: bool = True,
 ) -> None:
     cfg = _config_colunas_tabela(disp.columns)
-    try:
-        st.dataframe(
-            styler if styler is not None else disp,
-            use_container_width=True,
-            hide_index=ocultar_indice,
-            column_config=cfg,
-        )
-    except (KeyError, ValueError, TypeError):
-        st.dataframe(
-            disp,
-            use_container_width=True,
-            hide_index=ocultar_indice,
-            column_config=cfg,
-        )
-
-
-def _styler_desenquadramento(disp: pd.DataFrame, col_display: str) -> Optional[Any]:
-    """Destaca desenquadramento > 50%; tolerante a colunas duplicadas / Streamlit."""
-    if disp is None or disp.empty or col_display not in disp.columns:
-        return None
-
-    def _style_desenq(val: Any) -> str:
-        try:
-            s = str(val).replace(",", ".")
-            if float(s) > 50:
-                return "color: #cb0935; font-weight: bold"
-        except (TypeError, ValueError):
-            pass
-        return ""
-
-    try:
-        base = disp.loc[:, ~disp.columns.duplicated()].copy()
-        if col_display not in base.columns:
-            return None
-        return base.style.map(_style_desenq, subset=[col_display])
-    except (KeyError, ValueError, TypeError):
-        return None
+    st.dataframe(
+        styler if styler is not None else disp,
+        use_container_width=True,
+        hide_index=ocultar_indice,
+        column_config=cfg,
+    )
 
 
 def exibir_tabela(
@@ -8995,35 +8911,21 @@ def soma_meta_vgv_coord(
     coordenadores: Optional[List[str]] = None,
     empreendimentos: Optional[List[str]] = None,
 ) -> float:
-    if df_metas is None or df_metas.empty:
-        return 0.0
     col = coluna_meta_vgv_coord(df_metas, tipo_meta_col)
-    m = _filtrar_metas_mes_ano(df_metas, mes, ano)
+    if not col or df_metas is None or df_metas.empty:
+        return 0.0
+    m = df_metas.copy()
+    if "Mes_Num" in m.columns:
+        m = m[m["Mes_Num"] == mes]
+    if "Ano_Num" in m.columns:
+        m = m[m["Ano_Num"] == ano]
     if coordenadores:
         m = m[m["Coordenador"].astype(str).str.strip().isin(coordenadores)]
     if empreendimentos:
         v = _v()
         emps_norm = {v._limpar_emp(e) for e in empreendimentos}
         m = m[m["Empreendimento"].map(lambda x: v._limpar_emp(x) in emps_norm)]
-    total = 0.0
-    if col and col in m.columns:
-        total = float(pd.to_numeric(m[col], errors="coerce").fillna(0.0).sum())
-    if total <= 0 and "Meta_VGV" in df_metas.columns:
-        m2 = _filtrar_metas_mes_ano(df_metas, mes, ano)
-        if coordenadores:
-            m2 = m2[m2["Coordenador"].astype(str).str.strip().isin(coordenadores)]
-        if empreendimentos:
-            v = _v()
-            emps_norm = {v._limpar_emp(e) for e in empreendimentos}
-            m2 = m2[m2["Empreendimento"].map(lambda x: v._limpar_emp(x) in emps_norm)]
-        vgv = float(pd.to_numeric(m2["Meta_VGV"], errors="coerce").fillna(0.0).sum())
-        if vgv > 0:
-            if tipo_meta_col == "BP":
-                vgv *= 0.85
-            elif tipo_meta_col == "BP 70%":
-                vgv *= 0.7
-            return vgv
-    return total
+    return float(pd.to_numeric(m[col], errors="coerce").fillna(0.0).sum())
 
 
 def adaptar_metas_melt_para_coord(
@@ -9043,16 +8945,10 @@ def adaptar_metas_melt_para_coord(
     if "Coordenador" not in out.columns:
         out["Coordenador"] = "Não Informado"
     if "Mes_Num" not in out.columns and "Mes" in out.columns:
-        out["Mes_Num"] = out["Mes"].map(_parse_mes_num)
-    elif "Mes_Num" in out.columns:
-        out["Mes_Num"] = out["Mes_Num"].map(_parse_mes_num)
+        out["Mes_Num"] = pd.to_numeric(out["Mes"], errors="coerce").fillna(0).astype(int)
     out["Ano_Num"] = ano
     qtd = pd.to_numeric(
         out["Meta_Qtd"] if "Meta_Qtd" in out.columns else 0,
-        errors="coerce",
-    ).fillna(0.0)
-    vgv = pd.to_numeric(
-        out["Meta_VGV"] if "Meta_VGV" in out.columns else 0,
         errors="coerce",
     ).fillna(0.0)
     for (ind, tipo), col_name in COL_META_MAP.items():
@@ -9067,77 +8963,25 @@ def adaptar_metas_melt_para_coord(
                 out[col_name] = qtd * 0.7
         else:
             out[col_name] = 0.0
-    for tipo, col_name in COL_META_VGV_MAP.items():
-        if col_name in out.columns:
-            continue
-        if tipo == "Desafio":
-            out[col_name] = vgv
-        elif tipo == "BP":
-            out[col_name] = vgv * 0.85
-        elif tipo == "BP 70%":
-            out[col_name] = vgv * 0.7
     return out
-
-
-def _metas_coord_tem_vgv_mes(df: pd.DataFrame, mes: int, ano: int) -> bool:
-    """True se há meta VGV > 0 no mês/ano (colunas Caixa Único ou Meta_VGV legado)."""
-    if df is None or df.empty:
-        return False
-    m = _filtrar_metas_mes_ano(df, mes, ano)
-    if m.empty:
-        return False
-    for col in COL_META_VGV_MAP.values():
-        if col in m.columns and float(pd.to_numeric(m[col], errors="coerce").fillna(0.0).sum()) > 0:
-            return True
-    if "Meta_VGV" in m.columns and float(pd.to_numeric(m["Meta_VGV"], errors="coerce").fillna(0.0).sum()) > 0:
-        return True
-    return False
-
-
-def _metas_coord_tem_dados_mes(df: pd.DataFrame, mes: int, ano: int) -> bool:
-    if df is None or df.empty:
-        return False
-    m = _filtrar_metas_mes_ano(df, mes, ano)
-    if m.empty:
-        return False
-    for col in list(COL_META_VGV_MAP.values()) + [c for c in COL_META_MAP.values() if c.startswith("Meta Vendas")]:
-        if col in m.columns and float(pd.to_numeric(m[col], errors="coerce").fillna(0.0).sum()) > 0:
-            return True
-    if "Meta_VGV" in m.columns and float(pd.to_numeric(m["Meta_VGV"], errors="coerce").fillna(0.0).sum()) > 0:
-        return True
-    if "Meta_Qtd" in m.columns and float(pd.to_numeric(m["Meta_Qtd"], errors="coerce").fillna(0.0).sum()) > 0:
-        return True
-    return False
 
 
 def carregar_metas_coordenadores_com_fallback(
     cred_fp: str,
     df_metas_legacy: Optional[pd.DataFrame] = None,
     ano_meta: Optional[int] = None,
-    mes_meta: Optional[int] = None,
 ) -> Tuple[pd.DataFrame, Optional[str]]:
     aviso: Optional[str] = None
-    df_coord: Optional[pd.DataFrame] = None
     try:
-        df_coord = carregar_metas_coordenadores(cred_fp)
-        if df_coord is not None and not df_coord.empty:
-            mes_ref = int(mes_meta or date.today().month)
-            ano_ref = int(ano_meta or date.today().year)
-            if _metas_coord_tem_vgv_mes(df_coord, mes_ref, ano_ref):
-                return df_coord, None
-            if df_metas_legacy is not None and not df_metas_legacy.empty:
-                aviso = "Metas coordenadores sem VGV — usando planilha Metas legado."
-                return adaptar_metas_melt_para_coord(df_metas_legacy, ano_meta), aviso
-            if _metas_coord_tem_dados_mes(df_coord, mes_ref, ano_ref):
-                return df_coord, "Metas coordenadores sem colunas VGV preenchidas."
-            aviso = "Metas coordenadores sem valores para o mês/ano selecionado."
+        df = carregar_metas_coordenadores(cred_fp)
+        if df is not None and not df.empty:
+            return df, None
+        aviso = "Planilha Metas Coordenadores vazia ou inacessível."
     except Exception as exc:
         aviso = str(exc)
     if df_metas_legacy is not None and not df_metas_legacy.empty:
         return adaptar_metas_melt_para_coord(df_metas_legacy, ano_meta), aviso
-    if df_coord is not None and not df_coord.empty:
-        return df_coord, aviso
-    return pd.DataFrame(), aviso or "Planilha Metas Coordenadores vazia ou inacessível."
+    return pd.DataFrame(), aviso
 
 ALIASES_ESTOQUE_VFK = ["Valor Final com Kit", "ValorFinalComKit__c", "Valor Final Com Kit"]
 ALIASES_ESTOQUE_AVAL = ["Valor de Avaliação Bancária", "Valor de Avaliação", "Valor_de_Avalia_o_Banc_ria__c"]
@@ -9189,45 +9033,6 @@ def _parse_num_br(val: Any) -> float:
     return float(v.parse_valor_br(val))
 
 
-def _sum_col_num(df: pd.DataFrame, col: str, default: float = 0.0) -> float:
-    """Soma coluna numérica tolerando strings vindas do Google Sheets."""
-    if df is None or df.empty or col not in df.columns:
-        return default
-    return float(pd.to_numeric(df[col], errors="coerce").fillna(0.0).sum())
-
-
-def assegurar_metricas_vendas(df: pd.DataFrame) -> pd.DataFrame:
-    """Garante tipos numéricos nas métricas de venda após leitura do cache Sheets."""
-    if df is None or df.empty:
-        return df
-    out = df.copy()
-    for col in ("_vgv", "_peso_coord", "_qtd_venda", "_vgv_venda"):
-        if col in out.columns:
-            out[col] = pd.to_numeric(out[col], errors="coerce")
-    if "_peso_coord" in out.columns:
-        out["_peso_coord"] = out["_peso_coord"].fillna(1.0)
-    else:
-        out["_peso_coord"] = 1.0
-    if "_vgv" in out.columns:
-        out["_vgv"] = out["_vgv"].fillna(0.0)
-    if "_qtd_venda" not in out.columns:
-        vgv_base = out["_vgv"] if "_vgv" in out.columns else 0.0
-        out["_qtd_venda"] = 1.0 * out["_peso_coord"]
-        if "_vgv_venda" not in out.columns:
-            out["_vgv_venda"] = vgv_base * out["_peso_coord"]
-    else:
-        out["_qtd_venda"] = out["_qtd_venda"].fillna(out["_peso_coord"])
-    if "_vgv_venda" not in out.columns:
-        vgv_base = out["_vgv"] if "_vgv" in out.columns else 0.0
-        out["_vgv_venda"] = vgv_base * out["_peso_coord"]
-    else:
-        out["_vgv_venda"] = out["_vgv_venda"].fillna(0.0)
-    for col in ("_mes", "_ano"):
-        if col in out.columns:
-            out[col] = pd.to_numeric(out[col], errors="coerce")
-    return out
-
-
 @st.cache_data(ttl=300, show_spinner=False)
 def carregar_metas_coordenadores(_cred_fp: str) -> pd.DataFrame:
     v = _v()
@@ -9253,7 +9058,7 @@ def carregar_metas_coordenadores(_cred_fp: str) -> pd.DataFrame:
         if str(col).startswith("Meta VGV"):
             df[col] = df[col].map(_parse_num_br)
     if "Mes" in df.columns:
-        df["Mes_Num"] = df["Mes"].map(_parse_mes_num)
+        df["Mes_Num"] = pd.to_numeric(df["Mes"], errors="coerce").fillna(0).astype(int)
     if "Ano" in df.columns:
         df["Ano_Num"] = pd.to_numeric(df["Ano"], errors="coerce").fillna(0).astype(int)
     return df
@@ -9262,9 +9067,7 @@ def carregar_metas_coordenadores(_cred_fp: str) -> pd.DataFrame:
 @st.cache_data(ttl=300, show_spinner=False)
 def carregar_metas_canal(_cred_fp: str) -> pd.DataFrame:
     v = _v()
-    df = v.ler_planilha_aba_df(
-        SPREADSHEET_BASES_IVAN_ID, WS_CANAL, _cred_fp, aliases=WS_CANAL_ALIASES,
-    )
+    df = v.ler_planilha_aba_df(SPREADSHEET_BASES_IVAN_ID, WS_CANAL, _cred_fp)
     df = v.normalizar_colunas(df)
     if df.empty:
         return df
@@ -9288,7 +9091,7 @@ def carregar_metas_canal(_cred_fp: str) -> pd.DataFrame:
         if col in df.columns:
             df[col] = df[col].map(_parse_num_br)
     if "Mes" in df.columns:
-        df["Mes_Num"] = df["Mes"].map(_parse_mes_num)
+        df["Mes_Num"] = pd.to_numeric(df["Mes"], errors="coerce").fillna(0).astype(int)
     if "Ano" in df.columns:
         df["Ano_Num"] = pd.to_numeric(df["Ano"], errors="coerce").fillna(0).astype(int)
     if "Canal" in df.columns:
@@ -9296,115 +9099,18 @@ def carregar_metas_canal(_cred_fp: str) -> pd.DataFrame:
     return df
 
 
-def _parse_mes_num(val: Any) -> int:
-    """Converte mês numérico ou nome (ex.: 'Agosto', '8') para 1–12."""
-    if val is None or (isinstance(val, float) and pd.isna(val)):
-        return 0
-    s = str(val).strip().lower()
-    if not s:
-        return 0
-    if s.isdigit():
-        n = int(s)
-        return n if 1 <= n <= 12 else 0
-    meses = {
-        "jan": 1, "janeiro": 1,
-        "fev": 2, "fevereiro": 2,
-        "mar": 3, "março": 3, "marco": 3,
-        "abr": 4, "abril": 4,
-        "mai": 5, "maio": 5,
-        "jun": 6, "junho": 6,
-        "jul": 7, "julho": 7,
-        "ago": 8, "agosto": 8,
-        "set": 9, "setembro": 9,
-        "out": 10, "outubro": 10,
-        "nov": 11, "novembro": 11,
-        "dez": 12, "dezembro": 12,
-    }
-    if s in meses:
-        return meses[s]
-    for nome, num in meses.items():
-        if s.startswith(nome):
-            return num
-    dig = re.search(r"(\d+)", s)
-    if dig:
-        n = int(dig.group(1))
-        return n if 1 <= n <= 12 else 0
-    return 0
-
-
-def _filtrar_metas_mes_ano(df: pd.DataFrame, mes: int, ano: int) -> pd.DataFrame:
-    """Filtra metas por mês/ano com fallback quando o recorte exato está vazio."""
-    if df is None or df.empty:
-        return df if df is not None else pd.DataFrame()
-    m = df.copy()
-    tem_mes = "Mes_Num" in m.columns
-    tem_ano = "Ano_Num" in m.columns
-    if tem_mes and tem_ano:
-        exato = m[(m["Mes_Num"] == mes) & (m["Ano_Num"] == ano)]
-        if not exato.empty:
-            return exato
-        por_mes = m[m["Mes_Num"] == mes]
-        if not por_mes.empty:
-            max_ano = int(pd.to_numeric(por_mes["Ano_Num"], errors="coerce").max())
-            if max_ano > 0:
-                return por_mes[por_mes["Ano_Num"] == max_ano]
-            return por_mes
-        por_ano = m[m["Ano_Num"] == ano]
-        if not por_ano.empty:
-            return por_ano
-    elif tem_mes:
-        por_mes = m[m["Mes_Num"] == mes]
-        if not por_mes.empty:
-            return por_mes
-    return m
-
-
 def coluna_meta_coord(tipo_indicador: str, tipo_meta_col: str) -> str:
     return COL_META_MAP.get((tipo_indicador, tipo_meta_col), "")
-
-
-def _empreendimentos_para_analitico(
-    filtros: "FiltrosPainelV2",
-    mapa_coord: Dict[str, str],
-    df_vendas: pd.DataFrame,
-    df_metas_fallback: Optional[pd.DataFrame] = None,
-) -> List[str]:
-    """Lista empreendimentos para tabela analítica, com fallbacks se mapa de metas vazio."""
-    v = _v()
-    emps = list(filtros.emps_sel or [])
-    if not emps:
-        emps = sorted(set(mapa_coord.keys()))
-    if not emps and df_metas_fallback is not None and not df_metas_fallback.empty:
-        m = _filtrar_metas_mes_ano(df_metas_fallback, filtros.mes_meta, filtros.ano_meta)
-        if "Empreendimento" in m.columns:
-            emps = sorted(
-                {v._limpar_emp(e) for e in m["Empreendimento"].dropna() if v._limpar_emp(e)}
-            )
-    if not emps and df_vendas is not None and not df_vendas.empty and "Empreendimento" in df_vendas.columns:
-        emps = sorted(
-            {v._limpar_emp(e) for e in df_vendas["Empreendimento"].dropna() if v._limpar_emp(e)}
-        )
-    if filtros.coordenadores_sel:
-        coords = set(filtros.coordenadores_sel)
-        if mapa_coord:
-            emps = sorted(
-                e for e in emps
-                if mapa_coord.get(v._limpar_emp(e), "") in coords
-            )
-        elif df_metas_fallback is not None and not df_metas_fallback.empty:
-            m = _filtrar_metas_mes_ano(df_metas_fallback, filtros.mes_meta, filtros.ano_meta)
-            if "Coordenador" in m.columns and "Empreendimento" in m.columns:
-                mask = m["Coordenador"].astype(str).str.strip().isin(coords)
-                emps = sorted(
-                    {v._limpar_emp(e) for e in m.loc[mask, "Empreendimento"].dropna() if v._limpar_emp(e)}
-                )
-    return emps
 
 
 def mapa_emp_coordenador(df_metas: pd.DataFrame, mes: int, ano: int) -> Dict[str, str]:
     if df_metas is None or df_metas.empty:
         return {}
-    m = _filtrar_metas_mes_ano(df_metas, mes, ano)
+    m = df_metas.copy()
+    if "Mes_Num" in m.columns:
+        m = m[m["Mes_Num"] == mes]
+    if "Ano_Num" in m.columns:
+        m = m[m["Ano_Num"] == ano]
     out: Dict[str, str] = {}
     v = _v()
     for _, row in m.iterrows():
@@ -9424,7 +9130,11 @@ def meta_canal_vgv_vendas(
     """Retorna (meta_vgv, meta_vendas) escalados pelo fator do canal sobre linha RIO."""
     if df_canal is None or df_canal.empty:
         return 0.0, 0.0
-    base = _filtrar_metas_mes_ano(df_canal, mes, ano)
+    base = df_canal.copy()
+    if "Mes_Num" in base.columns:
+        base = base[base["Mes_Num"] == mes]
+    if "Ano_Num" in base.columns:
+        base = base[base["Ano_Num"] == ano]
     if base.empty or "Canal" not in base.columns:
         return 0.0, 0.0
     rio = base[base["Canal"].astype(str).str.strip().str.upper() == "RIO"]
@@ -9448,7 +9158,11 @@ def soma_meta_coord(
     col = coluna_meta_coord(tipo_indicador, tipo_meta_col)
     if not col or df_metas is None or df_metas.empty or col not in df_metas.columns:
         return 0.0
-    m = _filtrar_metas_mes_ano(df_metas, mes, ano)
+    m = df_metas.copy()
+    if "Mes_Num" in m.columns:
+        m = m[m["Mes_Num"] == mes]
+    if "Ano_Num" in m.columns:
+        m = m[m["Ano_Num"] == ano]
     if coordenadores:
         m = m[m["Coordenador"].astype(str).str.strip().isin(coordenadores)]
     if empreendimentos:
@@ -9561,12 +9275,8 @@ def realizado_vendas_periodo(
     if empreendimentos and "Empreendimento" in base.columns:
         emps = {v._limpar_emp(e) for e in empreendimentos}
         base = base[base["Empreendimento"].map(v._limpar_emp).isin(emps)]
-    qtd = (
-        _sum_col_num(base, "_qtd_venda", float(len(base)))
-        if "_qtd_venda" in base.columns
-        else float(len(base))
-    )
-    vgv = _sum_col_num(base, "_vgv_venda", 0.0)
+    qtd = float(base["_qtd_venda"].sum()) if "_qtd_venda" in base.columns else float(len(base))
+    vgv = float(base["_vgv_venda"].sum()) if "_vgv_venda" in base.columns else 0.0
     return qtd, vgv
 
 
@@ -10308,7 +10018,7 @@ def _exportar_fig_plotly(fig: go.Figure) -> Tuple[Optional[bytes], str]:
     return png_bytes, html_str
 
 
-@_st_dialog_decorator("Gráfico personalizado — Analítico por empreendimento", width="large")
+@st.dialog("Gráfico personalizado — Analítico por empreendimento", width="large")
 def dialog_grafico_analitico(df: pd.DataFrame) -> None:
     if df is None or df.empty:
         st.warning("Sem dados para montar o gráfico.")
@@ -10414,7 +10124,19 @@ def render_tabela_analitica(df: pd.DataFrame) -> None:
 
     disp = _ordenar_empreendimento_primeiro(preparar_df_tabela_exibicao(df))
     col_desenq = ROTULOS_COLUNAS_TABELA["Desenquadramento_Pct"]
-    styler = _styler_desenquadramento(disp, col_desenq)
+
+    def _style_desenq(val: Any) -> str:
+        try:
+            s = str(val).replace(",", ".")
+            if float(s) > 50:
+                return "color: #cb0935; font-weight: bold"
+        except (TypeError, ValueError):
+            pass
+        return ""
+
+    styler = None
+    if col_desenq in disp.columns:
+        styler = disp.style.map(_style_desenq, subset=[col_desenq])
     _exibir_dataframe_preparada(disp, styler=styler)
 
 
@@ -10422,12 +10144,12 @@ def render_perfil_vendas_mtd(vendas_f: pd.DataFrame) -> None:
     """KPIs de vendas facilitadas vs normais no período filtrado."""
     st.subheader("Perfil das Vendas")
     qtd_facilitada = (
-        _sum_col_num(vendas_f[vendas_f["Tipo_Venda"] == "Facilitada"], "_qtd_venda", 0.0)
+        float(vendas_f[vendas_f["Tipo_Venda"] == "Facilitada"]["_qtd_venda"].sum())
         if "Tipo_Venda" in vendas_f.columns and "_qtd_venda" in vendas_f.columns
         else 0.0
     )
     qtd_normal = (
-        _sum_col_num(vendas_f[vendas_f["Tipo_Venda"] == "Normal"], "_qtd_venda", 0.0)
+        float(vendas_f[vendas_f["Tipo_Venda"] == "Normal"]["_qtd_venda"].sum())
         if "Tipo_Venda" in vendas_f.columns and "_qtd_venda" in vendas_f.columns
         else 0.0
     )
@@ -10774,9 +10496,8 @@ def render_painel_metas_v2(
     """Renderiza seção v2: estoque, velocímetros, tabela analítica."""
     v = _v()
     ano_fb = filtros_glob.ano_meta if filtros_glob else date.today().year
-    mes_fb = filtros_glob.mes_meta if filtros_glob else date.today().month
     df_metas_coord, aviso_coord = carregar_metas_coordenadores_com_fallback(
-        cred_fp, df_metas_fallback, ano_fb, mes_fb,
+        cred_fp, df_metas_fallback, ano_fb,
     )
     try:
         df_canal = carregar_metas_canal(cred_fp)
@@ -10811,19 +10532,14 @@ def render_painel_metas_v2(
         total_unidades_v2 = {}
 
     if filtros.tipo_indicador == "vendas":
-        meta_vgv, meta_qtd_canal = meta_canal_vgv_vendas(
+        meta_vgv, meta_qtd = meta_canal_vgv_vendas(
             df_canal, filtros.mes_meta, filtros.ano_meta, filtros.canal_meta,
         )
-        meta_qtd = soma_meta_coord(
-            df_metas_coord, filtros.mes_meta, filtros.ano_meta,
-            "vendas", filtros.tipo_meta_col,
-        )
-        if meta_vgv <= 0:
-            meta_vgv = soma_meta_vgv_coord(
-                df_metas_coord, filtros.mes_meta, filtros.ano_meta, filtros.tipo_meta_col,
+        if meta_qtd <= 0:
+            meta_qtd = soma_meta_coord(
+                df_metas_coord, filtros.mes_meta, filtros.ano_meta,
+                "vendas", filtros.tipo_meta_col,
             )
-        if meta_qtd <= 0 and 0 < meta_qtd_canal <= 5_000:
-            meta_qtd = meta_qtd_canal
         real_qtd, real_vgv = realizado_vendas_periodo(
             df_vendas, col_contrato_gerado or "", filtros.data_ini, filtros.data_fim,
             filtros.emps_sel or None,
@@ -10869,9 +10585,12 @@ def render_painel_metas_v2(
         col_contrato_gerado or "", mapa_coord,
     )
 
-    emps_tab = _empreendimentos_para_analitico(
-        filtros, mapa_coord, df_vendas, df_metas_fallback,
-    )
+    emps_tab = filtros.emps_sel or sorted(set(mapa_coord.keys()))
+    if filtros.coordenadores_sel:
+        emps_tab = sorted(
+            e for e in emps_tab
+            if mapa_coord.get(v._limpar_emp(e), "") in filtros.coordenadores_sel
+        )
     tab = montar_tabela_analitica(
         emps_tab[:80],
         enr, resumo_est,
@@ -11967,17 +11686,8 @@ def _filtrar_canal_velocimetro(df: pd.DataFrame, canal_key: str) -> pd.DataFrame
 
 
 def _qtd_vgv(df: pd.DataFrame) -> Tuple[float, float]:
-    qtd = (
-        _sum_col_num(df, "_qtd_venda", float(len(df)))
-        if "_qtd_venda" in df.columns
-        else float(len(df))
-    )
-    if "_vgv_venda" in df.columns:
-        vgv = _sum_col_num(df, "_vgv_venda", 0.0)
-    elif "_vgv" in df.columns:
-        vgv = _sum_col_num(df, "_vgv", 0.0)
-    else:
-        vgv = 0.0
+    qtd = float(df["_qtd_venda"].sum()) if "_qtd_venda" in df.columns else float(len(df))
+    vgv = float(df["_vgv_venda"].sum()) if "_vgv_venda" in df.columns else float(df["_vgv"].sum()) if "_vgv" in df.columns else 0.0
     return qtd, vgv
 
 
@@ -12026,11 +11736,7 @@ def calcular_vso_por_emp(
                 sub = _filtrar_canal_velocimetro(sub, canal if canal in FATORES_VGV else "RIO")
             if col_data and col_data in sub.columns:
                 sub = _filtrar_df_periodo(sub, col_data, ini, ref_fim)
-            vendas = (
-                _sum_col_num(sub, "_qtd_venda", float(len(sub)))
-                if "_qtd_venda" in sub.columns
-                else float(len(sub))
-            )
+            vendas = float(sub["_qtd_venda"].sum()) if "_qtd_venda" in sub.columns else float(len(sub))
             denom = vendas + unidades
             row[f"VSO_{dias}d"] = (vendas / denom * 100.0) if denom > 0 else 0.0
             row[f"Vendas_{dias}d"] = vendas
@@ -12567,17 +12273,8 @@ def render_radar_polaroid(
     base_mes = df_vendas.copy()
     if col_data and col_data in base_mes.columns:
         base_mes = _filtrar_df_periodo(base_mes, col_data, ini_mes, fim_mes)
-    if "_vgv_venda" in base_mes.columns:
-        real_vgv = _sum_col_num(base_mes, "_vgv_venda", 0.0)
-    elif "_vgv" in base_mes.columns:
-        real_vgv = _sum_col_num(base_mes, "_vgv", 0.0)
-    else:
-        real_vgv = 0.0
-    real_qtd = (
-        _sum_col_num(base_mes, "_qtd_venda", float(len(base_mes)))
-        if "_qtd_venda" in base_mes.columns
-        else float(len(base_mes))
-    )
+    real_vgv = float(base_mes["_vgv_venda"].sum()) if "_vgv_venda" in base_mes.columns else float(base_mes["_vgv"].sum()) if "_vgv" in base_mes.columns else 0.0
+    real_qtd = float(base_mes["_qtd_venda"].sum()) if "_qtd_venda" in base_mes.columns else float(len(base_mes))
 
     pct_desafio = (real_vgv / meta_vgv_desafio * 100.0) if meta_vgv_desafio > 0 else 0.0
     pct_bp = (real_vgv / meta_vgv_bp * 100.0) if meta_vgv_bp > 0 else 0.0
@@ -12944,20 +12641,10 @@ def _periodos_ps_sinais(hoje: Optional[date] = None) -> Dict[str, Tuple[date, da
 def _metricas_ps_sinais_periodo(sub: pd.DataFrame) -> Tuple[float, float]:
     if sub.empty:
         return 0.0, 0.0
-    if "_vgv_venda" in sub.columns:
-        vgv = _sum_col_num(sub, "_vgv_venda", 0.0)
-    elif "_vgv" in sub.columns:
-        vgv = _sum_col_num(sub, "_vgv", 0.0)
-    else:
-        vgv = 0.0
+    vgv = float(sub["_vgv_venda"].sum()) if "_vgv_venda" in sub.columns else float(sub["_vgv"].sum()) if "_vgv" in sub.columns else 0.0
     if vgv <= 0:
         return 0.0, 0.0
-    if "PS_VGV" in sub.columns and "_vgv_venda" in sub.columns:
-        ps = pd.to_numeric(sub["PS_VGV"], errors="coerce").fillna(0.0)
-        vgv_col = pd.to_numeric(sub["_vgv_venda"], errors="coerce").fillna(0.0)
-        ps_num = float((ps * vgv_col).sum())
-    else:
-        ps_num = 0.0
+    ps_num = float((sub["PS_VGV"] * sub["_vgv_venda"]).sum()) if "PS_VGV" in sub.columns and "_vgv_venda" in sub.columns else 0.0
     sinal = float(sub["Total_Sinal"].sum()) if "Total_Sinal" in sub.columns else 0.0
     return ps_num / vgv, sinal / vgv
 
@@ -13178,15 +12865,14 @@ def render_dashboard_comercial(
     """Ponto de entrada do dashboard comercial."""
     v = _v()
     ano_fb = filtros_glob.ano_meta if filtros_glob else date.today().year
-    mes_fb = filtros_glob.mes_meta if filtros_glob else date.today().month
     df_metas_coord, aviso_coord = carregar_metas_coordenadores_com_fallback(
-        cred_fp, df_metas_fallback, ano_fb, mes_fb,
+        cred_fp, df_metas_fallback, ano_fb,
     )
     try:
         df_canal = carregar_metas_canal(cred_fp)
     except Exception as exc:
-        st.warning(f"Metas canal indisponíveis (aba Canal): {exc}")
-        df_canal = pd.DataFrame()
+        st.error(f"Erro ao carregar metas canal: {exc}")
+        return
     if df_metas_coord.empty:
         st.error(f"Erro ao carregar metas: {aviso_coord or 'sem dados'}")
         return
@@ -13758,7 +13444,7 @@ def _corpo_painel_metas(
     )
 
     df_metas_coord, _ = carregar_metas_coordenadores_com_fallback(
-        cred_fp, df_metas, filtros_v2.ano_meta, filtros_v2.mes_meta,
+        cred_fp, df_metas, filtros_v2.ano_meta,
     )
     try:
         df_canal = carregar_metas_canal(cred_fp)
@@ -13766,20 +13452,14 @@ def _corpo_painel_metas(
         df_canal = pd.DataFrame()
 
     if filtros_v2.tipo_indicador == "vendas":
-        total_meta_vgv, total_meta_qtd_canal = meta_canal_vgv_vendas(
+        total_meta_vgv, total_meta_qtd = meta_canal_vgv_vendas(
             df_canal, filtros_v2.mes_meta, filtros_v2.ano_meta, filtros_v2.canal_meta,
         )
-        total_meta_qtd = soma_meta_coord(
-            df_metas_coord, filtros_v2.mes_meta, filtros_v2.ano_meta,
-            "vendas", filtros_v2.tipo_meta_col, filtros_v2.emps_sel or None,
-        )
-        if total_meta_vgv <= 0:
-            total_meta_vgv = soma_meta_vgv_coord(
+        if total_meta_qtd <= 0:
+            total_meta_qtd = soma_meta_coord(
                 df_metas_coord, filtros_v2.mes_meta, filtros_v2.ano_meta,
-                filtros_v2.tipo_meta_col, empreendimentos=filtros_v2.emps_sel or None,
+                "vendas", filtros_v2.tipo_meta_col, filtros_v2.emps_sel or None,
             )
-        if total_meta_qtd <= 0 and 0 < total_meta_qtd_canal <= 5_000:
-            total_meta_qtd = total_meta_qtd_canal
     else:
         total_meta_vgv = 0.0
         total_meta_qtd = soma_meta_coord(
@@ -13789,12 +13469,8 @@ def _corpo_painel_metas(
         )
 
     fator_meta = FATORES_CANAL.get((filtros_v2.canal_meta or "RIO").strip().upper(), 0.0)
-    total_realizado_qtd = (
-        _sum_col_num(vendas_f, "_qtd_venda", float(len(vendas_f)))
-        if "_qtd_venda" in vendas_f.columns
-        else float(len(vendas_f))
-    )
-    total_vgv_realizado = _sum_col_num(vendas_f, "_vgv_venda", 0.0)
+    total_realizado_qtd = float(vendas_f["_qtd_venda"].sum()) if "_qtd_venda" in vendas_f.columns else float(len(vendas_f))
+    total_vgv_realizado = float(vendas_f["_vgv_venda"].sum()) if "_vgv_venda" in vendas_f.columns else 0.0
 
     # -------------------------------------------------------------------------
     # FUNIL IDEAL E ENGENHARIA REVERSA (dois funis lado a lado)
@@ -13947,18 +13623,10 @@ def _corpo_painel_metas(
             df_vendas_funil = pd.DataFrame()
             serie_vendas_funil = None
             try:
-                base_ven = (
-                    df_vendas_raw.copy()
-                    if df_vendas_raw is not None and not df_vendas_raw.empty
-                    else df_vendas_painel.copy()
-                )
-                if base_ven.empty:
-                    raise RuntimeError("Sem vendas no cache.")
-                df_vendas_funil = normalizar_colunas(base_ven)
+                df_vendas_funil = df_vendas_raw.copy()
+                df_vendas_funil = normalizar_colunas(df_vendas_funil)
                 n_ven_bruto = len(df_vendas_funil)
-                from_raw = df_vendas_raw is not None and not df_vendas_raw.empty
-                if from_raw:
-                    df_vendas_funil = filtrar_vendas_comerciais(df_vendas_funil)
+                df_vendas_funil = filtrar_vendas_comerciais(df_vendas_funil)
                 n_ven_comercial = len(df_vendas_funil)
                 df_vendas_funil = deduplicar_vendas_funil(df_vendas_funil)
                 st.caption(
@@ -14193,7 +13861,6 @@ def main() -> None:
     df_metas = preparar_metas_painel(df_metas_raw)
     df_vendas_painel, origem_vp = _ler_dado_painel("vendas_painel", cred_fp)
     if not df_vendas_painel.empty:
-        df_vendas_painel = assegurar_metricas_vendas(df_vendas_painel)
         df_vendas = df_vendas_painel.copy()
         col_contrato_gerado = (
             str(manifest.get("col_contrato_gerado") or "").strip()
@@ -14223,24 +13890,19 @@ def main() -> None:
         for aviso in prep.get("avisos") or []:
             st.warning(aviso)
         df_vendas = prep["df_vendas"]
-        df_vendas_painel = assegurar_metricas_vendas(prep["df_vendas_painel"])
+        df_vendas_painel = prep["df_vendas_painel"]
         col_contrato_gerado = prep.get("col_contrato_gerado")
         col_canal = prep.get("col_canal")
         col_data_venda = prep.get("col_data_venda")
 
     st.caption(f"Base de vendas: {origem_vendas_painel} · Google Sheets (sem Salesforce ao vivo)")
 
-    df_metas_coord_opts, _ = carregar_metas_coordenadores_com_fallback(
-        cred_fp, df_metas, date.today().year, date.today().month,
+    df_metas_coord_g, _ = carregar_metas_coordenadores_com_fallback(
+        cred_fp, df_metas, date.today().year,
     )
     filtros_glob = render_filtros_globais(
-        df_metas_coord_opts, df_vendas_painel, df_metas_fallback=df_metas,
+        df_metas_coord_g, df_vendas_painel, df_metas_fallback=df_metas,
     )
-    df_metas_coord_g, aviso_metas = carregar_metas_coordenadores_com_fallback(
-        cred_fp, df_metas, filtros_glob.ano_meta, filtros_glob.mes_meta,
-    )
-    if aviso_metas:
-        st.warning(f"Metas coordenadores: {aviso_metas}")
 
     df_estoque_kpi = pd.DataFrame()
     try:
@@ -14274,12 +13936,6 @@ def main() -> None:
             try:
                 df_fb = carregar_feedbacks_comerciais(cred_fp)
                 render_aba_feedbacks_comerciais(df_fb)
-            except PermissionError:
-                st.error(
-                    "Sem permissão na planilha de **Feedbacks**. Compartilhe com o "
-                    f"`client_email` dos secrets: **{info.get('client_email', '?')}** · "
-                    f"planilha `{vfp.SPREADSHEET_FEEDBACK_ID}` · aba «{vfp.WS_FEEDBACK}»."
-                )
             except Exception as exc:
                 st.error(f"Não foi possível carregar Feedbacks Comerciais: {exc}")
         else:
@@ -14289,12 +13945,6 @@ def main() -> None:
             try:
                 df_pr = carregar_previsao_vendas(cred_fp)
                 render_aba_previsao_vendas(df_pr, df_vendas_painel, col_contrato_gerado or "")
-            except PermissionError:
-                st.error(
-                    "Sem permissão na planilha de **Previsão de Vendas**. Compartilhe com o "
-                    f"`client_email` dos secrets: **{info.get('client_email', '?')}** · "
-                    f"planilha `{vfp.SPREADSHEET_PREVISAO_ID}` · aba «{vfp.WS_PREVISAO}»."
-                )
             except Exception as exc:
                 st.error(f"Não foi possível carregar Previsão de Vendas: {exc}")
         else:
