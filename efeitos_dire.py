@@ -243,12 +243,12 @@ def _cliente_salesforce_cache():
 def filtrar_e_deduplicar(df: pd.DataFrame, col_chave: str, col_data: str, col_imob: str = "Imobiliária") -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
-    # Filtro esquerda(3) = DIR (case-insensitive: DIR, dir, Dir, etc.)
+    # Filtro esquerda(3) case-insensitive = DIR (dir, DIR, Dir, etc.)
     if col_imob in df.columns:
         mask_imob = df[col_imob].map(lambda x: str(x or "").strip()[:3].upper() == "DIR")
         df = df.loc[mask_imob].copy()
     
-    # Deduplicação mantendo somente o mais recente
+    # Deduplicação mantendo somente o registro mais recente
     if col_chave in df.columns and col_data in df.columns:
         df["_dt_dedup"] = parse_data_serie(df[col_data])
         df["_key_dedup"] = df[col_chave].astype(str).str.strip()
@@ -605,7 +605,7 @@ def main() -> None:
 
         sub_real = cal[(pd.to_datetime(cal["data"]).dt.year == ano_alvo) & (pd.to_datetime(cal["data"]).dt.month == mes_alvo)]
 
-        for etapa in FUNIL_ETAPAS:
+        for i_etapa, etapa in enumerate(FUNIL_ETAPAS):
             st.markdown(f"##### {FUNIL_LABELS[etapa]} — Projetado x Realizado (%)")
             df_p = proj_diaria[etapa]
             
@@ -646,21 +646,21 @@ def main() -> None:
                 height=320, hovermode="x unified", legend=dict(orientation="h", y=1.15, x=0.5, xanchor="center")
             )
             fig.update_yaxes(title_text="Representatividade (%)", ticksuffix="%")
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, key=f"chart_proj_diaria_{i_etapa}_{etapa}")
 
     with tab2:
         st.subheader("Estatísticas e Coeficientes (Betas com Tendência ARIMA)")
-        for etapa in FUNIL_ETAPAS:
+        for i_etapa, etapa in enumerate(FUNIL_ETAPAS):
             st.markdown(f"##### Indicador: {FUNIL_LABELS[etapa]}")
             m = modelos_treinados[etapa]
             c1, c2 = st.columns(2)
             with c1: st.metric("R² do Modelo", f"{m['r2']:.4f}")
             with c2: st.metric("Desvio Absoluto Médio (MAE)", f"{m['mae']:.2f}")
-            st.dataframe(m["tabela_betas"], use_container_width=True, hide_index=True)
+            st.dataframe(m["tabela_betas"], use_container_width=True, hide_index=True, key=f"df_betas_{i_etapa}_{etapa}")
 
     with tab3:
         st.subheader("Projeção e Histórico de Conversões Mensais")
-        for label, dados in conv_mensal.items():
+        for i_conv, (label, dados) in enumerate(conv_mensal.items()):
             st.markdown(f"##### {label}")
             sub = dados["df"]
             
@@ -678,7 +678,7 @@ def main() -> None:
                 height=300, hovermode="x unified", legend=dict(orientation="h", y=1.15, x=0.5, xanchor="center")
             )
             fig.update_yaxes(title_text="Taxa de Conversão (%)", ticksuffix="%")
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, key=f"chart_conv_mensal_{i_conv}_{label}")
             
             col_m1, col_m2 = st.columns(2)
             with col_m1: st.metric("Média Histórica", f"{dados['media']:.2f}%")
@@ -690,7 +690,7 @@ def main() -> None:
         cal["ano_mes_str"] = pd.to_datetime(cal["data"]).dt.to_period("M").astype(str)
         mensal_vol = cal.groupby("ano_mes_str")[list(FUNIL_ETAPAS)].sum().reset_index()
 
-        for etapa in FUNIL_ETAPAS:
+        for i_vol, etapa in enumerate(FUNIL_ETAPAS):
             st.markdown(f"##### Volume Mensal — {FUNIL_LABELS[etapa]}")
             fig_vol = go.Figure()
             fig_vol.add_trace(go.Scatter(
@@ -709,7 +709,7 @@ def main() -> None:
                 hovermode="x unified"
             )
             fig_vol.update_yaxes(title_text="Quantidade Absoluta")
-            st.plotly_chart(fig_vol, use_container_width=True, config={"displayModeBar": False})
+            st.plotly_chart(fig_vol, use_container_width=True, config={"displayModeBar": False}, key=f"chart_vol_abs_{i_vol}_{etapa}")
 
     with tab4:
         st.subheader(f"Acompanhamento de Metas de {MESES_PT[mes_alvo].capitalize()}/{ano_alvo}")
@@ -739,7 +739,7 @@ def main() -> None:
         sub_real = cal[(pd.to_datetime(cal["data"]).dt.year == ano_alvo) & (pd.to_datetime(cal["data"]).dt.month == mes_alvo)]
 
         metas_tabela = []
-        for etapa in FUNIL_ETAPAS:
+        for i_meta, etapa in enumerate(FUNIL_ETAPAS):
             m_est = metas_dict[etapa]
             r_acum = float(sub_real[sub_real["dia_mes"] <= dia_limite][etapa].sum()) if not sub_real.empty else 0.0
             ating = (r_acum / m_est * 100.0) if m_est > 0 else 0.0
@@ -750,10 +750,10 @@ def main() -> None:
                 "Atingimento (%)": f"{ating:.1f}%"
             })
 
-        st.dataframe(pd.DataFrame(metas_tabela), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(metas_tabela), use_container_width=True, hide_index=True, key="df_resumo_metas_tab4")
 
         st.markdown("##### Meta x Realizado (Diário e Acumulado)")
-        for etapa in FUNIL_ETAPAS:
+        for i_meta_plot, etapa in enumerate(FUNIL_ETAPAS):
             st.markdown(f"##### {FUNIL_LABELS[etapa]} — Meta x Realizado")
             df_p = proj_diaria[etapa].copy()
             meta_etapa_total = metas_dict[etapa]
@@ -790,7 +790,7 @@ def main() -> None:
                 margin=dict(l=20, r=20, t=40, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                 height=320, hovermode="x unified", legend=dict(orientation="h", y=1.20, x=0.5, xanchor="center")
             )
-            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False}, key=f"chart_meta_realizado_{i_meta_plot}_{etapa}")
 
     # -------------------------------------------------------------------------
     # Botão de Download
