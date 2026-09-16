@@ -152,7 +152,7 @@ def aplicar_estilo() -> None:
         h1, h2, h3, h4, .stHeading {{ font-family: 'Montserrat', sans-serif !important; color: {COR_AZUL_ESC} !important; font-weight: 800 !important; text-align: center !important; }}
         h5, h6 {{ font-family: 'Montserrat', sans-serif !important; color: {COR_TEXTO_PRETO} !important; font-weight: 700 !important; text-align: center !important; }}
         p, label, li, span {{ color: {COR_TEXTO_PRETO} !important; }}
-        div[data-testid="stButton"] button[kind="primary"] * {{ color: #ffffff !important; }}
+        div[data-testid="stButton"] button[kind="primary"] *, div[data-testid="stDownloadButton"] button * {{ color: #ffffff !important; }}
         .ficha-logo-wrap {{ text-align: center; padding: 0.1rem 0 0.45rem 0; }}
         .ficha-logo-wrap img {{ max-height: 72px; width: auto; max-width: min(280px, 85vw); }}
         .ficha-hero {{ text-align: center; padding: 0.5rem 0 0 0; margin: 0 auto; max-width: 640px; }}
@@ -205,7 +205,8 @@ def conectar_sf():
         return None
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def extrair_dados_sf_cached(ano_alvo: int, mes_alvo: int):
+def extrair_dados_sf_cached(ano_alvo: int, mes_alvo: int, _progress_callback=None):
+    if _progress_callback: _progress_callback(10, "Conectando ao Salesforce...")
     sf = conectar_sf()
     if not sf: return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
@@ -228,21 +229,24 @@ def extrair_dados_sf_cached(ano_alvo: int, mes_alvo: int):
         "AND Empreendimento__r.UnidadeDeNegocio__c = 'Direcional' AND Imobiliaria__r.Name LIKE 'DIR%' "
         f"AND ContratoGeradoEm__c >= {desde_date_str} AND ContratoGeradoEm__c <= {ate_date_str}"
     )
+    if _progress_callback: _progress_callback(30, "Extraindo Vendas (Oportunidades)...")
     df_ven = pd.DataFrame(sf.query_all(soql_vendas).get("records", []))
         
     soql_pastas = (
         "SELECT Name, dataPrimeiroEnvioAnalise__c, dataAprovacaoSAFI__c FROM Avaliacao_credito__c "
         "WHERE Empreendimento__r.Regional__c = 'RJ' AND Empreendimento__r.UnidadeDeNegocio__c = 'Direcional' "
-        f"AND Imobiliaria__r.Name LIKE 'DIR%' AND CreatedDate >= {desde_str} AND CreatedDate <= {ate_str}"
+        f"AND CreatedDate >= {desde_str} AND CreatedDate <= {ate_str}"
     )
+    if _progress_callback: _progress_callback(55, "Extraindo Pastas (Avaliações de Crédito)...")
     df_pas = pd.DataFrame(sf.query_all(soql_pastas).get("records", []))
 
     soql_ag = (
         "SELECT Codigo_do_agendamento__c, CreatedDate, Data_da_Visita__c FROM Event "
         "WHERE Unidade_de_negocio__c = 'Direcional' AND Regional__c = 'RJ' "
-        "AND Empreendimento_de_interesse__c != null AND Imobiliaria__r.Name LIKE 'DIR%' "
+        "AND Empreendimento_de_interesse__c != null "
         f"AND CreatedDate >= {desde_str} AND CreatedDate <= {ate_str}"
     )
+    if _progress_callback: _progress_callback(80, "Extraindo Agendamentos e Visitas (Eventos)...")
     df_ag = pd.DataFrame(sf.query_all(soql_ag).get("records", []))
 
     return df_ag, df_pas, df_ven
@@ -494,22 +498,56 @@ def main():
     is_current_month = (ano_alvo == hoje.year and mes_alvo == hoje.month)
 
     prog_placeholder = st.empty()
-    html_spinner = f"""
-    <style>@keyframes prog-spin {{ 100% {{ transform: rotate(360deg); }} }}</style>
-    <div style="margin: 1.5rem 0; padding: 1.25rem; background: rgba(255,255,255,0.9); border-radius: 12px; border: 1px solid #e2e8f0; text-align: center; color: {COR_AZUL_ESC}; font-weight: 600; font-family: 'Inter', sans-serif;">
-        <svg style="animation: prog-spin 1s linear infinite; width: 1.5rem; height: 1.5rem; margin-right: 10px; vertical-align: middle;" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-            <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" stroke-dasharray="31.4 31.4" stroke-linecap="round" opacity="0.25"></circle>
-            <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
-        </svg>
-        Conectando e atualizando inteligência sazonal...
-    </div>
-    """
-    prog_placeholder.markdown(html_spinner, unsafe_allow_html=True)
-    
     t_start = time.time()
     
+    def update_progress(pct, msg):
+        elapsed = time.time() - t_start
+        grad = f"linear-gradient(90deg, {COR_AZUL_ESC} 0%, {COR_VERMELHO} 100%)"
+        
+        if pct < 100:
+            icone = f'''
+            <svg style="animation: prog-spin 1s linear infinite; width: 1.25rem; height: 1.25rem; margin-right: 10px; color: {COR_AZUL_ESC};" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" stroke-dasharray="31.4 31.4" stroke-linecap="round" opacity="0.25"></circle>
+                <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+            </svg>
+            '''
+        else:
+            icone = '''
+            <svg style="width: 1.25rem; height: 1.25rem; margin-right: 10px; color: #10b981;" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7" />
+            </svg>
+            '''
+
+        html_str = f'''
+        <style>
+            @keyframes prog-spin {{ 100% {{ transform: rotate(360deg); }} }}
+            @keyframes prog-shimmer {{ 0% {{ background-position: -200% 0; }} 100% {{ background-position: 200% 0; }} }}
+        </style>
+        <div style="margin: 1.5rem 0; padding: 1.25rem; background: rgba(255,255,255,0.95); border-radius: 12px; border: 1px solid #e2e8f0; box-shadow: 0 4px 12px rgba(0,0,0,0.06);">
+            <div style="display: flex; justify-content: space-between; align-items: center; font-size: 0.95rem; color: #1e293b; margin-bottom: 0.8rem; font-family: 'Inter', sans-serif; font-weight: 600;">
+                <div style="display: flex; align-items: center;">
+                    {icone}
+                    <span>{msg}</span>
+                </div>
+                <span style="font-family: monospace; color: #475569; font-size: 0.85rem; background: #f1f5f9; padding: 3px 10px; border-radius: 6px; font-weight: 700;">
+                    {pct}% &nbsp;|&nbsp; {elapsed:.1f}s
+                </span>
+            </div>
+            <div style="width: 100%; background-color: #cbd5e1; border-radius: 999px; overflow: hidden; height: 12px; position: relative;">
+                <div style="width: {pct}%; background: {grad}; height: 100%; transition: width 0.3s ease; border-radius: 999px; position: relative; overflow: hidden;">
+                    <div style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: linear-gradient(90deg, transparent, rgba(255,255,255,0.35), transparent); background-size: 200% 100%; animation: prog-shimmer 1.5s infinite linear;"></div>
+                </div>
+            </div>
+        </div>
+        '''
+        prog_placeholder.markdown(html_str, unsafe_allow_html=True)
+        
+    update_progress(5, "Iniciando inteligência sazonal...")
+    
     # Executa cached fetching do Salesforce e Google Sheets
-    df_ag_raw, df_pas_raw, df_ven_raw = extrair_dados_sf_cached(ano_alvo, mes_alvo)
+    df_ag_raw, df_pas_raw, df_ven_raw = extrair_dados_sf_cached(ano_alvo, mes_alvo, _progress_callback=update_progress)
+    
+    update_progress(85, "Buscando Metas no Google Sheets...")
     meta_vendas = buscar_meta_vendas_gsheets(ano_alvo, mes_alvo)
     
     if df_ven_raw.empty:
@@ -517,6 +555,7 @@ def main():
         st.warning("Sem dados suficientes no Salesforce para projetar.")
         return
         
+    update_progress(95, "Gerando projeções e painéis de dados...")
     data_alvo_inicio = date(ano_alvo, mes_alvo, 1)
     dias_no_mes = calendar.monthrange(ano_alvo, mes_alvo)[1]
     data_alvo_fim = date(ano_alvo, mes_alvo, dias_no_mes)
@@ -686,7 +725,10 @@ def main():
 
     df_metas_res = pd.DataFrame(df_metas_resumo)
 
+    update_progress(100, "Concluído com sucesso!")
+    time.sleep(0.5)
     prog_placeholder.empty()
+    
     st.success(f"Análise concluída em {time.time() - t_start:.1f}s! Base de treino: {ini_treino.strftime('%m/%Y')} a {fim_treino.strftime('%m/%Y')}.")
     
     tab_metas, tab_diaria, tab_mensal, tab_stats = st.tabs(["Metas x Realizado", "Representatividade Diária", "Conversão Mensal", "Estatísticas OLS"])
