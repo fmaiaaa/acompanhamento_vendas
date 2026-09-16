@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Acompanhamento e Projeção Sazonal de Vendas & Funil — Direcional (RJ).
-Design: Gaps Style (Transparência, Blur, Inter/Montserrat).
+Design: Gaps Style (Transparência, Blur, Fundo de Cadastro, Inter/Montserrat).
 """
 from __future__ import annotations
 
@@ -46,6 +46,9 @@ COR_VERMELHO = "#cb0935"
 COR_TEXTO_PRETO = "#000000"
 COR_BORDA = "#eef2f6"
 
+FUNDO_CADASTRO_ARQUIVO = "fundo_cadastrorh.jpg"
+_DIR_APP = Path(__file__).resolve().parent if '__file__' in locals() else Path.cwd()
+
 MESES_TEXTO_MAP = {
     "jan": 1, "fev": 2, "mar": 3, "abr": 4, "mai": 5, "jun": 6,
     "jul": 7, "ago": 8, "set": 9, "out": 10, "nov": 11, "dez": 12,
@@ -69,15 +72,42 @@ def _hex_rgb_triplet(hex_color: str) -> str:
 RGB_AZUL_CSS = _hex_rgb_triplet(COR_AZUL_ESC)
 RGB_VERMELHO_CSS = _hex_rgb_triplet(COR_VERMELHO)
 
+def _resolver_imagem_fundo_local(nome: str) -> Path | None:
+    for base in (_DIR_APP, _DIR_APP.parent):
+        for ext in (".jpg", ".jpeg", ".JPG", ".JPEG", ".png", ".PNG"):
+            stem = Path(nome).stem
+            p = base / f"{stem}{ext}"
+            if p.is_file(): return p
+        p = base / nome
+        if p.is_file(): return p
+    return None
+
+def _css_url_fundo_cadastro() -> str:
+    p = _resolver_imagem_fundo_local(FUNDO_CADASTRO_ARQUIVO)
+    if p and p.is_file():
+        try:
+            raw = p.read_bytes()
+            suf = p.suffix.lower()
+            mime = "image/jpeg" if suf in (".jpg", ".jpeg") else "image/png"
+            b64 = base64.b64encode(raw).decode("ascii")
+            return f"data:{mime};base64,{b64}"
+        except OSError: pass
+    return "https://images.unsplash.com/photo-1486406146926-c627a92ad1ab?auto=format&fit=crop&w=1920&q=80"
+
 def aplicar_estilo() -> None:
+    bg_url = _css_url_fundo_cadastro()
     st.markdown(
         f"""
         <style>
         @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800;900&family=Inter:wght@400;500;600;700&display=swap');
         html, body, :root, [data-testid="stApp"] {{ color-scheme: light !important; }}
         html, body {{ font-family: 'Inter', sans-serif; color: {COR_TEXTO_PRETO}; background: transparent !important; }}
+        
+        /* Restaura o fundo original com gradiente e imagem */
         .stApp, [data-testid="stApp"] {{
-            background: linear-gradient(135deg, rgba({RGB_AZUL_CSS}, 0.82) 0%, rgba(30, 58, 95, 0.55) 38%, rgba({RGB_VERMELHO_CSS}, 0.22) 72%, rgba(15, 23, 42, 0.45) 100%) !important;
+            background: 
+                linear-gradient(135deg, rgba({RGB_AZUL_CSS}, 0.82) 0%, rgba(30, 58, 95, 0.55) 38%, rgba({RGB_VERMELHO_CSS}, 0.22) 72%, rgba(15, 23, 42, 0.45) 100%),
+                url("{bg_url}") center / cover no-repeat !important;
             background-attachment: fixed !important;
         }}
         [data-testid="stHeader"] {{ background: transparent !important; }}
