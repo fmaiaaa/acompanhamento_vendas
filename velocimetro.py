@@ -240,13 +240,33 @@ def _cliente_salesforce_cache():
     if sf is None: raise RuntimeError(err or "Falha ao conectar no Salesforce.")
     return sf
 
+def filtrar_e_deduplicar(df: pd.DataFrame, col_chave: str, col_data: str, col_imob: str = "Imobiliária") -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    # Filtro esquerda(3) = DIR (case-insensitive: DIR, dir, Dir, etc.)
+    if col_imob in df.columns:
+        mask_imob = df[col_imob].map(lambda x: str(x or "").strip()[:3].upper() == "DIR")
+        df = df.loc[mask_imob].copy()
+    
+    # Deduplicação mantendo somente o mais recente
+    if col_chave in df.columns and col_data in df.columns:
+        df["_dt_dedup"] = parse_data_serie(df[col_data])
+        df["_key_dedup"] = df[col_chave].astype(str).str.strip()
+        mask_valid = df["_key_dedup"].ne("") & df["_key_dedup"].str.lower().ne("nan")
+        validas = df.loc[mask_valid].sort_values("_dt_dedup", ascending=False, na_position="last")
+        validas = validas.drop_duplicates(subset=["_key_dedup"], keep="first")
+        invalidas = df.loc[~mask_valid]
+        df = pd.concat([validas, invalidas], ignore_index=True)
+        df = df.drop(columns=["_dt_dedup", "_key_dedup"], errors="ignore")
+    return df
+
 @st.cache_data(ttl=3600, show_spinner=False)
 def extrair_dados_sf_cached(ano_alvo: int, mes_alvo: int) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     sf = _cliente_salesforce_cache()
     data_inicio = datetime(ano_alvo - 3, mes_alvo, 1).strftime("%Y-%m-%d")
     
     soql_ag = (
-        "SELECT Codigo_do_agendamento__c, CreatedDate, Data_da_Visita__c "
+        "SELECT Codigo_do_agendamento__c, CreatedDate, Data_da_Visita__c, Imobiliaria__r.Name "
         "FROM Event "
         "WHERE Unidade_de_negocio__c = 'Direcional' "
         "AND Regional__c = 'RJ' "
@@ -257,12 +277,14 @@ def extrair_dados_sf_cached(ano_alvo: int, mes_alvo: int) -> Tuple[pd.DataFrame,
         df_ag = pd.DataFrame([{
             "Código do agendamento": r.get("Codigo_do_agendamento__c"),
             "Data de criação": r.get("CreatedDate"),
-            "Data da visita": r.get("Data_da_Visita__c")
+            "Data da visita": r.get("Data_da_Visita__c"),
+            "Imobiliária": (r.get("Imobiliaria__r") or {}).get("Name")
         } for r in (res_ag.get("records") or [])])
     except Exception: df_ag = pd.DataFrame()
+    df_ag = filtrar_e_deduplicar(df_ag, "Código do agendamento", "Data de criação")
 
     soql_pas = (
-        "SELECT Name, CreatedDate, dataPrimeiroEnvioAnalise__c, dataAprovacaoSAFI__c "
+        "SELECT Name, CreatedDate, dataPrimeiroEnvioAnalise__c, dataAprovacaoSAFI__c, Imobiliaria__r.Name "
         "FROM Avaliacao_credito__c "
         "WHERE Empreendimento__r.Regional__c = 'RJ' "
         f"AND CreatedDate >= {data_inicio}T00:00:00Z"
@@ -273,9 +295,11 @@ def extrair_dados_sf_cached(ano_alvo: int, mes_alvo: int) -> Tuple[pd.DataFrame,
             "Nome da Avaliação de crédito": r.get("Name"),
             "Data de criação": r.get("CreatedDate"),
             "Data Primeiro Envio Análise": r.get("dataPrimeiroEnvioAnalise__c"),
-            "Data Aprovação SAFI": r.get("dataAprovacaoSAFI__c")
+            "Data Aprovação SAFI": r.get("dataAprovacaoSAFI__c"),
+            "Imobiliária": (r.get("Imobiliaria__r") or {}).get("Name")
         } for r in (res_pas.get("records") or [])])
     except Exception: df_pas = pd.DataFrame()
+    df_pas = filtrar_e_deduplicar(df_pas, "Nome da Avaliação de crédito", "Data de criação")
 
     soql_ven = (
         "SELECT Id, Name, Empreendimento__r.Name, Valor_Real_de_Venda__c, DirecionalVendas__c, "
@@ -298,6 +322,7 @@ def extrair_dados_sf_cached(ano_alvo: int, mes_alvo: int) -> Tuple[pd.DataFrame,
             "Imobiliária": (r.get("Imobiliaria__r") or {}).get("Name")
         } for r in (res_ven.get("records") or [])])
     except Exception: df_ven = pd.DataFrame()
+    df_ven = filtrar_e_deduplicar(df_ven, "ID da Oportunidade", "Contrato gerado em")
 
     return df_ag, df_pas, df_ven
 
