@@ -2,6 +2,7 @@
 """
 Acompanhamento e Projeção Sazonal de Vendas & Funil — Direcional (RJ).
 Design: Gaps Style (Transparência, Blur, Fundo de Cadastro, Inter/Montserrat).
+Tendência: ARIMA(p,q) automático por indicador.
 """
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from statsmodels.tsa.arima.model import ARIMA
 import streamlit as st
 
 # -----------------------------------------------------------------------------
@@ -325,15 +327,40 @@ def processar_base_diaria(df_ag: pd.DataFrame, df_pas: pd.DataFrame, df_ven: pd.
     
     return cal, inicio, fim_treino
 
-def _matriz_explicativas_com_tendencia(df: pd.DataFrame) -> Tuple[np.ndarray, List[str]]:
+def get_arima_trend_features(train_df: pd.DataFrame, target_df: pd.DataFrame, target_col: str) -> Tuple[np.ndarray, np.ndarray]:
+    series = train_df[target_col].values
+    best_aic = np.inf
+    best_res = None
+    for p in range(2):
+        for d in range(2):
+            for q in range(2):
+                if p == 0 and d == 0 and q == 0: continue
+                try:
+                    res = ARIMA(series, order=(p, d, q)).fit()
+                    if res.aic < best_aic:
+                        best_aic = res.aic
+                        best_res = res
+                except Exception:
+                    continue
+                    
+    if best_res is None:
+        fitted = np.full(len(train_df), np.mean(series))
+        forecast = np.full(len(target_df), np.mean(series))
+    else:
+        fitted = np.array(best_res.fittedvalues)
+        if len(fitted) != len(train_df):
+            fitted = np.resize(fitted, len(train_df))
+        forecast = np.array(best_res.forecast(steps=len(target_df)))
+    return fitted, forecast
+
+def _matriz_explicativas_com_arima(df: pd.DataFrame, arima_trend: np.ndarray) -> Tuple[np.ndarray, List[str]]:
     n = len(df)
-    n_cols = 31 + 7 + 12 + 1 + 1 
+    n_cols = 31 + 7 + 12 + 1 + 1 # dia_mes(31) + dia_semana(7) + mes(12) + arima_trend(1) + intercepto(1)
     X = np.zeros((n, n_cols), dtype=float)
     X[:, -1] = 1.0 
 
     dias_semana_idx = {nome: i for i, nome in DIAS_SEMANA_PT.items()}
     meses_idx = {nome: i for i, nome in MESES_PT.items()}
-    data_min = pd.to_datetime(df["data"]).min()
 
     for i, row in enumerate(df.itertuples(index=False)):
         dia = int(row.dia_mes)
@@ -343,16 +370,16 @@ def _matriz_explicativas_com_tendencia(df: pd.DataFrame) -> Tuple[np.ndarray, Li
         ms = meses_idx.get(str(row.mes), None)
         if ms is not None: X[i, 31 + 7 + (ms - 1)] = 1.0
         
-        dt_atual = pd.to_datetime(row.data)
-        anos_passados = (dt_atual - data_min).days / 365.25
-        X[i, 31 + 7 + 12] = anos_passados
+        X[i, 31 + 7 + 12] = arima_trend[i]
 
-    names = [f"dia_{d}" for d in range(1, 32)] + list(DIAS_SEMANA_PT.values()) + list(MESES_PT.values()) + ["tendencia_anos", "intercepto"]
+    names = [f"dia_{d}" for d in range(1, 32)] + list(DIAS_SEMANA_PT.values()) + list(MESES_PT.values()) + ["tendencia_arima", "intercepto"]
     return X, names
 
-def treinar_regressao_com_estatisticas(treino: pd.DataFrame, alvo: str) -> Dict[str, Any]:
-    X, feature_names = _matriz_explicativas_com_tendencia(treino)
-    y = treino[alvo].astype(float).values
+def treinar_regressao_com_arima(treino: pd.DataFrame, target_col: str, forecast_df: pd.DataFrame) -> Dict[str, Any]:
+    fitted_trend, forecast_trend = get_arima_trend_features(treino, forecast_df, target_col)
+    
+    X, feature_names = _matriz_explicativas_com_arima(treino, fitted_trend)
+    y = treino[target_col].astype(float).values
     beta, residuals, rank, s = np.linalg.lstsq(X, y, rcond=None)
     
     n = len(y)
@@ -385,7 +412,13 @@ def treinar_regressao_com_estatisticas(treino: pd.DataFrame, alvo: str) -> Dict[
         "Significância (p-value)": p_values
     })
 
-    return {"beta": beta, "r2": r2, "mae": mae, "tabela_betas": tabela_betas}
+    return {
+        "beta": beta,
+        "r2": r2,
+        "mae": mae,
+        "tabela_betas": tabela_betas,
+        "forecast_trend": forecast_trend
+    }
 
 def projetar_mes_alvo_diario(treino: pd.DataFrame, ano_alvo: int, mes_alvo: int, modelos_treinados: Dict[str, Any]) -> Dict[str, pd.DataFrame]:
     dias_mes = calendar.monthrange(ano_alvo, mes_alvo)[1]
@@ -396,12 +429,13 @@ def projetar_mes_alvo_diario(treino: pd.DataFrame, ano_alvo: int, mes_alvo: int,
     df_alvo["mes"] = df_alvo["data"].map(lambda d: MESES_PT[d.month])
     df_alvo["ano_num"] = ano_alvo
 
-    X_alvo, _ = _matriz_explicativas_com_tendencia(df_alvo)
-    
     resultados_proj = {}
     for etapa in FUNIL_ETAPAS:
         mod = modelos_treinados[etapa]
         beta = mod["beta"]
+        forecast_trend = mod["forecast_trend"]
+        
+        X_alvo, _ = _matriz_explicativas_com_arima(df_alvo, forecast_trend)
         y_proj = X_alvo @ beta
         y_proj = np.maximum(y_proj, 0.0) 
         
@@ -500,12 +534,17 @@ def main() -> None:
         st.error(f"Erro ao conectar no Salesforce: {e}")
         return
 
-    atualizar_progresso(60, "Processando matrizes e calculando regressões...")
+    atualizar_progresso(40, "Processando base diária histórica...")
     cal, inicio, fim_treino = processar_base_diaria(df_ag, df_pas, df_ven, ano_alvo, mes_alvo)
 
+    dias_mes = calendar.monthrange(ano_alvo, mes_alvo)[1]
+    idx_alvo = pd.date_range(date(ano_alvo, mes_alvo, 1), date(ano_alvo, mes_alvo, dias_mes), freq="D")
+    df_alvo_dummy = pd.DataFrame({"data": [d.date() for d in idx_alvo], "dia_mes": idx_alvo.day, "dia_semana": idx_alvo.weekday, "mes": mes_alvo})
+
+    atualizar_progresso(70, "Executando Regressões OLS com ARIMA(p,q) Automático...")
     modelos_treinados = {}
     for etapa in FUNIL_ETAPAS:
-        modelos_treinados[etapa] = treinar_regressao_com_estatisticas(cal, etapa)
+        modelos_treinados[etapa] = treinar_regressao_com_arima(cal, etapa, df_alvo_dummy)
 
     proj_diaria = projetar_mes_alvo_diario(cal, ano_alvo, mes_alvo, modelos_treinados)
     conv_mensal = calcular_conversoes_mensais(cal)
@@ -588,7 +627,7 @@ def main() -> None:
             st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
     with tab2:
-        st.subheader("Estatísticas e Coeficientes (Betas)")
+        st.subheader("Estatísticas e Coeficientes (Betas com Tendência ARIMA)")
         for etapa in FUNIL_ETAPAS:
             st.markdown(f"##### Indicador: {FUNIL_LABELS[etapa]}")
             m = modelos_treinados[etapa]
@@ -625,7 +664,7 @@ def main() -> None:
 
     with tab4:
         st.subheader(f"Acompanhamento de Metas de {MESES_PT[mes_alvo].capitalize()}/{ano_alvo}")
-        st.caption("As metas de topo de funil foram recalculadas utilizando as taxas de conversão históricas esperadas entre cada etapa e as vendas.")
+        st.caption("As metas de topo de funil foram calculadas com base na proporção histórica de conversão do respectivo mês em relação às vendas.")
 
         sub_mes_hist = cal[cal["mes"] == MESES_PT[mes_alvo]]
         total_vendas_mes_hist = sub_mes_hist["vendas"].sum() if not sub_mes_hist.empty else 1.0
