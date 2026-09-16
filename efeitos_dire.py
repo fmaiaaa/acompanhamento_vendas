@@ -2,8 +2,8 @@
 """
 Ferramenta para cálculo da representatividade diária dos indicadores.
 Extrai 36 meses de histórico do Salesforce, roda regressões OLS isoladas 
-(dia da semana, dia do mês e mês) e converte o volume aditivo esperado
-na participação percentual de cada dia dentro do mês alvo.
+(dia da semana, dia do mês, mês e tendência linear) e converte o volume aditivo 
+esperado na participação percentual de cada dia dentro do mês alvo.
 Inclui comparativo Realizado x Projetado para meses fechados, com 
 estilização Gaps Style (Direcional).
 """
@@ -270,12 +270,15 @@ def montar_calendario(df_ag, df_pas, df_ven, inicio, fim):
     return cal
 
 # -----------------------------------------------------------------------------
-# Regressão OLS de Efeitos Relativos
+# Regressão OLS de Efeitos Relativos (Com Tendência Linear)
 # -----------------------------------------------------------------------------
 def matriz_explicativas_relativa(df: pd.DataFrame) -> np.ndarray:
     n = len(df)
-    X = np.zeros((n, 30 + 6 + 11 + 1), dtype=float)
-    X[:, -1] = 1.0
+    X = np.zeros((n, 30 + 6 + 11 + 1 + 1), dtype=float)
+    X[:, -1] = 1.0 # Intercepto
+    
+    # Tendência linear (escala / 1000 para evitar singularidade e facilitar leitura)
+    X[:, -2] = np.arange(n, dtype=float) / 1000.0 
 
     dias_semana_idx = {nome: i for i, nome in DIAS_SEMANA_PT.items()}
     meses_idx = {nome: i for i, nome in MESES_PT.items()}
@@ -324,6 +327,7 @@ def estimar_efeitos_sazonais(treino: pd.DataFrame):
     for d in range(2, 32): nomes_features.append(f"Dia do Mês {d}")
     for i in range(1, 7): nomes_features.append(f"Dia da Semana: {DIAS_SEMANA_PT[i].capitalize()}")
     for m in range(2, 13): nomes_features.append(f"Mês: {MESES_PT[m].capitalize()}")
+    nomes_features.append("Tendência Linear (por 1.000 dias)")
     nomes_features.append("Intercepto (Dia 1, Segunda, Janeiro)")
     
     df_stats = pd.DataFrame({
@@ -341,6 +345,8 @@ def estimar_efeitos_sazonais(treino: pd.DataFrame):
     # ---------------------------------------------------
     
     intercepto = float(coef[-1])
+    tendencia = float(coef[-2])
+    
     efeito_dm = {"1": 0.0}
     for d in range(2, 32): efeito_dm[str(d)] = float(coef[d - 2])
     efeito_ds = {DIAS_SEMANA_PT[0]: 0.0}
@@ -350,6 +356,7 @@ def estimar_efeitos_sazonais(treino: pd.DataFrame):
 
     return {
         "intercepto": intercepto,
+        "tendencia": tendencia,
         "dia_mes": efeito_dm,
         "dia_semana": efeito_ds,
         "mes": efeito_mes,
@@ -498,13 +505,21 @@ def main():
                 continue
             
             intercepto = efeitos["intercepto"]
+            tendencia = efeitos["tendencia"]
             esperados_diarios = []
             
-            for d in datas_alvo:
+            # O índice base t do dia 1 do mês alvo
+            t_base = len(cal_treino)
+            
+            for i, d in enumerate(datas_alvo):
                 e_mes = efeitos["mes"].get(MESES_PT[d.month], 0.0)
                 e_dm = efeitos["dia_mes"].get(str(d.day), 0.0)
                 e_ds = efeitos["dia_semana"].get(DIAS_SEMANA_PT[d.weekday()], 0.0)
-                esperados_diarios.append(max(intercepto + e_mes + e_dm + e_ds, 0.0))
+                
+                # A tendência linear normalizada pelo fator 1000 que usamos no treinamento
+                t_futuro = (t_base + i) / 1000.0
+                
+                esperados_diarios.append(max(intercepto + e_mes + e_dm + e_ds + tendencia * t_futuro, 0.0))
             
             soma_esp = sum(esperados_diarios)
             df_resultado[label_proj] = [(v / soma_esp * 100.0) if soma_esp > 0 else 0.0 for v in esperados_diarios]
@@ -512,7 +527,10 @@ def main():
             # Se for mês atual ou passado, pega a distribuição REAL do mês
             if is_past_month and not cal_alvo.empty:
                 mapa_real = dict(zip(cal_alvo["data"], cal_alvo[etapa]))
-                reais_diarios = [mapa_real.get(d, 0.0) for d in datas_alvo]
+                if ano_alvo == hoje.year and mes_alvo == hoje.month:
+                    reais_diarios = [mapa_real.get(d, 0.0) if d < hoje else 0.0 for d in datas_alvo]
+                else:
+                    reais_diarios = [mapa_real.get(d, 0.0) for d in datas_alvo]
                 soma_real = sum(reais_diarios)
                 df_resultado[label_real] = [(v / soma_real * 100.0) if soma_real > 0 else 0.0 for v in reais_diarios]
 
@@ -543,13 +561,17 @@ def main():
                 hist_x.append(str(row['ano_mes']))
             historico_plots[etapa] = {"x": hist_x, "y": hist_y}
             
-            X = np.zeros((len(df_mensal_agg), 11 + 1), dtype=float)
-            X[:, -1] = 1.0
+            # Matriz de conversão com Intercepto e Tendência (Mês 11 + Trend 1 + Intercept 1 = 13)
+            X = np.zeros((len(df_mensal_agg), 11 + 1 + 1), dtype=float)
+            X[:, -1] = 1.0 # Intercepto
+            X[:, -2] = np.arange(len(df_mensal_agg), dtype=float) / 12.0 # Tendência anual (T/12)
+            
             meses_idx = {nome: i for i, nome in MESES_PT.items()}
             for i, m_str in enumerate(df_mensal_agg['mes']):
                 ms = meses_idx.get(m_str, None)
                 if ms is not None and ms >= 2:
                     X[i, ms - 2] = 1.0
+                    
             y = np.array([y_val / 100.0 for y_val in hist_y])
             
             coef, *_ = np.linalg.lstsq(X, y, rcond=None)
@@ -577,7 +599,7 @@ def main():
             else:
                 p_values = [np.nan] * k_feats
                 
-            nomes_features = [f"Mês: {MESES_PT[m].capitalize()}" for m in range(2, 13)] + ["Intercepto (Janeiro)"]
+            nomes_features = [f"Mês: {MESES_PT[m].capitalize()}" for m in range(2, 13)] + ["Tendência Linear (Por Ano)", "Intercepto (Janeiro)"]
             df_stats_conv = pd.DataFrame({
                 "Variável": nomes_features,
                 "Beta": coef,
@@ -590,9 +612,14 @@ def main():
             # --------------------------------------------------
             
             intercepto = float(coef[-1])
+            tendencia = float(coef[-2])
             m_alvo_idx = meses_idx.get(MESES_PT[mes_alvo], 1)
             e_mes = float(coef[m_alvo_idx - 2]) if m_alvo_idx >= 2 else 0.0
-            esperado = max(intercepto + e_mes, 0.0)
+            
+            # O índice T para a tendência alvo é o próprio len() atual do histórico agregado 
+            t_futuro = float(len(df_mensal_agg)) / 12.0
+            
+            esperado = max(intercepto + e_mes + tendencia * t_futuro, 0.0)
             
             real = None
             if is_past_month and not cal_alvo.empty:
@@ -602,10 +629,15 @@ def main():
                 
             dic_res = {
                 "Indicador": f"{FUNIL_LABELS[etapa]} → Vendas",
-                "Projetado (%)": esperado * 100.0
+                "Projetado (%)": esperado * 100.0,
             }
             if is_past_month:
                 dic_res["Realizado (%)"] = real * 100.0 if real is not None else 0.0
+            
+            # Médias e Medianas Históricas
+            dic_res["Média Histórica (%)"] = float(np.mean(hist_y)) if hist_y else 0.0
+            dic_res["Mediana Histórica (%)"] = float(np.median(hist_y)) if hist_y else 0.0
+
             res_conv.append(dic_res)
             
         df_res_conv = pd.DataFrame(res_conv)
@@ -618,15 +650,36 @@ def main():
             # Gráficos Comparativos
             if is_past_month and not cal_alvo.empty:
                 st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1.5rem 0;'/>", unsafe_allow_html=True)
-                st.subheader("Gráficos Comparativos: Projetado vs Realizado")
+                is_current_month = (ano_alvo == hoje.year and mes_alvo == hoje.month)
+                
+                if is_current_month:
+                    ontem = hoje - timedelta(days=1)
+                    st.subheader(f"Gráficos Comparativos: Projetado vs Realizado (Até {ontem.strftime('%d/%m')})")
+                else:
+                    st.subheader("Gráficos Comparativos: Projetado vs Realizado")
+                    
                 for etapa in FUNIL_ETAPAS:
-                    _plot_comparativo_representatividade(etapa, df_resultado)
+                    df_plot = df_resultado.copy()
+                    if is_current_month:
+                        df_plot = df_plot[df_plot["Data"] < hoje].copy()
+                        col_proj = f"{FUNIL_LABELS[etapa]} Projetado (%)"
+                        col_real = f"{FUNIL_LABELS[etapa]} Realizado (%)"
+                        
+                        soma_proj = df_plot[col_proj].sum()
+                        if soma_proj > 0:
+                            df_plot[col_proj] = (df_plot[col_proj] / soma_proj) * 100.0
+                            
+                        soma_real = df_plot[col_real].sum()
+                        if soma_real > 0:
+                            df_plot[col_real] = (df_plot[col_real] / soma_real) * 100.0
+                            
+                    _plot_comparativo_representatividade(etapa, df_plot)
                     
         with tab_mensal:
             st.subheader("Projeção de Conversão em Vendas")
             st.markdown(
                 "<p style='color:#475569;font-size:0.9rem;'>Estimativa da taxa de conversão mensal, "
-                "baseada em regressão linear simples (dummies de mês) do histórico de 36 meses.</p>", 
+                "baseada em regressão linear simples (dummies de mês + tendência anual) do histórico de 36 meses.</p>", 
                 unsafe_allow_html=True
             )
             
