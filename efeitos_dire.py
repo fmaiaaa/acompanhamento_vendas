@@ -2,10 +2,10 @@
 """
 Ferramenta para cálculo da representatividade diária dos indicadores.
 Extrai 36 meses de histórico do Salesforce, roda regressões OLS isoladas 
-(dia da semana, dia do mês, mês e tendência linear) e converte o volume aditivo 
+(dia da semana, dia do mês, mês e tendência linear por ano) e converte o volume aditivo 
 esperado na participação percentual de cada dia dentro do mês alvo.
-Inclui comparativo Realizado x Projetado para meses fechados, com 
-estilização Gaps Style (Direcional).
+Busca metas no Google Sheets, converte reversamente para todos os indicadores
+e plota comparativos Projetado x Realizado com Intervalos de Confiança.
 """
 import os
 import io
@@ -106,7 +106,6 @@ def _exibir_logo_topo() -> None:
                 b64 = base64.b64encode(f.read()).decode("ascii")
             st.markdown(f'<div class="ficha-logo-wrap"><img src="data:{mime};base64,{b64}" alt="Direcional" /></div>', unsafe_allow_html=True)
             return
-        # Fallback URL se não achar a logo na pasta local
         u = "https://logodownload.org/wp-content/uploads/2021/04/direcional-engenharia-logo.png"
         st.markdown(f'<div class="ficha-logo-wrap"><img src="{html.escape(u)}" alt="Direcional" /></div>', unsafe_allow_html=True)
     except Exception: pass
@@ -115,7 +114,7 @@ def _cabecalho_pagina() -> None:
     _exibir_logo_topo()
     st.markdown(
         f'<div class="ficha-hero-stack"><div class="ficha-hero">'
-        f'<p class="ficha-title">Representatividade Sazonal</p></div>'
+        f'<p class="ficha-title">Representatividade Sazonal & Metas</p></div>'
         f'<div class="ficha-hero-bar-wrap" aria-hidden="true"><div class="ficha-hero-bar"></div></div></div>',
         unsafe_allow_html=True,
     )
@@ -166,58 +165,82 @@ def aplicar_estilo() -> None:
     )
 
 # -----------------------------------------------------------------------------
+# Google Sheets (Metas)
+# -----------------------------------------------------------------------------
+@st.cache_data(ttl=3600, show_spinner=False)
+def buscar_meta_vendas_gsheets(ano_alvo: int, mes_alvo: int) -> float:
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+        if "gcp_service_account" in st.secrets:
+            sec = dict(st.secrets["gcp_service_account"])
+        elif "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
+            sec = dict(st.secrets["connections"]["gsheets"])
+        else:
+            return 0.0
+            
+        scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+        creds = Credentials.from_service_account_info(sec, scopes=scopes)
+        gc = gspread.authorize(creds)
+        ws = gc.open_by_key("1cseWbys3GXd7Q70irMK_8Iw3xz5iQy0wmArgkSdd5BA").worksheet("Meta Mensal")
+        df = pd.DataFrame(ws.get_all_records())
+        mask = (df["Ano"].astype(int) == int(ano_alvo)) & (df["Mês"].astype(int) == int(mes_alvo))
+        if mask.any():
+            return float(df.loc[mask, "Meta Vendas"].iloc[0])
+    except Exception as e:
+        pass
+    return 0.0
+
+# -----------------------------------------------------------------------------
 # Conexão e Extração Salesforce
 # -----------------------------------------------------------------------------
-def conectar_salesforce_app():
+def conectar_sf():
     try:
         sec = st.secrets["salesforce"]
-        username = sec.get("USER", "")
-        password = sec.get("PASSWORD", "")
-        token = sec.get("TOKEN", "")
-        domain = sec.get("DOMAIN", "login")
-        
         from simple_salesforce import Salesforce
-        kwargs = {"username": username, "password": password, "domain": domain}
-        if token: kwargs["security_token"] = token
+        kwargs = {"username": sec.get("USER", ""), "password": sec.get("PASSWORD", ""), "domain": sec.get("DOMAIN", "login")}
+        if sec.get("TOKEN", ""): kwargs["security_token"] = sec.get("TOKEN", "")
         return Salesforce(**kwargs)
-    except Exception as e:
-        st.error(f"Erro ao conectar no Salesforce: {e}")
+    except Exception:
         return None
 
-def buscar_dados_salesforce(sf, inicio_treino: date, fim_alvo: date, update_progress=None):
-    """Extrai dados necessários cobrindo desde o inicio do treino até o fim do mês alvo."""
-    desde_str = f"{inicio_treino.isoformat()}T00:00:00Z"
-    desde_date_str = inicio_treino.isoformat()
-    ate_str = f"{fim_alvo.isoformat()}T23:59:59Z"
-    ate_date_str = fim_alvo.isoformat()
+@st.cache_data(ttl=3600, show_spinner=False)
+def extrair_dados_sf_cached(ano_alvo: int, mes_alvo: int):
+    sf = conectar_sf()
+    if not sf: return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    
+    data_alvo_inicio = date(ano_alvo, mes_alvo, 1)
+    dias_no_mes = calendar.monthrange(ano_alvo, mes_alvo)[1]
+    data_alvo_fim = date(ano_alvo, mes_alvo, dias_no_mes)
+    
+    hoje = date.today()
+    fim_extracao = data_alvo_fim if data_alvo_fim <= hoje else hoje
+    ini_treino = date(ano_alvo - 3, mes_alvo, 1)
+    
+    desde_str = f"{ini_treino.isoformat()}T00:00:00Z"
+    desde_date_str = ini_treino.isoformat()
+    ate_str = f"{fim_extracao.isoformat()}T23:59:59Z"
+    ate_date_str = fim_extracao.isoformat()
 
-    if update_progress: update_progress(15, "Extraindo Vendas (Opportunity)...")
     soql_vendas = (
         "SELECT Id, ContratoGeradoEm__c FROM Opportunity "
-        "WHERE DirecionalVendas__c = true "
-        "AND Empreendimento__r.Regional__c = 'RJ' "
-        "AND Empreendimento__r.UnidadeDeNegocio__c = 'Direcional' "
+        "WHERE DirecionalVendas__c = true AND Empreendimento__r.Regional__c = 'RJ' "
+        "AND Empreendimento__r.UnidadeDeNegocio__c = 'Direcional' AND Imobiliaria__r.Name LIKE 'DIR%' "
         f"AND ContratoGeradoEm__c >= {desde_date_str} AND ContratoGeradoEm__c <= {ate_date_str}"
     )
     df_ven = pd.DataFrame(sf.query_all(soql_vendas).get("records", []))
         
-    if update_progress: update_progress(45, "Extraindo Pastas (Avaliacao_credito__c)...")
     soql_pastas = (
-        "SELECT Name, dataPrimeiroEnvioAnalise__c, dataAprovacaoSAFI__c "
-        "FROM Avaliacao_credito__c "
-        "WHERE Empreendimento__r.Regional__c = 'RJ' "
-        "AND Empreendimento__r.UnidadeDeNegocio__c = 'Direcional' "
-        f"AND CreatedDate >= {desde_str} AND CreatedDate <= {ate_str}"
+        "SELECT Name, dataPrimeiroEnvioAnalise__c, dataAprovacaoSAFI__c FROM Avaliacao_credito__c "
+        "WHERE Empreendimento__r.Regional__c = 'RJ' AND Empreendimento__r.UnidadeDeNegocio__c = 'Direcional' "
+        f"AND Imobiliaria__r.Name LIKE 'DIR%' AND CreatedDate >= {desde_str} AND CreatedDate <= {ate_str}"
     )
     df_pas = pd.DataFrame(sf.query_all(soql_pastas).get("records", []))
 
-    if update_progress: update_progress(75, "Extraindo Agendamentos e Visitas (Event)...")
     soql_ag = (
-        "SELECT Codigo_do_agendamento__c, CreatedDate, Data_da_Visita__c "
-        "FROM Event "
-        "WHERE Unidade_de_negocio__c = 'Direcional' "
-        "AND Regional__c = 'RJ' "
-        "AND Empreendimento_de_interesse__c != null "
+        "SELECT Codigo_do_agendamento__c, CreatedDate, Data_da_Visita__c FROM Event "
+        "WHERE Unidade_de_negocio__c = 'Direcional' AND Regional__c = 'RJ' "
+        "AND Empreendimento_de_interesse__c != null AND Imobiliaria__r.Name LIKE 'DIR%' "
         f"AND CreatedDate >= {desde_str} AND CreatedDate <= {ate_str}"
     )
     df_ag = pd.DataFrame(sf.query_all(soql_ag).get("records", []))
@@ -234,8 +257,7 @@ def montar_calendario(df_ag, df_pas, df_ven, inicio, fim):
     if not df_ven.empty:
         df_ven["dt_contrato"] = formatar_data(df_ven.get("ContratoGeradoEm__c"))
         vendas_count = df_ven.dropna(subset=["dt_contrato"]).drop_duplicates("Id")["dt_contrato"].value_counts()
-    else:
-        vendas_count = pd.Series(dtype=float)
+    else: vendas_count = pd.Series(dtype=float)
 
     if not df_pas.empty:
         df_pas["dt_envio"] = formatar_data(df_pas.get("dataPrimeiroEnvioAnalise__c"))
@@ -257,7 +279,6 @@ def montar_calendario(df_ag, df_pas, df_ven, inicio, fim):
 
     idx = pd.date_range(inicio, fim, freq="D")
     cal = pd.DataFrame({"data": [d.date() for d in idx]})
-    
     cal["agendamentos"] = cal["data"].map(ag_count).fillna(0.0)
     cal["visitas"] = cal["data"].map(vis_count).fillna(0.0)
     cal["pastas"] = cal["data"].map(pas_count).fillna(0.0)
@@ -270,15 +291,14 @@ def montar_calendario(df_ag, df_pas, df_ven, inicio, fim):
     return cal
 
 # -----------------------------------------------------------------------------
-# Regressão OLS de Efeitos Relativos (Com Tendência Linear)
+# Regressão OLS de Efeitos Relativos (Com Tendência Linear e IC)
 # -----------------------------------------------------------------------------
-def matriz_explicativas_relativa(df: pd.DataFrame) -> np.ndarray:
+def matriz_explicativas_relativa(df: pd.DataFrame, t_start: int = 0) -> np.ndarray:
     n = len(df)
     X = np.zeros((n, 30 + 6 + 11 + 1 + 1), dtype=float)
     X[:, -1] = 1.0 # Intercepto
-    
-    # Tendência linear (escala / 1000 para evitar singularidade e facilitar leitura)
-    X[:, -2] = np.arange(n, dtype=float) / 1000.0 
+    # Tendência linear (evolução anual)
+    X[:, -2] = (np.arange(n, dtype=float) + t_start) / 365.25 
 
     dias_semana_idx = {nome: i for i, nome in DIAS_SEMANA_PT.items()}
     meses_idx = {nome: i for i, nome in MESES_PT.items()}
@@ -295,11 +315,10 @@ def matriz_explicativas_relativa(df: pd.DataFrame) -> np.ndarray:
 def estimar_efeitos_sazonais(treino: pd.DataFrame):
     if treino.empty or float(treino["qtd"].sum()) <= 0:
         return None
-    X = matriz_explicativas_relativa(treino)
+    X = matriz_explicativas_relativa(treino, t_start=0)
     y = treino["qtd"].astype(float).values
     coef, *_ = np.linalg.lstsq(X, y, rcond=None)
     
-    # --- Cálculo de Estatísticas, R2, MAE e P-Values ---
     y_hat = X @ coef
     res = y - y_hat
     ss_tot = np.sum((y - np.mean(y)) ** 2)
@@ -312,29 +331,27 @@ def estimar_efeitos_sazonais(treino: pd.DataFrame):
     if df_err > 0:
         s2 = ss_res / df_err
         try:
-            cov_matrix = s2 * np.linalg.inv(X.T @ X)
+            cov_matrix = s2 * np.linalg.pinv(X.T @ X)
             se = np.sqrt(np.diagonal(cov_matrix))
             t_stats = coef / se
             import math
-            # P-value aproximado pela Normal standard
             p_values = [1.0 - math.erf(abs(t) / math.sqrt(2.0)) for t in t_stats]
         except np.linalg.LinAlgError:
+            cov_matrix = np.zeros((k, k))
             p_values = [np.nan] * k
     else:
+        s2 = 0
+        cov_matrix = np.zeros((k, k))
         p_values = [np.nan] * k
         
     nomes_features = []
     for d in range(2, 32): nomes_features.append(f"Dia do Mês {d}")
     for i in range(1, 7): nomes_features.append(f"Dia da Semana: {DIAS_SEMANA_PT[i].capitalize()}")
     for m in range(2, 13): nomes_features.append(f"Mês: {MESES_PT[m].capitalize()}")
-    nomes_features.append("Tendência Linear (por 1.000 dias)")
+    nomes_features.append("Tendência Linear (Efeito por Ano)")
     nomes_features.append("Intercepto (Dia 1, Segunda, Janeiro)")
     
-    df_stats = pd.DataFrame({
-        "Variável": nomes_features,
-        "Beta": coef,
-        "Valor-p": p_values
-    })
+    df_stats = pd.DataFrame({"Variável": nomes_features, "Beta": coef, "Valor-p": p_values})
     def sign_level(p):
         if pd.isna(p): return ""
         if p < 0.01: return "***"
@@ -342,44 +359,43 @@ def estimar_efeitos_sazonais(treino: pd.DataFrame):
         if p < 0.1: return "*"
         return ""
     df_stats["Significância"] = df_stats["Valor-p"].apply(sign_level)
-    # ---------------------------------------------------
     
-    intercepto = float(coef[-1])
-    tendencia = float(coef[-2])
-    
-    efeito_dm = {"1": 0.0}
-    for d in range(2, 32): efeito_dm[str(d)] = float(coef[d - 2])
-    efeito_ds = {DIAS_SEMANA_PT[0]: 0.0}
-    for i in range(1, 7): efeito_ds[DIAS_SEMANA_PT[i]] = float(coef[30 + (i - 1)])
-    efeito_mes = {MESES_PT[1]: 0.0}
-    for m in range(2, 13): efeito_mes[MESES_PT[m]] = float(coef[30 + 6 + (m - 2)])
-
     return {
-        "intercepto": intercepto,
-        "tendencia": tendencia,
-        "dia_mes": efeito_dm,
-        "dia_semana": efeito_ds,
-        "mes": efeito_mes,
-        "r2": r2,
-        "mae": mae,
-        "df_stats": df_stats
+        "coef": coef, "cov_matrix": cov_matrix, "s2": s2,
+        "r2": r2, "mae": mae, "df_stats": df_stats
     }
 
 # -----------------------------------------------------------------------------
-# Funções de Plotagem e Interface
+# Plotly Helpers
 # -----------------------------------------------------------------------------
-def _plot_comparativo_representatividade(etapa: str, df: pd.DataFrame):
+def _plot_comparativo_representatividade(etapa: str, df: pd.DataFrame, is_current_month: bool):
     label = FUNIL_LABELS.get(etapa, etapa)
     col_proj = f"{label} Projetado (%)"
     col_real = f"{label} Realizado (%)"
+    col_ic_up = f"{label} IC Upper (%)"
+    col_ic_lo = f"{label} IC Lower (%)"
     
     if col_real not in df.columns or df[col_real].sum() <= 0:
-        return # Não plota se não há dado real
+        return 
         
     fig = go.Figure()
     
     fig.add_trace(go.Scatter(
-        x=df["Dia do Mês"], y=df[col_real],
+        x=df["Dia do Mês"], y=df[col_ic_up],
+        mode="lines", line=dict(width=0), showlegend=False,
+        hoverinfo="skip"
+    ))
+    fig.add_trace(go.Scatter(
+        x=df["Dia do Mês"], y=df[col_ic_lo],
+        mode="lines", line=dict(width=0), fill='tonexty',
+        fillcolor='rgba(203, 9, 53, 0.15)', name="Intervalo de Confiança",
+        hoverinfo="skip"
+    ))
+    
+    df_real = df.dropna(subset=[col_real]) if is_current_month else df
+    
+    fig.add_trace(go.Scatter(
+        x=df_real["Dia do Mês"], y=df_real[col_real],
         mode="lines+markers", name="Realizado",
         line=dict(color=COR_AZUL_ESC, width=3),
         marker=dict(size=7, color=COR_AZUL_ESC),
@@ -405,25 +421,59 @@ def _plot_comparativo_representatividade(etapa: str, df: pd.DataFrame):
     )
     fig.update_xaxes(title_text="Dia do Mês", dtick=1, showgrid=False)
     fig.update_yaxes(title_text="Representatividade (%)", showgrid=True, gridcolor="rgba(226,232,240,0.5)")
-    
     st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
 
-def to_excel(df: pd.DataFrame, df_conv: pd.DataFrame = None) -> bytes:
+def _plot_metas_acumuladas(etapa: str, df: pd.DataFrame, is_current_month: bool):
+    label = FUNIL_LABELS.get(etapa, etapa)
+    col_meta = f"Meta {label} (Acumulada)"
+    col_real = f"{label} Realizado Absoluto (Acumulado)"
+    
+    if col_real not in df.columns or col_meta not in df.columns: return
+        
+    fig = go.Figure()
+    df_real = df.dropna(subset=[col_real]) if is_current_month else df
+    
+    fig.add_trace(go.Scatter(
+        x=df_real["Dia do Mês"], y=df_real[col_real],
+        mode="lines+markers", name="Realizado (Acum.)",
+        line=dict(color=COR_AZUL_ESC, width=3),
+        marker=dict(size=7, color=COR_AZUL_ESC),
+        hovertemplate="%{x}º dia: %{y:.0f} unidades<extra></extra>"
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=df["Dia do Mês"], y=df[col_meta],
+        mode="lines+markers", name="Meta Projetada (Acum.)",
+        line=dict(color=COR_VERMELHO, width=3, dash="dash"),
+        marker=dict(size=7, color=COR_VERMELHO),
+        hovertemplate="%{x}º dia: %{y:.0f} unidades<extra></extra>"
+    ))
+    
+    fig.update_layout(
+        title=dict(text=f"{label} — Meta x Realizado (Volume Acumulado)", font=dict(family="Montserrat", color=COR_TEXTO_PRETO, size=16)),
+        margin=dict(l=20, r=20, t=50, b=20),
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter", color=COR_TEXTO_PRETO),
+        legend=dict(orientation="h", yanchor="bottom", y=1.05, xanchor="center", x=0.5),
+        hovermode="x unified", height=380,
+    )
+    fig.update_xaxes(title_text="Dia do Mês", dtick=1, showgrid=False)
+    fig.update_yaxes(title_text="Volume Acumulado", showgrid=True, gridcolor="rgba(226,232,240,0.5)")
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+def to_excel(df: pd.DataFrame, df_conv: pd.DataFrame, df_metas: pd.DataFrame) -> bytes:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
         df.to_excel(writer, index=False, sheet_name='Representatividade')
-        worksheet = writer.sheets['Representatividade']
-        for i, col in enumerate(df.columns):
-            max_len = max(df[col].astype(str).map(len).max(), len(col)) + 2
-            worksheet.set_column(i, i, max_len)
-            
-        if df_conv is not None:
-            df_conv.to_excel(writer, index=False, sheet_name='Conversões')
-            ws_conv = writer.sheets['Conversões']
-            for i, col in enumerate(df_conv.columns):
-                max_len = max(df_conv[col].astype(str).map(len).max(), len(col)) + 2
-                ws_conv.set_column(i, i, max_len)
-                
+        df_metas.to_excel(writer, index=False, sheet_name='Metas Diárias')
+        df_conv.to_excel(writer, index=False, sheet_name='Conversões')
+        
+        for sheet in writer.sheets:
+            ws = writer.sheets[sheet]
+            d = df if sheet == 'Representatividade' else (df_metas if sheet == 'Metas Diárias' else df_conv)
+            for i, col in enumerate(d.columns):
+                max_len = max(d[col].astype(str).map(len).max(), len(col)) + 2
+                ws.set_column(i, i, min(max_len, 40))
     return output.getvalue()
 
 def main():
@@ -441,362 +491,273 @@ def main():
         mes_alvo = st.selectbox("Mês da Projeção", options=list(range(1, 13)), format_func=lambda x: MESES_PT[x].capitalize(), index=hoje.month - 1)
 
     is_past_month = (ano_alvo < hoje.year) or (ano_alvo == hoje.year and mes_alvo <= hoje.month)
+    is_current_month = (ano_alvo == hoje.year and mes_alvo == hoje.month)
 
-    if st.button("Buscar Dados e Calcular", type="primary", use_container_width=True):
-        sf = conectar_salesforce_app()
-        if not sf: return
+    prog_placeholder = st.empty()
+    html_spinner = f"""
+    <style>@keyframes prog-spin {{ 100% {{ transform: rotate(360deg); }} }}</style>
+    <div style="margin: 1.5rem 0; padding: 1.25rem; background: rgba(255,255,255,0.9); border-radius: 12px; border: 1px solid #e2e8f0; text-align: center; color: {COR_AZUL_ESC}; font-weight: 600; font-family: 'Inter', sans-serif;">
+        <svg style="animation: prog-spin 1s linear infinite; width: 1.5rem; height: 1.5rem; margin-right: 10px; vertical-align: middle;" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" stroke-dasharray="31.4 31.4" stroke-linecap="round" opacity="0.25"></circle>
+            <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+        </svg>
+        Conectando e atualizando inteligência sazonal...
+    </div>
+    """
+    prog_placeholder.markdown(html_spinner, unsafe_allow_html=True)
+    
+    t_start = time.time()
+    
+    # Executa cached fetching do Salesforce e Google Sheets
+    df_ag_raw, df_pas_raw, df_ven_raw = extrair_dados_sf_cached(ano_alvo, mes_alvo)
+    meta_vendas = buscar_meta_vendas_gsheets(ano_alvo, mes_alvo)
+    
+    if df_ven_raw.empty:
+        prog_placeholder.empty()
+        st.warning("Sem dados suficientes no Salesforce para projetar.")
+        return
         
-        # O treino precisa ser dos 36 meses EXATAMENTE ANTERIORES ao mês alvo.
-        data_alvo_inicio = date(ano_alvo, mes_alvo, 1)
-        dias_no_mes = calendar.monthrange(ano_alvo, mes_alvo)[1]
-        data_alvo_fim = date(ano_alvo, mes_alvo, dias_no_mes)
+    data_alvo_inicio = date(ano_alvo, mes_alvo, 1)
+    dias_no_mes = calendar.monthrange(ano_alvo, mes_alvo)[1]
+    data_alvo_fim = date(ano_alvo, mes_alvo, dias_no_mes)
+    
+    fim_treino = data_alvo_inicio - timedelta(days=1)
+    ini_treino = date(ano_alvo - 3, mes_alvo, 1)
+    
+    cal_total = montar_calendario(df_ag_raw, df_pas_raw, df_ven_raw, ini_treino, data_alvo_fim if is_past_month else fim_treino)
+    cal_treino = cal_total[cal_total['data'] <= fim_treino].copy()
+    cal_alvo = cal_total[(cal_total['data'] >= data_alvo_inicio) & (cal_total['data'] <= (hoje - timedelta(days=1) if is_current_month else data_alvo_fim))].copy() if is_past_month else pd.DataFrame()
+    
+    datas_alvo = [date(ano_alvo, mes_alvo, d) for d in range(1, dias_no_mes + 1)]
+    
+    df_resultado = pd.DataFrame({"Data": datas_alvo})
+    df_resultado["Dia do Mês"] = df_resultado["Data"].map(lambda d: d.day)
+    df_resultado["Dia da Semana"] = df_resultado["Data"].map(lambda d: DIAS_SEMANA_PT[d.weekday()].capitalize())
+    
+    df_alvo_dummy = df_resultado.copy()
+    df_alvo_dummy.rename(columns={"Dia do Mês": "dia_mes", "Dia da Semana": "dia_semana"}, inplace=True)
+    df_alvo_dummy["dia_semana"] = df_alvo_dummy["dia_semana"].str.lower()
+    df_alvo_dummy["mes"] = df_alvo_dummy["Data"].map(lambda d: MESES_PT[d.month])
+    
+    df_stats_all = pd.DataFrame()
+    
+    for etapa in FUNIL_ETAPAS:
+        df_temp = cal_treino[["data", "dia_mes", "dia_semana", "mes", etapa]].copy()
+        df_temp.rename(columns={etapa: "qtd"}, inplace=True)
         
-        fim_treino = data_alvo_inicio - timedelta(days=1)
-        ini_treino = date(ano_alvo - 3, mes_alvo, 1)
+        efeitos = estimar_efeitos_sazonais(df_temp)
+        label_proj = f"{FUNIL_LABELS[etapa]} Projetado (%)"
+        label_ic_up = f"{FUNIL_LABELS[etapa]} IC Upper (%)"
+        label_ic_lo = f"{FUNIL_LABELS[etapa]} IC Lower (%)"
+        label_real = f"{FUNIL_LABELS[etapa]} Realizado (%)"
+        label_real_abs = f"{FUNIL_LABELS[etapa]} Realizado Absoluto"
         
-        prog_placeholder = st.empty()
-        t_start = time.time()
-        
-        def update_progress(pct, msg):
-            elapsed = time.time() - t_start
-            grad = f"linear-gradient(90deg, {COR_AZUL_ESC} 0%, {COR_VERMELHO} 100%)"
-            html_str = f"""
-            <div style="margin: 1.5rem 0; padding: 1.25rem; background: rgba(255,255,255,0.7); border-radius: 12px; border: 1px solid #e2e8f0; box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);">
-                <div style="display: flex; justify-content: space-between; font-size: 0.9rem; color: #334155; margin-bottom: 0.6rem; font-family: 'Inter', sans-serif; font-weight: 600;">
-                    <span>{msg}</span>
-                    <span style="font-family: monospace;">{pct}% | {elapsed:.1f}s</span>
-                </div>
-                <div style="width: 100%; background-color: #cbd5e1; border-radius: 999px; overflow: hidden; height: 10px;">
-                    <div style="width: {pct}%; background: {grad}; height: 100%; transition: width 0.4s ease;"></div>
-                </div>
-            </div>
-            """
-            prog_placeholder.markdown(html_str, unsafe_allow_html=True)
+        if not efeitos:
+            for l in [label_proj, label_ic_up, label_ic_lo, label_real, label_real_abs]: df_resultado[l] = 0.0
+            continue
             
-        update_progress(5, "Iniciando conexão e extração de dados...")
+        ef_stats = efeitos["df_stats"].copy()
+        ef_stats.insert(0, "Indicador", FUNIL_LABELS[etapa])
+        df_stats_all = pd.concat([df_stats_all, ef_stats])
         
-        # Vamos baixar os dados cobrindo o treino e o mes alvo (se houver dados)
-        df_ag, df_pas, df_ven = buscar_dados_salesforce(sf, ini_treino, data_alvo_fim if is_past_month else fim_treino, update_progress=update_progress)
+        X_futuro = matriz_explicativas_relativa(df_alvo_dummy, t_start=len(cal_treino))
+        pred_raw = X_futuro @ efeitos["coef"]
+        var_pred = np.sum((X_futuro @ efeitos["cov_matrix"]) * X_futuro, axis=1) + efeitos["s2"]
+        se_pred = np.sqrt(var_pred)
         
-        update_progress(90, "Construindo calendário e processando modelo...")
-        cal_total = montar_calendario(df_ag, df_pas, df_ven, ini_treino, data_alvo_fim if is_past_month else fim_treino)
+        esp_abs = np.maximum(pred_raw, 0.0)
+        soma_esp = np.sum(esp_abs)
         
-        cal_treino = cal_total[cal_total['data'] <= fim_treino].copy()
-        cal_alvo = cal_total[cal_total['data'] >= data_alvo_inicio].copy() if is_past_month else pd.DataFrame()
+        df_resultado[label_proj] = (esp_abs / soma_esp * 100.0) if soma_esp > 0 else 0.0
+        df_resultado[label_ic_up] = (np.maximum(pred_raw + 1.96 * se_pred, 0.0) / soma_esp * 100.0) if soma_esp > 0 else 0.0
+        df_resultado[label_ic_lo] = (np.maximum(pred_raw - 1.96 * se_pred, 0.0) / soma_esp * 100.0) if soma_esp > 0 else 0.0
         
-        datas_alvo = [date(ano_alvo, mes_alvo, d) for d in range(1, dias_no_mes + 1)]
+        df_resultado[label_real_abs] = np.nan
+        df_resultado[label_real] = np.nan
         
-        df_resultado = pd.DataFrame()
-        df_resultado["Data"] = datas_alvo
-        df_resultado["Dia do Mês"] = df_resultado["Data"].map(lambda d: d.day)
-        df_resultado["Dia da Semana"] = df_resultado["Data"].map(lambda d: DIAS_SEMANA_PT[d.weekday()].capitalize())
-        
-        for etapa in FUNIL_ETAPAS:
-            df_temp = cal_treino[["data", "dia_mes", "dia_semana", "mes", etapa]].copy()
-            df_temp.rename(columns={etapa: "qtd"}, inplace=True)
-            
-            efeitos = estimar_efeitos_sazonais(df_temp)
-            label_proj = f"{FUNIL_LABELS[etapa]} Projetado (%)"
-            label_real = f"{FUNIL_LABELS[etapa]} Realizado (%)"
-            
-            if not efeitos:
-                df_resultado[label_proj] = 0.0
-                if is_past_month: df_resultado[label_real] = 0.0
-                continue
-            
-            intercepto = efeitos["intercepto"]
-            tendencia = efeitos["tendencia"]
-            esperados_diarios = []
-            
-            # O índice base t do dia 1 do mês alvo
-            t_base = len(cal_treino)
+        if is_past_month and not cal_alvo.empty:
+            mapa_real = dict(zip(cal_alvo["data"], cal_alvo[etapa]))
+            reais_diarios = [mapa_real.get(d) for d in datas_alvo if d in mapa_real]
+            soma_real = sum([r for r in reais_diarios if r is not None])
             
             for i, d in enumerate(datas_alvo):
-                e_mes = efeitos["mes"].get(MESES_PT[d.month], 0.0)
-                e_dm = efeitos["dia_mes"].get(str(d.day), 0.0)
-                e_ds = efeitos["dia_semana"].get(DIAS_SEMANA_PT[d.weekday()], 0.0)
-                
-                # A tendência linear normalizada pelo fator 1000 que usamos no treinamento
-                t_futuro = (t_base + i) / 1000.0
-                
-                esperados_diarios.append(max(intercepto + e_mes + e_dm + e_ds + tendencia * t_futuro, 0.0))
-            
-            soma_esp = sum(esperados_diarios)
-            df_resultado[label_proj] = [(v / soma_esp * 100.0) if soma_esp > 0 else 0.0 for v in esperados_diarios]
-            
-            # Se for mês atual ou passado, pega a distribuição REAL do mês
-            if is_past_month and not cal_alvo.empty:
-                mapa_real = dict(zip(cal_alvo["data"], cal_alvo[etapa]))
-                if ano_alvo == hoje.year and mes_alvo == hoje.month:
-                    reais_diarios = [mapa_real.get(d, 0.0) if d < hoje else 0.0 for d in datas_alvo]
-                else:
-                    reais_diarios = [mapa_real.get(d, 0.0) for d in datas_alvo]
-                soma_real = sum(reais_diarios)
-                df_resultado[label_real] = [(v / soma_real * 100.0) if soma_real > 0 else 0.0 for v in reais_diarios]
+                if d in mapa_real:
+                    v = mapa_real[d]
+                    df_resultado.loc[i, label_real_abs] = v
+                    df_resultado.loc[i, label_real] = (v / soma_real * 100.0) if soma_real > 0 else 0.0
 
-        update_progress(100, "Cálculo concluído!")
-        time.sleep(0.4)
-        prog_placeholder.empty()
+    df_mensal = cal_treino.copy()
+    df_mensal['ano_mes'] = pd.to_datetime(df_mensal['data']).dt.to_period('M')
+    df_mensal_agg = df_mensal.groupby(['ano_mes', 'mes'], as_index=False)[list(FUNIL_ETAPAS)].sum()
+    
+    res_conv = []
+    historico_plots = {}
+    stats_mensais = {}
+    
+    for etapa in FUNIL_ETAPAS[:-1]:
+        hist_y = []
+        hist_x = []
+        for _, row in df_mensal_agg.iterrows():
+            v_etapa = float(row[etapa])
+            v_vendas = float(row['vendas'])
+            c = (v_vendas / v_etapa * 100.0) if v_etapa > 0 else 0.0
+            hist_y.append(c)
+            hist_x.append(str(row['ano_mes']))
+        historico_plots[etapa] = {"x": hist_x, "y": hist_y}
+        
+        # Matriz de conversão com Evolução Anual
+        X = np.zeros((len(df_mensal_agg), 11 + 1 + 1), dtype=float)
+        X[:, -1] = 1.0 # Intercepto
+        X[:, -2] = np.arange(len(df_mensal_agg), dtype=float) / 12.0 # Tendência Linear Anual
+        
+        meses_idx = {nome: i for i, nome in MESES_PT.items()}
+        for i, m_str in enumerate(df_mensal_agg['mes']):
+            ms = meses_idx.get(m_str, None)
+            if ms is not None and ms >= 2: X[i, ms - 2] = 1.0
+                
+        y = np.array([y_val / 100.0 for y_val in hist_y])
+        coef, *_ = np.linalg.lstsq(X, y, rcond=None)
+        
+        y_hat = X @ coef
+        res_err = y - y_hat
+        df_err = len(y) - X.shape[1]
+        s2 = np.sum(res_err**2) / df_err if df_err > 0 else 0
+        try:
+            cov_matrix = s2 * np.linalg.pinv(X.T @ X)
+        except:
+            cov_matrix = np.zeros((X.shape[1], X.shape[1]))
+        
+        intercepto = float(coef[-1])
+        tendencia = float(coef[-2])
+        m_alvo_idx = meses_idx.get(MESES_PT[mes_alvo], 1)
+        e_mes = float(coef[m_alvo_idx - 2]) if m_alvo_idx >= 2 else 0.0
+        
+        t_futuro = float(len(df_mensal_agg)) / 12.0
+        esperado = max(intercepto + e_mes + tendencia * t_futuro, 0.0)
+        
+        real = None
+        if is_past_month and not cal_alvo.empty:
+            s_vendas = cal_alvo['vendas'].sum()
+            s_etapa = cal_alvo[etapa].sum()
+            real = (s_vendas / s_etapa) if s_etapa > 0 else 0.0
+            
+        dic_res = {
+            "Indicador": f"{FUNIL_LABELS[etapa]} → Vendas",
+            "Projetado (%)": esperado * 100.0,
+        }
+        if is_past_month:
+            dic_res["Realizado (%)"] = real * 100.0 if real is not None else 0.0
+        
+        dic_res["Média Histórica (%)"] = float(np.mean(hist_y)) if hist_y else 0.0
+        dic_res["Mediana Histórica (%)"] = float(np.median(hist_y)) if hist_y else 0.0
+        res_conv.append(dic_res)
+        
+    df_res_conv = pd.DataFrame(res_conv)
 
-        st.success(f"Cálculo concluído em {time.time() - t_start:.1f}s! Base de treino: {ini_treino.strftime('%m/%Y')} a {fim_treino.strftime('%m/%Y')}.")
-        
-        tab_diaria, tab_mensal, tab_stats = st.tabs(["Representatividade Diária", "Conversão Mensal", "Estatísticas do Modelo"])
-        
-        df_mensal = cal_treino.copy()
-        df_mensal['ano_mes'] = pd.to_datetime(df_mensal['data']).dt.to_period('M')
-        df_mensal_agg = df_mensal.groupby(['ano_mes', 'mes'], as_index=False)[list(FUNIL_ETAPAS)].sum()
-        
-        res_conv = []
-        historico_plots = {}
-        stats_mensais = {}
-        
-        for etapa in FUNIL_ETAPAS[:-1]:
-            hist_y = []
-            hist_x = []
-            for _, row in df_mensal_agg.iterrows():
-                v_etapa = float(row[etapa])
-                v_vendas = float(row['vendas'])
-                c = (v_vendas / v_etapa * 100.0) if v_etapa > 0 else 0.0
-                hist_y.append(c)
-                hist_x.append(str(row['ano_mes']))
-            historico_plots[etapa] = {"x": hist_x, "y": hist_y}
-            
-            # Matriz de conversão com Intercepto e Tendência (Mês 11 + Trend 1 + Intercept 1 = 13)
-            X = np.zeros((len(df_mensal_agg), 11 + 1 + 1), dtype=float)
-            X[:, -1] = 1.0 # Intercepto
-            X[:, -2] = np.arange(len(df_mensal_agg), dtype=float) / 12.0 # Tendência anual (T/12)
-            
-            meses_idx = {nome: i for i, nome in MESES_PT.items()}
-            for i, m_str in enumerate(df_mensal_agg['mes']):
-                ms = meses_idx.get(m_str, None)
-                if ms is not None and ms >= 2:
-                    X[i, ms - 2] = 1.0
-                    
-            y = np.array([y_val / 100.0 for y_val in hist_y])
-            
-            coef, *_ = np.linalg.lstsq(X, y, rcond=None)
-            
-            # --- Estatísticas Regressão de Conversão Mensal ---
-            y_hat = X @ coef
-            res_err = y - y_hat
-            ss_tot = np.sum((y - np.mean(y)) ** 2)
-            ss_res = np.sum(res_err ** 2)
-            r2_conv = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else 0.0
-            mae_conv = float(np.mean(np.abs(res_err)))
-            
-            n_obs, k_feats = X.shape
-            df_err = n_obs - k_feats
-            if df_err > 0:
-                s2 = ss_res / df_err
-                try:
-                    cov_matrix = s2 * np.linalg.inv(X.T @ X)
-                    se = np.sqrt(np.diagonal(cov_matrix))
-                    t_stats = coef / se
-                    import math
-                    p_values = [1.0 - math.erf(abs(t) / math.sqrt(2.0)) for t in t_stats]
-                except np.linalg.LinAlgError:
-                    p_values = [np.nan] * k_feats
-            else:
-                p_values = [np.nan] * k_feats
-                
-            nomes_features = [f"Mês: {MESES_PT[m].capitalize()}" for m in range(2, 13)] + ["Tendência Linear (Por Ano)", "Intercepto (Janeiro)"]
-            df_stats_conv = pd.DataFrame({
-                "Variável": nomes_features,
-                "Beta": coef,
-                "Valor-p": p_values
-            })
-            df_stats_conv["Significância"] = df_stats_conv["Valor-p"].apply(
-                lambda p: "***" if pd.notna(p) and p < 0.01 else ("**" if pd.notna(p) and p < 0.05 else ("*" if pd.notna(p) and p < 0.1 else ""))
-            )
-            stats_mensais[etapa] = {"r2": r2_conv, "mae": mae_conv, "df_stats": df_stats_conv}
-            # --------------------------------------------------
-            
-            intercepto = float(coef[-1])
-            tendencia = float(coef[-2])
-            m_alvo_idx = meses_idx.get(MESES_PT[mes_alvo], 1)
-            e_mes = float(coef[m_alvo_idx - 2]) if m_alvo_idx >= 2 else 0.0
-            
-            # O índice T para a tendência alvo é o próprio len() atual do histórico agregado 
-            t_futuro = float(len(df_mensal_agg)) / 12.0
-            
-            esperado = max(intercepto + e_mes + tendencia * t_futuro, 0.0)
-            
-            real = None
-            if is_past_month and not cal_alvo.empty:
-                s_vendas = cal_alvo['vendas'].sum()
-                s_etapa = cal_alvo[etapa].sum()
-                real = (s_vendas / s_etapa) if s_etapa > 0 else 0.0
-                
-            dic_res = {
-                "Indicador": f"{FUNIL_LABELS[etapa]} → Vendas",
-                "Projetado (%)": esperado * 100.0,
-            }
-            if is_past_month:
-                dic_res["Realizado (%)"] = real * 100.0 if real is not None else 0.0
-            
-            # Médias e Medianas Históricas
-            dic_res["Média Histórica (%)"] = float(np.mean(hist_y)) if hist_y else 0.0
-            dic_res["Mediana Histórica (%)"] = float(np.median(hist_y)) if hist_y else 0.0
+    metas_etapa = {"vendas": meta_vendas}
+    for etapa in FUNIL_ETAPAS[:-1]:
+        conv_val = df_res_conv.loc[df_res_conv["Indicador"] == f"{FUNIL_LABELS[etapa]} → Vendas", "Projetado (%)"].iloc[0]
+        metas_etapa[etapa] = (meta_vendas / (conv_val / 100.0)) if conv_val > 0 else 0.0
 
-            res_conv.append(dic_res)
-            
-        df_res_conv = pd.DataFrame(res_conv)
+    df_metas_resumo = []
+    for etapa in FUNIL_ETAPAS:
+        label_proj_pct = f"{FUNIL_LABELS[etapa]} Projetado (%)"
+        label_meta_dia = f"Meta {FUNIL_LABELS[etapa]} (Dia)"
+        label_meta_acum = f"Meta {FUNIL_LABELS[etapa]} (Acumulada)"
+        label_real_abs = f"{FUNIL_LABELS[etapa]} Realizado Absoluto"
+        label_real_acum = f"{FUNIL_LABELS[etapa]} Realizado Absoluto (Acumulado)"
         
-        with tab_diaria:
-            # Mostra formatado
-            formatacao = {c: "{:.2f}%" for c in df_resultado.columns if "(%)" in c}
-            st.dataframe(df_resultado.style.format(formatacao), use_container_width=True, hide_index=True)
-            
-            # Gráficos Comparativos
-            if is_past_month and not cal_alvo.empty:
-                st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1.5rem 0;'/>", unsafe_allow_html=True)
-                is_current_month = (ano_alvo == hoje.year and mes_alvo == hoje.month)
-                
-                if is_current_month:
-                    ontem = hoje - timedelta(days=1)
-                    st.subheader(f"Gráficos Comparativos: Projetado vs Realizado (Até {ontem.strftime('%d/%m')})")
-                else:
-                    st.subheader("Gráficos Comparativos: Projetado vs Realizado")
-                    
-                for etapa in FUNIL_ETAPAS:
-                    df_plot = df_resultado.copy()
-                    if is_current_month:
-                        df_plot = df_plot[df_plot["Data"] < hoje].copy()
-                        col_proj = f"{FUNIL_LABELS[etapa]} Projetado (%)"
-                        col_real = f"{FUNIL_LABELS[etapa]} Realizado (%)"
-                        
-                        soma_proj = df_plot[col_proj].sum()
-                        if soma_proj > 0:
-                            df_plot[col_proj] = (df_plot[col_proj] / soma_proj) * 100.0
-                            
-                        soma_real = df_plot[col_real].sum()
-                        if soma_real > 0:
-                            df_plot[col_real] = (df_plot[col_real] / soma_real) * 100.0
-                            
-                    _plot_comparativo_representatividade(etapa, df_plot)
-                    
-        with tab_mensal:
-            st.subheader("Projeção de Conversão em Vendas")
-            st.markdown(
-                "<p style='color:#475569;font-size:0.9rem;'>Estimativa da taxa de conversão mensal, "
-                "baseada em regressão linear simples (dummies de mês + tendência anual) do histórico de 36 meses.</p>", 
-                unsafe_allow_html=True
-            )
-            
-            fmt_conv = {c: "{:.2f}%" for c in df_res_conv.columns if "(%)" in c}
-            st.dataframe(df_res_conv.style.format(fmt_conv), use_container_width=True, hide_index=True)
-            
+        # Meta Diária Absoluta
+        df_resultado[label_meta_dia] = df_resultado[label_proj_pct] / 100.0 * metas_etapa[etapa]
+        df_resultado[label_meta_acum] = df_resultado[label_meta_dia].cumsum()
+        
+        # Realizado Acumulado
+        df_resultado[label_real_acum] = df_resultado[label_real_abs].cumsum()
+        
+        real_tot = df_resultado[label_real_abs].sum(skipna=True)
+        meta_tot = metas_etapa[etapa]
+        pct_ating = (real_tot / meta_tot * 100.0) if meta_tot > 0 else 0.0
+        df_metas_resumo.append({
+            "Indicador": FUNIL_LABELS[etapa],
+            "Meta Mensal Estimada": meta_tot,
+            "Realizado Acumulado": real_tot,
+            "Atingimento (%)": pct_ating
+        })
+
+    df_metas_res = pd.DataFrame(df_metas_resumo)
+
+    prog_placeholder.empty()
+    st.success(f"Análise concluída em {time.time() - t_start:.1f}s! Base de treino: {ini_treino.strftime('%m/%Y')} a {fim_treino.strftime('%m/%Y')}.")
+    
+    tab_metas, tab_diaria, tab_mensal, tab_stats = st.tabs(["Metas x Realizado", "Representatividade Diária", "Conversão Mensal", "Estatísticas OLS"])
+    
+    with tab_metas:
+        st.subheader(f"Acompanhamento de Metas de {MESES_PT[mes_alvo].capitalize()}/{ano_alvo}")
+        st.markdown(
+            "<p style='color:#475569;font-size:0.9rem;'>As metas de topo de funil foram retrocalculadas usando a <b>Meta de Vendas do Google Sheets</b> "
+            "e dividindo-a pela taxa de conversão projetada para o mês.</p>", unsafe_allow_html=True
+        )
+        
+        st.dataframe(df_metas_res.style.format({"Meta Mensal Estimada": "{:,.0f}", "Realizado Acumulado": "{:,.0f}", "Atingimento (%)": "{:.1f}%"}), use_container_width=True, hide_index=True)
+        
+        if is_past_month:
             st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1.5rem 0;'/>", unsafe_allow_html=True)
-            st.subheader("Histórico de Conversão (Últimos 36 meses)")
-            
-            col_g1, col_g2 = st.columns(2)
-            graficos_cols = [col_g1, col_g2, col_g1, col_g2]
-            
-            for i, etapa in enumerate(FUNIL_ETAPAS[:-1]):
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=historico_plots[etapa]["x"], 
-                    y=historico_plots[etapa]["y"],
-                    mode="lines+markers",
-                    name="Histórico",
-                    line=dict(color=COR_AZUL_ESC, width=2),
-                    marker=dict(size=6, color=COR_AZUL_ESC),
-                    hovertemplate="%{x}<br>Conversão: %{y:.2f}%<extra></extra>"
-                ))
-                
-                projetado_val = df_res_conv.loc[df_res_conv["Indicador"] == f"{FUNIL_LABELS[etapa]} → Vendas", "Projetado (%)"].iloc[0]
-                fig.add_hline(y=projetado_val, line_dash="dash", line_color=COR_VERMELHO, annotation_text=f"Projetado {MESES_PT[mes_alvo].capitalize()}: {projetado_val:.1f}%")
-                
-                if is_past_month and "Realizado (%)" in df_res_conv.columns:
-                    realizado_val = df_res_conv.loc[df_res_conv["Indicador"] == f"{FUNIL_LABELS[etapa]} → Vendas", "Realizado (%)"].iloc[0]
-                    fig.add_hline(y=realizado_val, line_dash="dot", line_color="#0f766e", annotation_text=f"Real: {realizado_val:.1f}%", annotation_position="bottom right")
-
-                fig.update_layout(
-                    title=dict(text=f"{FUNIL_LABELS[etapa]} → Vendas", font=dict(family="Montserrat", color=COR_TEXTO_PRETO, size=14)),
-                    margin=dict(l=20, r=20, t=40, b=20),
-                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                    font=dict(family="Inter", color=COR_TEXTO_PRETO),
-                    height=280,
-                    showlegend=False
-                )
-                fig.update_yaxes(title_text="Conversão (%)", showgrid=True, gridcolor="rgba(226,232,240,0.5)")
-                fig.update_xaxes(showgrid=False, tickangle=-45, type='category')
-                
-                with graficos_cols[i]:
-                    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-        
-        with tab_stats:
-            st.subheader("Estatísticas: Modelos de Sazonalidade Diária")
-            st.markdown(
-                "<p style='color:#475569;font-size:0.9rem;'>Métricas de regressão OLS (variável dependente: "
-                "volume diário absoluto). Níveis de significância: *** < 0.01 | ** < 0.05 | * < 0.10</p>", 
-                unsafe_allow_html=True
-            )
             for etapa in FUNIL_ETAPAS:
-                st.markdown(f"#### {FUNIL_LABELS[etapa]}")
-                # Busca o dicionário de efeitos retornado pelo modelo para esta etapa
-                df_temp = cal_treino[["data", "dia_mes", "dia_semana", "mes", etapa]].copy()
-                df_temp.rename(columns={etapa: "qtd"}, inplace=True)
-                s = estimar_efeitos_sazonais(df_temp)
-                
-                if s:
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("R² (Qualidade do Ajuste)", f"{s['r2']:.4f}")
-                    col2.metric("MAE (Desvio Absoluto Médio)", f"{s['mae']:.2f} un/dia")
-                    
-                    st.dataframe(
-                        s["df_stats"].style.format({"Beta": "{:.4f}", "Valor-p": "{:.4f}"}), 
-                        use_container_width=True, 
-                        hide_index=True
-                    )
-                else:
-                    st.info("Sem dados suficientes para estatísticas.")
-                st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1.5rem 0;'/>", unsafe_allow_html=True)
+                _plot_metas_acumuladas(etapa, df_resultado, is_current_month)
 
-            st.subheader("Estatísticas: Modelos de Conversão Mensal")
-            st.markdown(
-                "<p style='color:#475569;font-size:0.9rem;'>Métricas de regressão OLS (variável dependente: "
-                "taxa de conversão em vendas).</p>", 
-                unsafe_allow_html=True
-            )
-            for etapa in FUNIL_ETAPAS[:-1]:
-                st.markdown(f"#### {FUNIL_LABELS[etapa]} → Vendas")
-                if etapa in stats_mensais and stats_mensais[etapa]:
-                    s = stats_mensais[etapa]
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("R² (Qualidade do Ajuste)", f"{s['r2']:.4f}")
-                    col2.metric("MAE (Desvio Absoluto Médio)", f"{s['mae']*100:.2f} p.p.")
-                    
-                    st.dataframe(
-                        s["df_stats"].style.format({"Beta": "{:.4f}", "Valor-p": "{:.4f}"}), 
-                        use_container_width=True, 
-                        hide_index=True
-                    )
-                else:
-                    st.info("Sem dados suficientes para estatísticas.")
-                st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1.5rem 0;'/>", unsafe_allow_html=True)
-
-        # Download
-        excel_bytes = to_excel(df_resultado, df_res_conv)
-        nome_arquivo = f"Representatividade_{MESES_PT[mes_alvo]}_{ano_alvo}.xlsx"
+    with tab_diaria:
+        formatacao = {c: "{:.2f}%" for c in df_resultado.columns if "(%)" in c}
+        st.dataframe(df_resultado[[c for c in df_resultado.columns if "Meta" not in c and "Absoluto" not in c]].style.format(formatacao), use_container_width=True, hide_index=True)
         
-        st.markdown("<br/>", unsafe_allow_html=True)
-        col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
-        with col_btn2:
-            st.download_button(
-                label=f"⬇️ Baixar Relatório em Excel ({nome_arquivo})",
-                data=excel_bytes,
-                file_name=nome_arquivo,
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                type="primary",
-                use_container_width=True
-            )
+        if is_past_month and not cal_alvo.empty:
+            st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1.5rem 0;'/>", unsafe_allow_html=True)
+            for etapa in FUNIL_ETAPAS:
+                _plot_comparativo_representatividade(etapa, df_resultado, is_current_month)
+                
+    with tab_mensal:
+        st.subheader("Projeção de Conversão em Vendas")
+        fmt_conv = {c: "{:.2f}%" for c in df_res_conv.columns if "(%)" in c}
+        st.dataframe(df_res_conv.style.format(fmt_conv), use_container_width=True, hide_index=True)
+        
+        st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1.5rem 0;'/>", unsafe_allow_html=True)
+        col_g1, col_g2 = st.columns(2)
+        graficos_cols = [col_g1, col_g2, col_g1, col_g2]
+        
+        for i, etapa in enumerate(FUNIL_ETAPAS[:-1]):
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(
+                x=historico_plots[etapa]["x"], y=historico_plots[etapa]["y"],
+                mode="lines+markers", line=dict(color=COR_AZUL_ESC, width=2),
+                hovertemplate="%{x}<br>Conversão: %{y:.2f}%<extra></extra>"
+            ))
+            
+            projetado_val = df_res_conv.loc[df_res_conv["Indicador"] == f"{FUNIL_LABELS[etapa]} → Vendas", "Projetado (%)"].iloc[0]
+            fig.add_hline(y=projetado_val, line_dash="dash", line_color=COR_VERMELHO, annotation_text=f"Projetado: {projetado_val:.1f}%")
+            
+            if is_past_month and "Realizado (%)" in df_res_conv.columns:
+                realizado_val = df_res_conv.loc[df_res_conv["Indicador"] == f"{FUNIL_LABELS[etapa]} → Vendas", "Realizado (%)"].iloc[0]
+                if realizado_val is not None:
+                    fig.add_hline(y=realizado_val, line_dash="dot", line_color="#0f766e", annotation_text=f"Real: {realizado_val:.1f}%")
 
-    st.markdown(
-        f'<div style="text-align:center;padding:2rem 0 1rem 0;color:{COR_TEXTO_PRETO};font-size:0.82rem;">'
-        f"Direcional Engenharia · Representatividade Sazonal</div>",
-        unsafe_allow_html=True,
-    )
+            fig.update_layout(title=dict(text=f"{FUNIL_LABELS[etapa]} → Vendas"), margin=dict(l=20, r=20, t=40, b=20), paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", height=280, showlegend=False)
+            fig.update_yaxes(title_text="Conversão (%)", showgrid=True, gridcolor="rgba(226,232,240,0.5)")
+            with graficos_cols[i]: st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+    
+    with tab_stats:
+        st.subheader("Painel de Correlação OLS (Sazonalidade Diária)")
+        st.dataframe(df_stats_all.style.format({"Beta": "{:.4f}", "Valor-p": "{:.4f}"}), use_container_width=True, hide_index=True)
+
+    # Download Global (Botão único remanescente)
+    st.markdown("<br/>", unsafe_allow_html=True)
+    col_btn1, col_btn2, col_btn3 = st.columns([1, 2, 1])
+    with col_btn2:
+        st.download_button(
+            label=f"⬇️ Baixar Relatório em Excel Completo",
+            data=to_excel(df_resultado, df_res_conv, df_metas_res),
+            file_name=f"Representatividade_Metas_{MESES_PT[mes_alvo]}_{ano_alvo}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            type="primary", use_container_width=True
+        )
 
 if __name__ == "__main__":
     main()
