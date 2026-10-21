@@ -1075,299 +1075,299 @@ def aplicar_estilo() -> None:
     bg_url = _css_url_fundo_cadastro()
     st.markdown(
         f"""
-        <style>
-        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800;900&family=Inter:wght@400;500;600;700&display=swap');
-        @keyframes fichaFadeIn {{
-            from {{ opacity: 0; transform: translateY(18px); }}
-            to {{ opacity: 1; transform: translateY(0); }}
-        }}
-        @keyframes fichaShimmer {{
-            0% {{ background-position: 0% 50%; }}
-            100% {{ background-position: 200% 50%; }}
-        }}
-        html, body, :root, [data-testid="stApp"] {{
-            color-scheme: light !important;
-        }}
-        /* Tabelas sempre claras, mesmo com Windows em modo escuro */
-        .stDataFrame,
-        [data-testid="stDataFrame"],
-        [data-testid="stDataFrame"] > div,
-        [data-testid="stDataFrameResizable"],
-        [data-testid="stTable"],
-        [data-testid="stTable"] table {{
-            color-scheme: light !important;
-            background-color: #ffffff !important;
-        }}
-        [data-testid="stTable"] th,
-        [data-testid="stTable"] td {{
-            background-color: #ffffff !important;
-            color: #000000 !important;
-        }}
-        html, body {{
-            font-family: 'Inter', sans-serif;
-            color: {COR_TEXTO_LABEL};
-            background: transparent !important;
-            background-color: transparent !important;
-        }}
-        .stApp,
-        [data-testid="stApp"] {{
-            background:
-                linear-gradient(135deg, rgba({RGB_AZUL_CSS}, 0.82) 0%, rgba(30, 58, 95, 0.55) 38%, rgba({RGB_VERMELHO_CSS}, 0.22) 72%, rgba(15, 23, 42, 0.45) 100%),
-                url("{bg_url}") center / cover no-repeat !important;
-            background-attachment: scroll !important;
-            background-color: transparent !important;
-        }}
-        [data-testid="stAppViewContainer"] {{
-            background: transparent !important;
-            background-color: transparent !important;
-        }}
-        header[data-testid="stHeader"],
-        [data-testid="stHeader"] {{
-            background: transparent !important;
-            background-color: transparent !important;
-            background-image: none !important;
-            border: none !important;
-            box-shadow: none !important;
-            backdrop-filter: none !important;
-            -webkit-backdrop-filter: none !important;
-        }}
-        [data-testid="stHeader"] > div,
-        [data-testid="stHeader"] header {{
-            background: transparent !important;
-            background-color: transparent !important;
-            background-image: none !important;
-            box-shadow: none !important;
-        }}
-        [data-testid="stDecoration"] {{
-            background: transparent !important;
-            background-color: transparent !important;
-        }}
-        [data-testid="stSidebar"] {{ display: none !important; }}
-        [data-testid="stSidebarCollapsedControl"] {{ display: none !important; }}
-        [data-testid="stToolbar"] {{
-            background: transparent !important;
-            background-color: transparent !important;
-            background-image: none !important;
-            border: none !important;
-            border-radius: 0 !important;
-            box-shadow: none !important;
-            color: rgba(255, 255, 255, 0.92) !important;
-        }}
-        [data-testid="stToolbar"] button,
-        [data-testid="stToolbar"] a {{
-            color: rgba(255, 255, 255, 0.92) !important;
-            background: transparent !important;
-            background-color: transparent !important;
-        }}
-        [data-testid="stHeader"] button {{
-            background: transparent !important;
-            background-color: transparent !important;
-        }}
-        [data-testid="stToolbar"] svg {{
-            fill: currentColor !important;
-            color: inherit !important;
-        }}
-        [data-testid="stToolbar"] svg path[stroke] {{
-            stroke: currentColor !important;
-        }}
-        [data-testid="stToolbar"] button:hover,
-        [data-testid="stToolbar"] a:hover,
-        [data-testid="stHeader"] button:hover {{
-            background: rgba(255, 255, 255, 0.12) !important;
-        }}
-        [data-testid="stMain"] {{
-            padding-left: clamp(14px, 5vw, 56px) !important;
-            padding-right: clamp(14px, 5vw, 56px) !important;
-            padding-top: clamp(12px, 3.5vh, 40px) !important;
-            padding-bottom: clamp(14px, 4vh, 44px) !important;
-            box-sizing: border-box !important;
-        }}
-        section.main > div {{
-            padding-top: 0.25rem !important;
-            padding-bottom: 0.35rem !important;
-        }}
-        .block-container {{
-            max-width: 1700px !important;
-            margin-left: auto !important;
-            margin-right: auto !important;
-            margin-top: clamp(4px, 1vh, 14px) !important;
-            margin-bottom: clamp(4px, 1vh, 14px) !important;
-            padding: 1.45rem 2.25rem 1.55rem 2.25rem !important;
-            background: rgba(255, 255, 255, 0.78) !important;
-            backdrop-filter: blur(18px) saturate(1.15);
-            -webkit-backdrop-filter: blur(18px) saturate(1.15);
-            border-radius: 24px !important;
-            border: 1px solid rgba(255, 255, 255, 0.45) !important;
-            box-shadow:
-                0 4px 6px -1px rgba({RGB_AZUL_CSS}, 0.06),
-                0 24px 48px -12px rgba({RGB_AZUL_CSS}, 0.18),
-                inset 0 1px 0 rgba(255, 255, 255, 0.55) !important;
-            animation: fichaFadeIn 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
-        }}
-        /* Títulos de seção do dashboard: azuis (inclui spans internos do Streamlit) */
-        h1, h2, h3, h4,
-        h1 *, h2 *, h3 *, h4 *,
-        [data-testid="stMarkdownContainer"] h1,
-        [data-testid="stMarkdownContainer"] h2,
-        [data-testid="stMarkdownContainer"] h3,
-        [data-testid="stMarkdownContainer"] h4,
-        [data-testid="stMarkdownContainer"] h1 *,
-        [data-testid="stMarkdownContainer"] h2 *,
-        [data-testid="stMarkdownContainer"] h3 *,
-        [data-testid="stMarkdownContainer"] h4 *,
-        [data-testid="stHeadingWithAction"],
-        [data-testid="stHeadingWithAction"] *,
-        .stHeading, .stHeading * {{
-            font-family: 'Montserrat', sans-serif !important;
-            color: {COR_AZUL_ESC} !important;
-            font-weight: 800 !important;
-        }}
-        h1, h2, h3, h4,
-        [data-testid="stHeadingWithAction"],
-        .stHeading {{
-            text-align: center !important;
-        }}
-        /* Títulos de gráficos (#####): pretos */
-        h5, h6,
-        h5 *, h6 *,
-        [data-testid="stMarkdownContainer"] h5,
-        [data-testid="stMarkdownContainer"] h6,
-        [data-testid="stMarkdownContainer"] h5 *,
-        [data-testid="stMarkdownContainer"] h6 * {{
-            font-family: 'Montserrat', sans-serif !important;
-            color: {COR_TEXTO_PRETO} !important;
-            font-weight: 700 !important;
-            text-align: center !important;
-        }}
-        /* Texto geral do dashboard: preto (não sobrescreve títulos) */
-        .block-container,
-        .block-container > div p,
-        .block-container label,
-        .block-container li,
-        [data-testid="stMarkdownContainer"] > p,
-        [data-testid="stCaption"],
-        [data-testid="stCaptionContainer"],
-        [data-testid="stCaptionContainer"] p,
-        [data-testid="stWidgetLabel"] p,
-        [data-testid="stWidgetLabel"] label,
-        div[data-baseweb="select"] span,
-        .stSelectbox label,
-        .stMultiSelect label {{
-            color: {COR_TEXTO_PRETO} !important;
-        }}
-        .block-container span:not(h1 span):not(h2 span):not(h3 span):not(h4 span) {{
-            color: {COR_TEXTO_PRETO};
-        }}
-        h1 span, h2 span, h3 span, h4 span,
-        [data-testid="stHeadingWithAction"] span {{
-            color: {COR_AZUL_ESC} !important;
-        }}
-        .ficha-logo-wrap {{
-            text-align: center;
-            padding: 0.1rem 0 0.45rem 0;
-        }}
-        .ficha-logo-wrap img {{
-            max-height: 72px;
-            width: auto;
-            max-width: min(280px, 85vw);
-            height: auto;
-            object-fit: contain;
-            display: inline-block;
-            vertical-align: middle;
-        }}
-        .ficha-hero-stack {{
-            width: 100%;
-            max-width: 100%;
-            margin-bottom: 0.35rem;
-            box-sizing: border-box;
-        }}
-        .ficha-hero {{
-            text-align: center;
-            padding: 0.5rem 0 0 0;
-            margin: 0 auto 0 auto;
-            max-width: 640px;
-            animation: fichaFadeIn 0.85s cubic-bezier(0.22, 1, 0.36, 1) 0.1s both;
-        }}
-        .ficha-hero .ficha-title {{
-            font-family: 'Montserrat', sans-serif;
-            font-size: clamp(1.35rem, 3.5vw, 1.75rem);
-            font-weight: 900;
-            color: {COR_AZUL_ESC};
-            margin: 0;
-            line-height: 1.25;
-            letter-spacing: -0.02em;
-        }}
-        .ficha-hero-bar-wrap {{
-            width: 100%;
-            max-width: 100%;
-            margin: clamp(0.85rem, 2.4vw, 1.2rem) 0;
-            padding: 0;
-            box-sizing: border-box;
-        }}
-        .ficha-hero-bar {{
-            height: 4px;
-            width: 100%;
-            margin: 0;
-            border-radius: 999px;
-            background: linear-gradient(90deg, {COR_AZUL_ESC}, {COR_VERMELHO}, {COR_AZUL_ESC});
-            background-size: 200% 100%;
-            animation: fichaShimmer 4s ease-in-out infinite alternate;
-        }}
-        .vel-kpi-row {{
-            display: flex;
-            flex-wrap: wrap;
-            gap: 12px;
-            margin-bottom: 1.25rem;
-        }}
-        .vel-kpi {{
-            flex: 1 1 20%;
-            background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,251,252,0.9) 100%);
-            border: 1px solid rgba(226, 232, 240, 0.9);
-            border-radius: 14px;
-            padding: 14px 16px;
-            text-align: center;
-            box-shadow: 0 2px 8px rgba({RGB_AZUL_CSS}, 0.06);
-            transition: transform 0.3s ease, box-shadow 0.3s ease;
-        }}
-        .vel-kpi:hover {{
-            transform: translateY(-4px);
-            box-shadow: 0 10px 20px -5px rgba({RGB_AZUL_CSS}, 0.15);
-        }}
-        .vel-kpi .lbl {{
-            font-size: 0.72rem;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 0.08em;
-            color: {COR_TEXTO_PRETO};
-            opacity: 0.85;
-        }}
-        /* Valores dos boxes (rótulos de dados): mantêm azul / vermelho */
-        .vel-kpi .val {{
-            font-family: 'Montserrat', sans-serif;
-            font-size: 1.35rem;
-            font-weight: 800;
-            color: {COR_AZUL_ESC} !important;
-            margin-top: 6px;
-        }}
-        .vel-kpi .val--red {{ color: {COR_VERMELHO} !important; }}
-        div[data-testid="stMetric"] {{
-            background: rgba(255,255,256,0.6);
-            padding: 12px;
-            border-radius: 12px;
-            border: 1px solid {COR_BORDA};
-        }}
-        div[data-baseweb="input"] {{
-            border-radius: 10px !important;
-            border: 1px solid #e2e8f0 !important;
-            background-color: {COR_INPUT_BG} !important;
-            transition: border-color 0.2s ease, box-shadow 0.2s ease;
-        }}
-        div[data-baseweb="input"]:focus-within {{
-            border-color: rgba({RGB_AZUL_CSS}, 0.35) !important;
-            box-shadow: 0 0 0 3px rgba({RGB_AZUL_CSS}, 0.08) !important;
-        }}
-        </style>
-        """,
+        <style>
+        @import url('https://fonts.googleapis.com/css2?family=Montserrat:wght@400;600;700;800;900&family=Inter:wght@400;500;600;700&display=swap');
+        @keyframes fichaFadeIn {{
+            from {{ opacity: 0; transform: translateY(18px); }}
+            to {{ opacity: 1; transform: translateY(0); }}
+        }}
+        @keyframes fichaShimmer {{
+            0% {{ background-position: 0% 50%; }}
+            100% {{ background-position: 200% 50%; }}
+        }}
+        html, body, :root, [data-testid="stApp"] {{
+            color-scheme: light !important;
+        }}
+        /* Tabelas sempre claras, mesmo com Windows em modo escuro */
+        .stDataFrame,
+        [data-testid="stDataFrame"],
+        [data-testid="stDataFrame"] > div,
+        [data-testid="stDataFrameResizable"],
+        [data-testid="stTable"],
+        [data-testid="stTable"] table {{
+            color-scheme: light !important;
+            background-color: #ffffff !important;
+        }}
+        [data-testid="stTable"] th,
+        [data-testid="stTable"] td {{
+            background-color: #ffffff !important;
+            color: #000000 !important;
+        }}
+        html, body {{
+            font-family: 'Inter', sans-serif;
+            color: {COR_TEXTO_LABEL};
+            background: transparent !important;
+            background-color: transparent !important;
+        }}
+        .stApp,
+        [data-testid="stApp"] {{
+            background:
+                linear-gradient(135deg, rgba({RGB_AZUL_CSS}, 0.82) 0%, rgba(30, 58, 95, 0.55) 38%, rgba({RGB_VERMELHO_CSS}, 0.22) 72%, rgba(15, 23, 42, 0.45) 100%),
+                url("{bg_url}") center / cover no-repeat !important;
+            background-attachment: scroll !important;
+            background-color: transparent !important;
+        }}
+        [data-testid="stAppViewContainer"] {{
+            background: transparent !important;
+            background-color: transparent !important;
+        }}
+        header[data-testid="stHeader"],
+        [data-testid="stHeader"] {{
+            background: transparent !important;
+            background-color: transparent !important;
+            background-image: none !important;
+            border: none !important;
+            box-shadow: none !important;
+            backdrop-filter: none !important;
+            -webkit-backdrop-filter: none !important;
+        }}
+        [data-testid="stHeader"] > div,
+        [data-testid="stHeader"] header {{
+            background: transparent !important;
+            background-color: transparent !important;
+            background-image: none !important;
+            box-shadow: none !important;
+        }}
+        [data-testid="stDecoration"] {{
+            background: transparent !important;
+            background-color: transparent !important;
+        }}
+        [data-testid="stSidebar"] {{ display: none !important; }}
+        [data-testid="stSidebarCollapsedControl"] {{ display: none !important; }}
+        [data-testid="stToolbar"] {{
+            background: transparent !important;
+            background-color: transparent !important;
+            background-image: none !important;
+            border: none !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
+            color: rgba(255, 255, 255, 0.92) !important;
+        }}
+        [data-testid="stToolbar"] button,
+        [data-testid="stToolbar"] a {{
+            color: rgba(255, 255, 255, 0.92) !important;
+            background: transparent !important;
+            background-color: transparent !important;
+        }}
+        [data-testid="stHeader"] button {{
+            background: transparent !important;
+            background-color: transparent !important;
+        }}
+        [data-testid="stToolbar"] svg {{
+            fill: currentColor !important;
+            color: inherit !important;
+        }}
+        [data-testid="stToolbar"] svg path[stroke] {{
+            stroke: currentColor !important;
+        }}
+        [data-testid="stToolbar"] button:hover,
+        [data-testid="stToolbar"] a:hover,
+        [data-testid="stHeader"] button:hover {{
+            background: rgba(255, 255, 255, 0.12) !important;
+        }}
+        [data-testid="stMain"] {{
+            padding-left: clamp(14px, 5vw, 56px) !important;
+            padding-right: clamp(14px, 5vw, 56px) !important;
+            padding-top: clamp(12px, 3.5vh, 40px) !important;
+            padding-bottom: clamp(14px, 4vh, 44px) !important;
+            box-sizing: border-box !important;
+        }}
+        section.main > div {{
+            padding-top: 0.25rem !important;
+            padding-bottom: 0.35rem !important;
+        }}
+        .block-container {{
+            max-width: 1700px !important;
+            margin-left: auto !important;
+            margin-right: auto !important;
+            margin-top: clamp(4px, 1vh, 14px) !important;
+            margin-bottom: clamp(4px, 1vh, 14px) !important;
+            padding: 1.45rem 2.25rem 1.55rem 2.25rem !important;
+            background: rgba(255, 255, 255, 0.78) !important;
+            backdrop-filter: blur(18px) saturate(1.15);
+            -webkit-backdrop-filter: blur(18px) saturate(1.15);
+            border-radius: 24px !important;
+            border: 1px solid rgba(255, 255, 255, 0.45) !important;
+            box-shadow:
+                0 4px 6px -1px rgba({RGB_AZUL_CSS}, 0.06),
+                0 24px 48px -12px rgba({RGB_AZUL_CSS}, 0.18),
+                inset 0 1px 0 rgba(255, 255, 255, 0.55) !important;
+            animation: fichaFadeIn 0.7s cubic-bezier(0.22, 1, 0.36, 1) both;
+        }}
+        /* Títulos de seção do dashboard: azuis (inclui spans internos do Streamlit) */
+        h1, h2, h3, h4,
+        h1 *, h2 *, h3 *, h4 *,
+        [data-testid="stMarkdownContainer"] h1,
+        [data-testid="stMarkdownContainer"] h2,
+        [data-testid="stMarkdownContainer"] h3,
+        [data-testid="stMarkdownContainer"] h4,
+        [data-testid="stMarkdownContainer"] h1 *,
+        [data-testid="stMarkdownContainer"] h2 *,
+        [data-testid="stMarkdownContainer"] h3 *,
+        [data-testid="stMarkdownContainer"] h4 *,
+        [data-testid="stHeadingWithAction"],
+        [data-testid="stHeadingWithAction"] *,
+        .stHeading, .stHeading * {{
+            font-family: 'Montserrat', sans-serif !important;
+            color: {COR_AZUL_ESC} !important;
+            font-weight: 800 !important;
+        }}
+        h1, h2, h3, h4,
+        [data-testid="stHeadingWithAction"],
+        .stHeading {{
+            text-align: center !important;
+        }}
+        /* Títulos de gráficos (#####): pretos */
+        h5, h6,
+        h5 *, h6 *,
+        [data-testid="stMarkdownContainer"] h5,
+        [data-testid="stMarkdownContainer"] h6,
+        [data-testid="stMarkdownContainer"] h5 *,
+        [data-testid="stMarkdownContainer"] h6 * {{
+            font-family: 'Montserrat', sans-serif !important;
+            color: {COR_TEXTO_PRETO} !important;
+            font-weight: 700 !important;
+            text-align: center !important;
+        }}
+        /* Texto geral do dashboard: preto (não sobrescreve títulos) */
+        .block-container,
+        .block-container > div p,
+        .block-container label,
+        .block-container li,
+        [data-testid="stMarkdownContainer"] > p,
+        [data-testid="stCaption"],
+        [data-testid="stCaptionContainer"],
+        [data-testid="stCaptionContainer"] p,
+        [data-testid="stWidgetLabel"] p,
+        [data-testid="stWidgetLabel"] label,
+        div[data-baseweb="select"] span,
+        .stSelectbox label,
+        .stMultiSelect label {{
+            color: {COR_TEXTO_PRETO} !important;
+        }}
+        .block-container span:not(h1 span):not(h2 span):not(h3 span):not(h4 span) {{
+            color: {COR_TEXTO_PRETO};
+        }}
+        h1 span, h2 span, h3 span, h4 span,
+        [data-testid="stHeadingWithAction"] span {{
+            color: {COR_AZUL_ESC} !important;
+        }}
+        .ficha-logo-wrap {{
+            text-align: center;
+            padding: 0.1rem 0 0.45rem 0;
+        }}
+        .ficha-logo-wrap img {{
+            max-height: 72px;
+            width: auto;
+            max-width: min(280px, 85vw);
+            height: auto;
+            object-fit: contain;
+            display: inline-block;
+            vertical-align: middle;
+        }}
+        .ficha-hero-stack {{
+            width: 100%;
+            max-width: 100%;
+            margin-bottom: 0.35rem;
+            box-sizing: border-box;
+        }}
+        .ficha-hero {{
+            text-align: center;
+            padding: 0.5rem 0 0 0;
+            margin: 0 auto 0 auto;
+            max-width: 640px;
+            animation: fichaFadeIn 0.85s cubic-bezier(0.22, 1, 0.36, 1) 0.1s both;
+        }}
+        .ficha-hero .ficha-title {{
+            font-family: 'Montserrat', sans-serif;
+            font-size: clamp(1.35rem, 3.5vw, 1.75rem);
+            font-weight: 900;
+            color: {COR_AZUL_ESC};
+            margin: 0;
+            line-height: 1.25;
+            letter-spacing: -0.02em;
+        }}
+        .ficha-hero-bar-wrap {{
+            width: 100%;
+            max-width: 100%;
+            margin: clamp(0.85rem, 2.4vw, 1.2rem) 0;
+            padding: 0;
+            box-sizing: border-box;
+        }}
+        .ficha-hero-bar {{
+            height: 4px;
+            width: 100%;
+            margin: 0;
+            border-radius: 999px;
+            background: linear-gradient(90deg, {COR_AZUL_ESC}, {COR_VERMELHO}, {COR_AZUL_ESC});
+            background-size: 200% 100%;
+            animation: fichaShimmer 4s ease-in-out infinite alternate;
+        }}
+        .vel-kpi-row {{
+            display: flex;
+            flex-wrap: wrap;
+            gap: 12px;
+            margin-bottom: 1.25rem;
+        }}
+        .vel-kpi {{
+            flex: 1 1 20%;
+            background: linear-gradient(180deg, rgba(255,255,255,0.95) 0%, rgba(250,251,252,0.9) 100%);
+            border: 1px solid rgba(226, 232, 240, 0.9);
+            border-radius: 14px;
+            padding: 14px 16px;
+            text-align: center;
+            box-shadow: 0 2px 8px rgba({RGB_AZUL_CSS}, 0.06);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }}
+        .vel-kpi:hover {{
+            transform: translateY(-4px);
+            box-shadow: 0 10px 20px -5px rgba({RGB_AZUL_CSS}, 0.15);
+        }}
+        .vel-kpi .lbl {{
+            font-size: 0.72rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            color: {COR_TEXTO_PRETO};
+            opacity: 0.85;
+        }}
+        /* Valores dos boxes (rótulos de dados): mantêm azul / vermelho */
+        .vel-kpi .val {{
+            font-family: 'Montserrat', sans-serif;
+            font-size: 1.35rem;
+            font-weight: 800;
+            color: {COR_AZUL_ESC} !important;
+            margin-top: 6px;
+        }}
+        .vel-kpi .val--red {{ color: {COR_VERMELHO} !important; }}
+        div[data-testid="stMetric"] {{
+            background: rgba(255,255,256,0.6);
+            padding: 12px;
+            border-radius: 12px;
+            border: 1px solid {COR_BORDA};
+        }}
+        div[data-baseweb="input"] {{
+            border-radius: 10px !important;
+            border: 1px solid #e2e8f0 !important;
+            background-color: {COR_INPUT_BG} !important;
+            transition: border-color 0.2s ease, box-shadow 0.2s ease;
+        }}
+        div[data-baseweb="input"]:focus-within {{
+            border-color: rgba({RGB_AZUL_CSS}, 0.35) !important;
+            box-shadow: 0 0 0 3px rgba({RGB_AZUL_CSS}, 0.08) !important;
+        }}
+        </style>
+        """,
         unsafe_allow_html=True,
     )
 
@@ -1519,12 +1519,12 @@ def carregar_df_pastas_funil(
     _cred_fp: str,
 ) -> Tuple[pd.DataFrame, str]:
     """
-    Localiza a base de pastas:
-      1) abas candidatas (BASE, Pastas, ...)
-      2) varredura de abas com colunas Data Criação Pasta / Data Aprovação SAFI
-    Procura na planilha de pastas (se informada), na de agendamentos e na principal.
-    Retorna (df, origem descritiva).
-    """
+    Localiza a base de pastas:
+      1) abas candidatas (BASE, Pastas, ...)
+      2) varredura de abas com colunas Data Criação Pasta / Data Aprovação SAFI
+    Procura na planilha de pastas (se informada), na de agendamentos e na principal.
+    Retorna (df, origem descritiva).
+    """
     import gspread
     from google.oauth2.service_account import Credentials
 
@@ -1695,42 +1695,23 @@ def extrair_ano_looker(val: Any) -> Optional[int]:
 
 def aplicar_mes_ano_vendas(
     df: pd.DataFrame,
-    cols_data: List[str],
+    cols_data: Optional[List[str]] = None,
     col_mes_venda: Optional[str] = None,
     col_ano_venda: Optional[str] = None,
     col_mes_looker: Optional[str] = None,
 ) -> Tuple[pd.Series, pd.Series]:
+    """Mês/ano da confirmação da venda, ou DataVenda__c quando vazia.
+
+    Os parâmetros legados são aceitos por compatibilidade, mas não substituem
+    a data efetiva por competência informada ou data de contrato.
     """
-    Preenche _mes/_ano coalescendo datas ISO do SF (Data da venda, Contrato gerado em)
-    e campos Mês Venda / Ano da Venda quando a data principal vem vazia.
-    """
-    mes = pd.Series(pd.NA, index=df.index, dtype="Int64")
-    ano = pd.Series(pd.NA, index=df.index, dtype="Int64")
-
-    for col in cols_data:
-        if not col or col not in df.columns:
-            continue
-        m = df[col].map(extrair_mes_da_data_venda)
-        a = df[col].map(extrair_ano_da_data_venda)
-        mes = mes.fillna(m.astype("Int64"))
-        ano = ano.fillna(a.astype("Int64"))
-
-    if col_mes_venda and col_mes_venda in df.columns:
-        mes = mes.fillna(df[col_mes_venda].map(extrair_mes_looker).astype("Int64"))
-    if col_mes_looker and col_mes_looker in df.columns:
-        mes = mes.fillna(df[col_mes_looker].map(extrair_mes_looker).astype("Int64"))
-
-    if col_ano_venda and col_ano_venda in df.columns:
-        ano = ano.fillna(df[col_ano_venda].map(extrair_ano_looker).astype("Int64"))
-
-    return mes, ano
+    dt = serie_data_venda(df)
+    return dt.dt.month.astype("Int64"), dt.dt.year.astype("Int64")
 
 
 def _serie_data_contrato(df: pd.DataFrame, col_contrato: Optional[str]) -> pd.Series:
-    """Datetime de contrato para filtros de competência (fallback quando _mes/_ano vazios)."""
-    if not col_contrato or col_contrato not in df.columns:
-        return pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
-    return parse_data_serie(df[col_contrato])
+    """Compatibilidade: retorna sempre a data efetiva da venda."""
+    return serie_data_venda(df)
 
 
 def filtrar_vendas_competencia(
@@ -1739,28 +1720,17 @@ def filtrar_vendas_competencia(
     meses_sel: List[int],
     col_contrato: Optional[str] = None,
 ) -> pd.DataFrame:
-    """
-    Filtra vendas por ano/mês de competência.
-    Usa _ano/_mes e, quando vazios, a data de Contrato gerado em.
-    """
-    out = df.copy()
-
+    """Filtra ano/mês exclusivamente pela data efetiva da venda."""
+    out = normalizar_datas_vendas(df)
+    dt = out[COL_DATA_VENDA]
+    out["_mes"] = dt.dt.month.astype("Int64")
+    out["_ano"] = dt.dt.year.astype("Int64")
+    mask = pd.Series(True, index=out.index)
     if anos_sel:
-        dt_contrato = _serie_data_contrato(out, col_contrato)
-        mask_ano = out["_ano"].isin(anos_sel)
-        if dt_contrato.notna().any():
-            mask_ano = mask_ano | (out["_ano"].isna() & dt_contrato.dt.year.isin(anos_sel))
-        out = out.loc[mask_ano].copy()
-
+        mask &= dt.dt.year.isin(anos_sel)
     if meses_sel:
-        # Recalcula datas após filtro de ano (índice de out muda).
-        dt_contrato = _serie_data_contrato(out, col_contrato)
-        mask_mes = out["_mes"].isin(meses_sel)
-        if dt_contrato.notna().any():
-            mask_mes = mask_mes | (out["_mes"].isna() & dt_contrato.dt.month.isin(meses_sel))
-        out = out.loc[mask_mes].copy()
-
-    return out
+        mask &= dt.dt.month.isin(meses_sel)
+    return out.loc[mask].copy()
 
 
 def _norm_txt_col(s: Any) -> str:
@@ -1866,10 +1836,10 @@ def coluna_existe(df: pd.DataFrame, nome: str) -> bool:
 def melt_metas(df_metas_raw: pd.DataFrame) -> pd.DataFrame:
     df = normalizar_colunas(df_metas_raw)
     df["_row_id"] = range(len(df))
-    
+
     id_vars = [c for c in df.columns if str(c).lower() in ["empreendimento", "região", "regiao", "obra", "coordenador"]]
     id_vars_merge = id_vars + ["_row_id"]
-    
+
     for c in id_vars:
         df[c] = df[c].fillna("Não Informado").astype(str).str.strip()
         df.loc[df[c] == "", c] = "Não Informado"
@@ -1907,7 +1877,7 @@ def melt_metas(df_metas_raw: pd.DataFrame) -> pd.DataFrame:
             out.rename(columns={c: "Empreendimento"}, inplace=True)
         elif str(c).lower() in ["região", "regiao"]:
             out.rename(columns={c: "Região"}, inplace=True)
-            
+
     return out
 
 
@@ -1944,9 +1914,9 @@ def _criar_fig_funil(
     altura: int = 380,
 ) -> go.Figure:
     """
-    Funil Plotly com texto branco dentro do bloco.
-    Volumes sempre arredondados para cima (ceil).
-    """
+    Funil Plotly com texto branco dentro do bloco.
+    Volumes sempre arredondados para cima (ceil).
+    """
     vals = [float(math.ceil(max(0.0, float(v)))) for v in valores]
     textos = [fmt_funil_valor(v) for v in vals]
     fig = go.Figure(go.Funnel(
@@ -2002,9 +1972,9 @@ MESES_PT = {
 
 def janela_treino_meses_exatos(hoje: Optional[date] = None) -> Tuple[date, date]:
     """
-    36 meses-calendário fechados, excluindo o mês atual.
-    Ex.: julho/2026 → 01/07/2023 a 30/06/2026.
-    """
+    36 meses-calendário fechados, excluindo o mês atual.
+    Ex.: julho/2026 → 01/07/2023 a 30/06/2026.
+    """
     hoje = hoje or date.today()
     inicio = date(hoje.year - FUNIL_ANOS_TREINO, hoje.month, 1)
     if hoje.month == 1:
@@ -2025,12 +1995,12 @@ _TZ_BR = "America/Sao_Paulo"
 
 def parse_data_serie(serie: pd.Series) -> pd.Series:
     """
-    Converte datas Salesforce/relatórios para datetime64[ns] naive.
+    Converte datas Salesforce/relatórios para datetime64[ns] naive.
 
-    Datas ISO do SF (`2025-07-01T12:14:25.000+0000` ou `2025-07-01`) NÃO podem
-    usar dayfirst=True — o pandas troca 2025-07-01 por 2025-01-07 e invalida
-    dias > 12, o que derruba agendamentos/visitas do mês atual.
-    """
+    Datas ISO do SF (`2025-07-01T12:14:25.000+0000` ou `2025-07-01`) NÃO podem
+    usar dayfirst=True — o pandas troca 2025-07-01 por 2025-01-07 e invalida
+    dias > 12, o que derruba agendamentos/visitas do mês atual.
+    """
     if serie is None:
         return pd.Series(dtype="datetime64[ns]")
     raw = serie
@@ -2072,6 +2042,60 @@ def parse_data_serie(serie: pd.Series) -> pd.Series:
                 out = pd.to_datetime(
                     nums, unit="D", origin="1899-12-30", errors="coerce"
                 )
+    return out
+
+
+COL_DATA_VENDA = "_data_venda"
+ALIASES_DATA_VENDA = [COL_DATA_VENDA]
+ALIASES_DATA_CONFIRMACAO_VENDA = [
+    "DataConfirmacaoVenda2__c", "Data Confirmação Venda 2",
+    "Data de Confirmação da Venda 2",
+]
+ALIASES_DATA_VENDA_ORIGINAL = [
+    "DataVenda__c", "Data da venda", "Data Venda", "Data de venda",
+]
+
+
+def _coluna_data_venda_exata(df: pd.DataFrame, aliases: List[str]) -> Optional[str]:
+    """Match exato para não confundir confirmação com outra coluna de data."""
+    for alias in aliases:
+        for col in df.columns:
+            # Relatórios também podem identificar campos como Opportunity.Campo__c.
+            nome = str(col).rsplit(".", 1)[-1]
+            if _norm_txt_col(nome) == _norm_txt_col(alias):
+                return col
+    return None
+
+
+def serie_data_venda(df: pd.DataFrame) -> pd.Series:
+    """DataConfirmacaoVenda2__c; somente quando vazia, DataVenda__c.
+
+    A escolha é feita por linha antes da conversão. Confirmações preenchidas
+    mas inválidas permanecem sem data, sem trocar silenciosamente a prioridade.
+    """
+    col_confirmacao = _coluna_data_venda_exata(df, ALIASES_DATA_CONFIRMACAO_VENDA)
+    col_original = _coluna_data_venda_exata(df, ALIASES_DATA_VENDA_ORIGINAL)
+    if col_confirmacao is None and col_original is None:
+        if COL_DATA_VENDA in df.columns:
+            return parse_data_serie(df[COL_DATA_VENDA])
+        return pd.Series(pd.NaT, index=df.index, dtype="datetime64[ns]")
+    confirmacao = (
+        df[col_confirmacao] if col_confirmacao is not None
+        else pd.Series(None, index=df.index, dtype=object)
+    )
+    original = (
+        df[col_original] if col_original is not None
+        else pd.Series(None, index=df.index, dtype=object)
+    )
+    texto = confirmacao.astype("string").str.strip().str.lower()
+    vazia = confirmacao.isna() | texto.isin(["", "nan", "none", "nat", "null", "<na>"])
+    return parse_data_serie(confirmacao.where(~vazia, original))
+
+
+def normalizar_datas_vendas(df: pd.DataFrame) -> pd.DataFrame:
+    """Materializa a mesma data efetiva para filtros, séries e deduplicação."""
+    out = df.copy()
+    out[COL_DATA_VENDA] = serie_data_venda(out)
     return out
 
 
@@ -2162,9 +2186,9 @@ def serie_diaria_contratos(
     col_qtd: str = "_qtd_venda",
     col_vgv: str = "_vgv_venda",
 ) -> pd.DataFrame:
-    """Agrega vendas comerciais por data de 'Contrato gerado em'."""
+    """Agrega vendas pela data efetiva; col_contrato é mantido por compatibilidade."""
     base = df_vendas.copy()
-    base["_dt_contrato"] = parse_data_serie(base[col_contrato])
+    base["_dt_contrato"] = serie_data_venda(base)
     base = base.dropna(subset=["_dt_contrato"])
     if base.empty:
         return pd.DataFrame(columns=["data", "qtd", "vgv"])
@@ -2301,10 +2325,10 @@ def prever_qtd_medias(
     incluir_mes: bool = True,
 ) -> np.ndarray:
     """
-    Combinação multiplicativa das médias.
-    Com mês:   pred = m_ds × m_dm × m_mes / μ²
-    Sem mês:   pred = m_ds × m_dm / μ
-    """
+    Combinação multiplicativa das médias.
+    Com mês:   pred = m_ds × m_dm × m_mes / μ²
+    Sem mês:   pred = m_ds × m_dm / μ
+    """
     if not datas:
         return np.array([])
     mu = float(medias["mu"])
@@ -2326,12 +2350,12 @@ def prever_qtd_medias(
 
 def _matriz_explicativas_relativa(df: pd.DataFrame) -> np.ndarray:
     """
-    One-hot com categorias de referência omitidas:
-      dia do mês → dia 1
-      dia da semana → segunda
-      mês → janeiro
-    + intercepto (= nível esperado em segunda + dia 1 + janeiro).
-    """
+    One-hot com categorias de referência omitidas:
+      dia do mês → dia 1
+      dia da semana → segunda
+      mês → janeiro
+    + intercepto (= nível esperado em segunda + dia 1 + janeiro).
+    """
     n = len(df)
     # 30 dias (2–31) + 6 dias semana (terça–domingo) + 11 meses (fev–dez) + intercepto
     X = np.zeros((n, 30 + 6 + 11 + 1), dtype=float)
@@ -2355,9 +2379,9 @@ def _matriz_explicativas_relativa(df: pd.DataFrame) -> np.ndarray:
 
 def estimar_efeitos_sazonais(treino: pd.DataFrame) -> Optional[Dict[str, Any]]:
     """
-    OLS com referência em segunda-feira, dia 1 e janeiro.
-    Retorna efeitos aditivos (qtd) e índices relativos (baseline = 1.0).
-    """
+    OLS com referência em segunda-feira, dia 1 e janeiro.
+    Retorna efeitos aditivos (qtd) e índices relativos (baseline = 1.0).
+    """
     if treino.empty or float(treino["qtd"].sum()) <= 0 or len(treino) < 30:
         return None
 
@@ -2447,8 +2471,8 @@ JANELAS_FIM_MES = (15, 10, 5)
 
 def calcular_intensidade_fim_mes(treino: pd.DataFrame, janela: int = 15) -> float:
     """
-    Razão empírica: média dos últimos `janela` dias do mês / média do restante.
-    """
+    Razão empírica: média dos últimos `janela` dias do mês / média do restante.
+    """
     if treino.empty:
         return 1.4
     limiar = max(1, 31 - janela + 1)
@@ -2476,9 +2500,9 @@ def fatores_sazonalidade_fim_mes(
     janelas: Tuple[int, ...] = JANELAS_FIM_MES,
 ) -> np.ndarray:
     """
-    Combina sazonalidades de 15, 10 e 5 dias (produto de rampas).
-    Quanto mais perto do fim do mês, maior o fator.
-    """
+    Combina sazonalidades de 15, 10 e 5 dias (produto de rampas).
+    Quanto mais perto do fim do mês, maior o fator.
+    """
     if not dias:
         return np.array([])
     out: List[float] = []
@@ -2540,13 +2564,13 @@ def projetar_vendas_mes_atual(
     incluir_mes: bool = True,
 ) -> Optional[Dict[str, Any]]:
     """
-    Projeção do mês corrente com duas lógicas (mesma janela de meses exatos):
-      1) Regressão OLS (dia_mês + dia_semana [+ mês])
-      2) Médias sazonais combinadas (multiplicativo)
-    Com incluir_mes=False, remove o efeito/beta de mês (só dia do mês e dia da semana).
-    Treino: do mês atual − 1 ano até o fim do mês anterior
-    (ex.: jul/2026 → 01/07/2025 a 30/06/2026).
-    """
+    Projeção do mês corrente com duas lógicas (mesma janela de meses exatos):
+      1) Regressão OLS (dia_mês + dia_semana [+ mês])
+      2) Médias sazonais combinadas (multiplicativo)
+    Com incluir_mes=False, remove o efeito/beta de mês (só dia do mês e dia da semana).
+    Treino: do mês atual − 1 ano até o fim do mês anterior
+    (ex.: jul/2026 → 01/07/2025 a 30/06/2026).
+    """
     hoje = hoje or date.today()
     inicio, fim_treino = janela_treino_meses_exatos(hoje)
     serie = serie_diaria_contratos(df_vendas, col_contrato)
@@ -2799,11 +2823,11 @@ def _plot_projecao_mes(
 
 def _plot_meta_diaria_integrada(proj: Dict[str, Any]) -> None:
     """
-    Um único gráfico com 3 linhas (somente diário, sem acumulado):
-      1) Realizado até hoje
-      2) Meta diária (regressão) a partir de amanhã
-      3) Meta diária (médias) a partir de amanhã
-    """
+    Um único gráfico com 3 linhas (somente diário, sem acumulado):
+      1) Realizado até hoje
+      2) Meta diária (regressão) a partir de amanhã
+      3) Meta diária (médias) a partir de amanhã
+    """
     ints = proj.get("intensidades_fim_mes") or {}
     st.caption(
         " · ".join(f"Sazonalidade {j}d: {float(ints.get(j, 1)):.2f}x" for j in JANELAS_FIM_MES)
@@ -3029,33 +3053,33 @@ def render_projecao_vendas(
 
     st.markdown(
         f"""
-        <div class="vel-kpi-row">
-            <div class="vel-kpi">
-                <div class="lbl">Realizado MTD</div>
-                <div class="val">{fmt_qtd(proj['qtd_mtd'])}</div>
-            </div>
-            <div class="vel-kpi">
-                <div class="lbl">Qtd. (regressão)</div>
-                <div class="val">{fmt_qtd(proj['qtd_projetada_mes'])}</div>
-            </div>
-            <div class="vel-kpi">
-                <div class="lbl">Qtd. (médias)</div>
-                <div class="val">{fmt_qtd(proj.get('qtd_projetada_medias', 0))}</div>
-            </div>
-            <div class="vel-kpi">
-                <div class="lbl">VGV (regressão)</div>
-                <div class="val val--red">{fmt_br_milhoes(proj['vgv_projetado'])}</div>
-            </div>
-            <div class="vel-kpi">
-                <div class="lbl">VGV (médias)</div>
-                <div class="val val--red">{fmt_br_milhoes(proj.get('vgv_projetado_medias', 0))}</div>
-            </div>
-            <div class="vel-kpi">
-                <div class="lbl">% VGV reg. / médias</div>
-                <div class="val">{proj['pct_vgv_meta']:.1f}% / {proj.get('pct_vgv_medias', 0):.1f}%</div>
-            </div>
-        </div>
-        """,
+        <div class="vel-kpi-row">
+            <div class="vel-kpi">
+                <div class="lbl">Realizado MTD</div>
+                <div class="val">{fmt_qtd(proj['qtd_mtd'])}</div>
+            </div>
+            <div class="vel-kpi">
+                <div class="lbl">Qtd. (regressão)</div>
+                <div class="val">{fmt_qtd(proj['qtd_projetada_mes'])}</div>
+            </div>
+            <div class="vel-kpi">
+                <div class="lbl">Qtd. (médias)</div>
+                <div class="val">{fmt_qtd(proj.get('qtd_projetada_medias', 0))}</div>
+            </div>
+            <div class="vel-kpi">
+                <div class="lbl">VGV (regressão)</div>
+                <div class="val val--red">{fmt_br_milhoes(proj['vgv_projetado'])}</div>
+            </div>
+            <div class="vel-kpi">
+                <div class="lbl">VGV (médias)</div>
+                <div class="val val--red">{fmt_br_milhoes(proj.get('vgv_projetado_medias', 0))}</div>
+            </div>
+            <div class="vel-kpi">
+                <div class="lbl">% VGV reg. / médias</div>
+                <div class="val">{proj['pct_vgv_meta']:.1f}% / {proj.get('pct_vgv_medias', 0):.1f}%</div>
+            </div>
+        </div>
+        """,
         unsafe_allow_html=True,
     )
 
@@ -3265,9 +3289,9 @@ def _sf_session_bits(sf):
 
 def _relatorio_sf_via_csv(sf, report_id: str):
     """
-    Export CSV do relatório (Details). Contorna o teto de 2k da Analytics API,
-    mas o Salesforce ainda pode cortar ~100k linhas em exports grandes.
-    """
+    Export CSV do relatório (Details). Contorna o teto de 2k da Analytics API,
+    mas o Salesforce ainda pode cortar ~100k linhas em exports grandes.
+    """
     import requests
     from io import StringIO
 
@@ -3539,9 +3563,9 @@ def _relatorio_sf_via_analytics(sf, report_id: str):
 
 def _relatorio_sf_via_analytics_chunked(sf, report_id: str, anos_historico: int = 4, chunk_dias: int = 14):
     """
-    Contorna o limite de 2.000 linhas da Analytics API:
-    fatia por data (standardDateFilter) e, se um dia ainda passar de 2k, pagina por Id.
-    """
+    Contorna o limite de 2.000 linhas da Analytics API:
+    fatia por data (standardDateFilter) e, se um dia ainda passar de 2k, pagina por Id.
+    """
     rid = (report_id or "").strip()
     raw0 = _analytics_run(sf, rid)
     base_meta = copy.deepcopy(raw0.get("reportMetadata") or {})
@@ -3624,11 +3648,11 @@ def _sf_inicio_producao(ref: Optional[date] = None) -> date:
 
 def _sf_soql_desde(modo_janela: str = "producao") -> str:
     """
-    Início da janela SOQL.
-    - painel: PAINEL_MESES_VENDAS (24m) — KPI + projeção OLS no painel web
-    - treino / historico: 36 meses (script offline)
-    - producao: 28 dias antes do 1º dia do mês atual (MTD + lags do funil)
-    """
+    Início da janela SOQL.
+    - painel: PAINEL_MESES_VENDAS (24m) — KPI + projeção OLS no painel web
+    - treino / historico: 36 meses (script offline)
+    - producao: 28 dias antes do 1º dia do mês atual (MTD + lags do funil)
+    """
     modo = (modo_janela or "producao").strip().lower()
     if modo == "painel":
         ini = _sf_janela_painel_vendas()
@@ -3641,9 +3665,9 @@ def _sf_soql_desde(modo_janela: str = "producao") -> str:
 
 def _sf_soql_agendamentos(sf, modo_janela: str = "producao") -> pd.DataFrame:
     """
-    Extrai agendamentos/visitas via SOQL em Event (queryMore).
-    Contorna Analytics 2k e cota de 500 relatórios/hora.
-    """
+    Extrai agendamentos/visitas via SOQL em Event (queryMore).
+    Contorna Analytics 2k e cota de 500 relatórios/hora.
+    """
     desde = _sf_soql_desde(modo_janela)
     desde_date = desde[:10]
     # Produção: também puxa visitas cuja criação é anterior ao buffer.
@@ -3707,21 +3731,22 @@ def _sf_soql_pastas(sf, modo_janela: str = "producao") -> pd.DataFrame:
 
 def _sf_soql_vendas(sf, modo_janela: str = "producao") -> pd.DataFrame:
     """
-    Equivalente ao relatório 00O3Z000005ZsPmUAK sem o filtro de tempo próprio:
-    vendas comerciais Direcional/RJ. Em treino usa 36 meses; em produção, buffer.
-    """
-    desde = _sf_soql_desde(modo_janela)[:10]  # ContratoGeradoEm__c é Date, não DateTime
+    Equivalente ao relatório 00O3Z000005ZsPmUAK sem o filtro de tempo próprio:
+    vendas comerciais Direcional/RJ. Em treino usa 36 meses; em produção, buffer.
+    """
+    desde = _sf_soql_desde(modo_janela)[:10]  # Campos de venda consultados como Date.
     soql = (
         "SELECT Id, Name, Empreendimento__r.Name, Empreendimento__r.Regional__c, "
-        "Valor_Real_de_Venda__c, Owner.Name, DirecionalVendas__c, ContratoGeradoEm__c, "
-        "DataVenda__c, Termo_de_reserva__c, Ranking__c, M_s_Venda__c, Ano_da_Venda__c, "
+        "Valor_Real_de_Venda__c, Owner.Name, DirecionalVendas__c, "
+        "DataConfirmacaoVenda2__c, DataVenda__c, Termo_de_reserva__c, Ranking__c, "
         "Imobiliaria__r.Name, Contato_Corretor_Proprietario1__r.Name, Gerente_regional__c, "
         "Regional__c, OrigemConta__c, LeadSource "
         "FROM Opportunity "
         "WHERE DirecionalVendas__c = true "
         "AND Empreendimento__r.Regional__c = 'RJ' "
         "AND Empreendimento__r.UnidadeDeNegocio__c = 'Direcional' "
-        f"AND ContratoGeradoEm__c >= {desde}"
+        f"AND (DataConfirmacaoVenda2__c >= {desde} "
+        f"OR (DataConfirmacaoVenda2__c = null AND DataVenda__c >= {desde}))"
     )
     res = sf.query_all(soql)
     rows = []
@@ -3741,19 +3766,21 @@ def _sf_soql_vendas(sf, modo_janela: str = "producao") -> pd.DataFrame:
             "Venda Comercial?": r.get("DirecionalVendas__c"),
             "Venda facilitada": r.get("Termo_de_reserva__c"),
             "Ranking": r.get("Ranking__c"),
-            "Data da venda": r.get("DataVenda__c"),
-            "Mês Venda": r.get("M_s_Venda__c"),
-            "Ano da Venda": r.get("Ano_da_Venda__c"),
+            "DataConfirmacaoVenda2__c": r.get("DataConfirmacaoVenda2__c"),
+            "DataVenda__c": r.get("DataVenda__c"),
             "Contato Corretor Proprietario": _sf_rel_name(
                 r.get("Contato_Corretor_Proprietario1__r")
             ),
-            "Contrato gerado em": r.get("ContratoGeradoEm__c"),
             "Gerente regional": r.get("Gerente_regional__c"),
             "Regional": r.get("Regional__c"),
             "Origem da Conta": r.get("OrigemConta__c"),
             "Origem do lead": r.get("LeadSource"),
         })
-    return pd.DataFrame(rows)
+    out = normalizar_datas_vendas(pd.DataFrame(rows))
+    out["Data da venda"] = out[COL_DATA_VENDA]
+    out["Mês Venda"] = out[COL_DATA_VENDA].dt.month.astype("Int64")
+    out["Ano da Venda"] = out[COL_DATA_VENDA].dt.year.astype("Int64")
+    return out
 
 
 def _sf_inicio_funil_empreendimento(hoje: Optional[date] = None) -> date:
@@ -3874,10 +3901,9 @@ def carregar_funil_empreendimento_sf() -> Dict[str, Any]:
     df_ven = filtrar_vendas_comerciais(df_ven)
     ini = _sf_inicio_funil_empreendimento(hoje)
     if not df_ven.empty:
-        col_c = achar_coluna(df_ven, ALIASES_CONTRATO_GERADO)
-        if col_c:
-            dt = parse_data_serie(df_ven[col_c])
-            df_ven = df_ven.loc[dt.notna() & (dt.dt.date >= ini)].copy()
+        df_ven = normalizar_datas_vendas(df_ven)
+        dt = df_ven[COL_DATA_VENDA]
+        df_ven = df_ven.loc[dt.notna() & (dt.dt.date >= ini)].copy()
     t_total = time.perf_counter() - t0
     return {
         "agendamentos": df_ag if df_ag is not None else pd.DataFrame(),
@@ -3929,17 +3955,15 @@ def _recortar_vendas_painel(df: pd.DataFrame) -> pd.DataFrame:
     """Aplica recorte temporal de vendas do painel (24m)."""
     if df is None or df.empty:
         return df if df is not None else pd.DataFrame()
-    col_data = achar_coluna(df, ALIASES_CONTRATO_GERADO)
-    if not col_data:
-        return df
+    df = normalizar_datas_vendas(df)
     inicio_hist = _sf_janela_painel_vendas()
-    dt = parse_data_serie(df[col_data])
+    dt = df[COL_DATA_VENDA]
     return df.loc[dt.notna() & (dt.dt.date >= inicio_hist)].copy()
 
 
 @st.cache_data(ttl=3600, show_spinner="Carregando vendas Salesforce…")
 def carregar_vendas_painel_sf() -> Dict[str, Any]:
-    """Vendas comerciais — janela curta (24m). Bloqueia só o KPI inicial."""
+    """Vendas comerciais por confirmação/DataVenda__c — janela curta (24m)."""
     t0 = time.perf_counter()
     sf = _cliente_salesforce_cache()
     t1 = time.perf_counter()
@@ -3989,7 +4013,7 @@ def carregar_funil_painel_sf() -> Dict[str, Any]:
 
 @st.cache_data(ttl=3600, show_spinner="Carregando bases Salesforce…")
 def carregar_pacote_painel_sf() -> Dict[str, Any]:
-    """Pacote completo (benchmark). Produção usa vendas + funil separados."""
+    """Pacote completo com vendas pela data de confirmação/DataVenda__c."""
     vendas = carregar_vendas_painel_sf()
     funil = carregar_funil_painel_sf()
     tv = (vendas.get("timings") or {}).get("total_s", 0.0)
@@ -4016,16 +4040,16 @@ def carregar_relatorio_salesforce(
     modo_janela: str = "producao",
 ):
     """
-    Baixa dados Salesforce sem teto de 2k:
-    1) SOQL query_all (Event / Avaliacao_credito) — preferencial p/ volumes grandes
-    2) CSV do relatório
-    3) Analytics fatiada (fallback; cota 500/h)
+    Baixa dados Salesforce sem teto de 2k:
+    1) SOQL query_all (Event / Avaliacao_credito) — preferencial p/ volumes grandes
+    2) CSV do relatório
+    3) Analytics fatiada (fallback; cota 500/h)
 
-    modo_janela:
-      - painel: vendas 24 meses (painel web)
-      - producao: buffer curto (MTD + 28d de lags)
-      - treino: 36 meses fechados (script offline)
-    """
+    modo_janela:
+      - painel: vendas 24 meses (painel web)
+      - producao: buffer curto (MTD + 28d de lags)
+      - treino: 36 meses fechados (script offline)
+    """
     try:
         sf = _cliente_salesforce_cache()
     except Exception:
@@ -4039,6 +4063,16 @@ def carregar_relatorio_salesforce(
 
     tentativas = []
     modo = (modo_janela or "producao").strip().lower() or "producao"
+
+    # Para vendas, relatórios legados podem filtrar por contrato e omitir
+    # confirmações válidas. SOQL é obrigatório para preservar a regra temporal.
+    if rid == SF_REPORT_VENDAS_ID or "venda" in (rotulo or "").lower():
+        df = normalizar_colunas(_sf_soql_vendas(sf, modo_janela=modo))
+        origem = (
+            f"Salesforce SOQL · Opportunity · {rotulo} · janela={modo} · "
+            f"{len(df):,} linhas".replace(",", ".")
+        )
+        return df, origem
 
     # 1) SOQL direto (melhor caminho para ~180k)
     df_soql, origem_soql = _sf_soql_por_relatorio(sf, rid, rotulo, modo_janela=modo)
@@ -4106,15 +4140,6 @@ def carregar_relatorio_salesforce(
         )
 
     df = normalizar_colunas(df)
-    if rid == SF_REPORT_VENDAS_ID:
-        col_data = achar_coluna(df, ALIASES_CONTRATO_GERADO)
-        if col_data:
-            if modo == "painel":
-                inicio_hist = _sf_janela_painel_vendas()
-            else:
-                inicio_hist, _ = _sf_janela_36_meses_fechados()
-            dt = parse_data_serie(df[col_data])
-            df = df.loc[dt.notna() & (dt.dt.date >= inicio_hist)].copy()
     if not origem:
         origem = f"Salesforce · {rotulo} · {rid} · {len(df):,} linhas".replace(",", ".")
     elif "linhas" not in origem.lower():
@@ -4149,9 +4174,9 @@ def contar_eventos_por_coluna(df: pd.DataFrame, col: str) -> Dict[date, float]:
 
 def deduplicar_pastas_aprovadas_funil(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Uma linha por Nome da Avaliação de crédito, mantendo a Data Aprovação SAFI
-    mais recente.
-    """
+    Uma linha por Nome da Avaliação de crédito, mantendo a Data Aprovação SAFI
+    mais recente.
+    """
     col_safi = achar_coluna_aprovacao_safi(df)
     if not col_safi:
         return df if df is not None else pd.DataFrame()
@@ -4166,9 +4191,9 @@ def deduplicar_por_chave_mais_recente(
     aliases_data: List[str],
 ) -> pd.DataFrame:
     """
-    Remove duplicatas pela chave, mantendo a linha com a data mais recente.
-    Se chave ou data não existirem, devolve o DataFrame original.
-    """
+    Remove duplicatas pela chave, mantendo a linha com a data mais recente.
+    Se chave ou data não existirem, devolve o DataFrame original.
+    """
     if df is None or df.empty:
         return df if df is not None else pd.DataFrame()
     col_chave = achar_coluna(df, aliases_chave)
@@ -4191,11 +4216,8 @@ ALIASES_ID_OPORTUNIDADE = [
     "ID da Oportunidade", "Id da Oportunidade", "Opportunity ID", "Opportunity Id",
     "ID Oportunidade", "Id Oportunidade",
 ]
-ALIASES_CONTRATO_GERADO = [
-    "Contrato gerado em", "Contrato Gerado em", "Contrato gerado",
-    "Data do Contrato", "Data Contrato", "Close Date", "Data da venda",
-    "Data Venda",
-]
+# Nome legado para scripts que importam esta constante; aponta só à data efetiva.
+ALIASES_CONTRATO_GERADO = ALIASES_DATA_VENDA
 ALIASES_NOME_AVALIACAO_CREDITO = [
     "Nome da Avaliação de crédito", "Nome da Avaliacao de credito",
     "Nome da Avaliação de Crédito", "Nome da Avaliacao de Credito",
@@ -4213,8 +4235,12 @@ ALIASES_DATA_CRIACAO = [
 
 
 def deduplicar_vendas_funil(df: pd.DataFrame) -> pd.DataFrame:
-    """Uma linha por ID da Oportunidade (Contrato gerado em mais recente)."""
-    return deduplicar_por_chave_mais_recente(df, ALIASES_ID_OPORTUNIDADE, ALIASES_CONTRATO_GERADO)
+    """Uma linha por ID da Oportunidade (data efetiva da venda mais recente)."""
+    if df is None:
+        return pd.DataFrame()
+    return deduplicar_por_chave_mais_recente(
+        normalizar_datas_vendas(df), ALIASES_ID_OPORTUNIDADE, ALIASES_DATA_VENDA
+    )
 
 
 def deduplicar_pastas_funil(df: pd.DataFrame) -> pd.DataFrame:
@@ -4241,19 +4267,19 @@ def montar_mapa_funil_diario(
     df_vendas: Optional[pd.DataFrame] = None,
 ) -> Dict[str, Dict[date, float]]:
     """
-    Séries diárias do funil:
-      agendamentos ← Data de criação
-      visitas ← Data da visita
-      pastas ← Data Primeiro Envio Análise (relatório SF 00OU600000FEOoDMAX)
-      pastas_aprovadas ← Data Aprovação SAFI
-      vendas ← Contrato gerado em, somente vendas comerciais
+    Séries diárias do funil:
+      agendamentos ← Data de criação
+      visitas ← Data da visita
+      pastas ← Data Primeiro Envio Análise (relatório SF 00OU600000FEOoDMAX)
+      pastas_aprovadas ← Data Aprovação SAFI
+      vendas ← DataConfirmacaoVenda2__c ou DataVenda__c, somente vendas comerciais
 
-    Deduplicação antes da contagem:
-      vendas → ID da Oportunidade (Contrato gerado em mais recente)
-      pastas → Nome da Avaliação (Data Primeiro Envio Análise mais recente)
-      pastas aprovadas → Nome da Avaliação (Data Aprovação SAFI mais recente)
-      agendamentos → Código do agendamento (Data de criação mais recente)
-    """
+    Deduplicação antes da contagem:
+      vendas → ID da Oportunidade (data efetiva da venda mais recente)
+      pastas → Nome da Avaliação (Data Primeiro Envio Análise mais recente)
+      pastas aprovadas → Nome da Avaliação (Data Aprovação SAFI mais recente)
+      agendamentos → Código do agendamento (Data de criação mais recente)
+    """
     df_ag = deduplicar_agendamentos_funil(
         df_ag_vis if df_ag_vis is not None else pd.DataFrame()
     )
@@ -4264,7 +4290,7 @@ def montar_mapa_funil_diario(
     mapa_vendas: Dict[date, float] = {}
     if df_vendas is not None and not df_vendas.empty:
         df_ven = deduplicar_vendas_funil(filtrar_vendas_comerciais(df_vendas))
-        mapa_vendas = contar_eventos_por_dia(df_ven, ALIASES_CONTRATO_GERADO)
+        mapa_vendas = contar_eventos_por_dia(df_ven, ALIASES_DATA_VENDA)
     elif serie_vendas is not None and not serie_vendas.empty:
         for _, r in serie_vendas.iterrows():
             mapa_vendas[r["data"]] = float(r["qtd"])
@@ -4328,10 +4354,10 @@ def adicionar_forca_trabalho(
     janela: int = FUNIL_JANELA_FORCA,
 ) -> pd.DataFrame:
     """
-    Indicador de força de trabalho: atividade recente em TODAS as etapas do funil.
-    Captura que o time trabalha em paralelo (pastas podem 'vazar' para visitas etc.).
-    Usa média móvel das etapas (drivers + vendas) deslocada 1 dia (sem vazamento do dia).
-    """
+    Indicador de força de trabalho: atividade recente em TODAS as etapas do funil.
+    Captura que o time trabalha em paralelo (pastas podem 'vazar' para visitas etc.).
+    Usa média móvel das etapas (drivers + vendas) deslocada 1 dia (sem vazamento do dia).
+    """
     out = cal.copy()
     partes: List[pd.Series] = []
     for e in FUNIL_ETAPAS:
@@ -4422,9 +4448,9 @@ def adicionar_conversoes_funil(
     cal: pd.DataFrame,
 ) -> pd.DataFrame:
     """
-    7 conversões em janelas 7/14/21/28 dias, todas encerradas ontem.
-    O shift(1) impede que o alvo do próprio dia entre nas explicativas.
-    """
+    7 conversões em janelas 7/14/21/28 dias, todas encerradas ontem.
+    O shift(1) impede que o alvo do próprio dia entre nas explicativas.
+    """
     out = cal.copy()
     conv_cols: Dict[str, pd.Series] = {}
     for a, b in FUNIL_CONVERSOES:
@@ -4505,9 +4531,9 @@ def _funil_gap_vendas(
     totais_mtd: Optional[Dict[str, float]] = None,
 ) -> Dict[str, float]:
     """
-    Funil por etapa a partir de um gap de vendas (restante para a meta).
-    Usa conversão histórica indicador→venda; fallback proporcional ao gap do mês.
-    """
+    Funil por etapa a partir de um gap de vendas (restante para a meta).
+    Usa conversão histórica indicador→venda; fallback proporcional ao gap do mês.
+    """
     gap_v = max(0.0, float(gap_vendas))
     gap_mes = max(0.0, float(gap_vendas_mes if gap_vendas_mes is not None else gap_v))
     funil: Dict[str, float] = {"vendas": gap_v}
@@ -4613,16 +4639,16 @@ def _reconciliar_funil_hibrido(
     forca_conversao: float = 1.8,
 ) -> Dict[str, float]:
     """
-    Reconcilia as cinco previsões próprias como um único funil.
+    Reconcilia as cinco previsões próprias como um único funil.
 
-    Resolve, em escala logarítmica, um mínimos quadrados com dois objetivos:
-    preservar a estimativa de CADA etapa e manter as conversões próximas do
-    histórico. O peso de cada previsão própria cresce com seu R².
+    Resolve, em escala logarítmica, um mínimos quadrados com dois objetivos:
+    preservar a estimativa de CADA etapa e manter as conversões próximas do
+    histórico. O peso de cada previsão própria cresce com seu R².
 
-    Depois aplica apenas um corredor de segurança às conversões (±40% do
-    histórico). Isso impede 100% artificial em Aprovadas→Vendas sem transformar
-    as etapas em simples múltiplos dos agendamentos.
-    """
+    Depois aplica apenas um corredor de segurança às conversões (±40% do
+    histórico). Isso impede 100% artificial em Aprovadas→Vendas sem transformar
+    as etapas em simples múltiplos dos agendamentos.
+    """
     eps = 1e-6
     n = len(FUNIL_ETAPAS)
     idx = {e: i for i, e in enumerate(FUNIL_ETAPAS)}
@@ -4717,9 +4743,9 @@ def _matriz_funil_cal_lags(
     incluir_mes: bool = True,
 ) -> Tuple[np.ndarray, List[str]]:
     """
-    Matriz do modelo de produção: calendário (sem intercepto) + 20 lags + intercepto.
-    Total: 71 colunas (70 features + 1.0).
-    """
+    Matriz do modelo de produção: calendário (sem intercepto) + 20 lags + intercepto.
+    Total: 71 colunas (70 features + 1.0).
+    """
     X_cal = _matriz_explicativas(df, incluir_mes=incluir_mes)
     lag_cols = _cols_lag_funil()
     X_lags = np.zeros((len(df), len(lag_cols)), dtype=float)
@@ -4800,12 +4826,12 @@ def _matriz_funil_explicativas(
     efeitos_cruzados: bool = True,
 ) -> Tuple[np.ndarray, List[str]]:
     """
-    Calendário + 4 blocos semanais de todas as etapas + força de trabalho
-    + 7 conversões em janelas 7/14/21/28d.
+    Calendário + 4 blocos semanais de todas as etapas + força de trabalho
+    + 7 conversões em janelas 7/14/21/28d.
 
-    Não usa níveis do próprio dia das outras etapas: isso seria informação que
-    ainda não existe no instante da previsão e inflaria artificialmente o R².
-    """
+    Não usa níveis do próprio dia das outras etapas: isso seria informação que
+    ainda não existe no instante da previsão e inflaria artificialmente o R².
+    """
     X_cal = _matriz_explicativas(df, incluir_mes=incluir_mes)
     lag_etapas = etapas_lag if etapas_lag is not None else FUNIL_ETAPAS
     lag_cols = _cols_lag_funil(lags, alvo=alvo, etapas=lag_etapas)
@@ -4867,9 +4893,9 @@ def _ajustar_ridge_coef_original(
     sample_weight: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """
-    Ridge com padronização, devolvendo coeficientes na escala original de X.
-    A última coluna de X é o intercepto e não recebe penalização.
-    """
+    Ridge com padronização, devolvendo coeficientes na escala original de X.
+    A última coluna de X é o intercepto e não recebe penalização.
+    """
     if X.ndim != 2 or X.shape[0] == 0:
         return np.zeros(X.shape[1] if X.ndim == 2 else 0, dtype=float)
     Xv = np.asarray(X[:, :-1], dtype=float)
@@ -5080,11 +5106,11 @@ def _combinar_previsoes_funil(
     r2: float,
 ) -> float:
     """
-    Ensemble robusto por etapa.
+    Ensemble robusto por etapa.
 
-    A regressão contém lags/efeitos cruzados, mas pode superajustar com muitos
-    regressores. Seu peso varia de 35% a 70%; a base sazonal sempre participa.
-    """
+    A regressão contém lags/efeitos cruzados, mas pode superajustar com muitos
+    regressores. Seu peso varia de 35% a 70%; a base sazonal sempre participa.
+    """
     peso_reg = float(np.clip(0.35 + 0.35 * max(float(r2 or 0.0), 0.0), 0.35, 0.70))
     reg = max(float(previsao_reg or 0.0), 0.0)
     saz = max(float(previsao_sazonal or 0.0), 0.0)
@@ -5125,8 +5151,8 @@ def _atualizar_lags_linha(cal: pd.DataFrame, i: int, lags: Tuple[int, ...]) -> N
 
 def _resumir_perfil_lag_vendas(df_p: pd.DataFrame, etapa: str) -> Dict[str, Any]:
     """
-    Resume o perfil semanal (1–7, 8–14, 15–21, 22–28) sobre vendas.
-    """
+    Resume o perfil semanal (1–7, 8–14, 15–21, 22–28) sobre vendas.
+    """
     df_p = df_p[df_p["lag"] >= 1].copy()
     if df_p.empty:
         return {
@@ -5180,10 +5206,10 @@ def estimar_efeitos_lags_sobre_vendas(
     incluir_mes: bool = True,
 ) -> Optional[Dict[str, Any]]:
     """
-    Perfil de tempo até efeito nas vendas em quatro blocos semanais.
+    Perfil de tempo até efeito nas vendas em quatro blocos semanais.
 
-    Ridge por etapa: vendas ~ calendário + volumes 1–7, 8–14, 15–21 e 22–28d.
-    """
+    Ridge por etapa: vendas ~ calendário + volumes 1–7, 8–14, 15–21 e 22–28d.
+    """
     if treino.empty or float(treino["vendas"].sum()) <= 0 or len(treino) < 40:
         return None
 
@@ -5255,14 +5281,14 @@ def projetar_funil_mes_atual(
     meta_qtd_mes: float = 0.0,
 ) -> Optional[Dict[str, Any]]:
     """
-    Projeção híbrida e reconciliada do funil completo.
+    Projeção híbrida e reconciliada do funil completo.
 
-    Usa coeficientes ElasticNet pré-treinados (cal + lags) embutidos em
-    FUNIL_MODELO_PRODUCAO — sem retreino no open do relatório. Os mapas
-    precisam cobrir apenas o mês atual + buffer de lags (SOQL produção).
+    Usa coeficientes ElasticNet pré-treinados (cal + lags) embutidos em
+    FUNIL_MODELO_PRODUCAO — sem retreino no open do relatório. Os mapas
+    precisam cobrir apenas o mês atual + buffer de lags (SOQL produção).
 
-    meta_qtd_mes: meta de vendas do mês (funil necessário e metas diárias).
-    """
+    meta_qtd_mes: meta de vendas do mês (funil necessário e metas diárias).
+    """
     hoje = hoje or date.today()
     try:
         coefs, modelo = carregar_coefs_funil_producao(incluir_mes=incluir_mes)
@@ -5761,9 +5787,9 @@ def _plot_funil_etapa_comparativo(etapa: str, df: pd.DataFrame, ultimo_dia: int,
 
 def _render_kpi_cards(items: List[Dict[str, str]]) -> None:
     """
-    Cards KPI em colunas Streamlit (evita HTML indentado virar bloco de código no markdown).
-    items: [{"lbl": ..., "val": ..., "sub": ...}, ...]
-    """
+    Cards KPI em colunas Streamlit (evita HTML indentado virar bloco de código no markdown).
+    items: [{"lbl": ..., "val": ..., "sub": ...}, ...]
+    """
     if not items:
         return
     n = len(items)
@@ -6384,7 +6410,7 @@ def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_v
         b = int(53 + (143 - 53) * ratio)
         end_val = min(i + 1.0, fill_limit)
         gradient_steps.append({"range": [i, end_val], "color": f"rgba({r}, {g}, {b}, 0.9)"})
-        
+
     if fill_limit < 100:
         gradient_steps.append({"range": [fill_limit, 100], "color": "rgba(226, 232, 240, 0.4)"})
 
@@ -6433,11 +6459,11 @@ def criar_medidor(titulo: str, realizado: float, meta: float, vgv: float, meta_v
 
     st.markdown(
         f"""
-        <div style="text-align:center;font-size:0.85rem;color:{COR_TEXTO_PRETO};margin-top:-8px;line-height:1.4;">
-            <strong>Qtd:</strong> {fmt_qtd(vendas_qtd)} / {fmt_qtd(meta_f)} <br/>
-            <strong>VGV:</strong> {fmt_br_milhoes(float(vgv))} / {fmt_br_milhoes(float(meta_vgv))}
-        </div>
-        """,
+        <div style="text-align:center;font-size:0.85rem;color:{COR_TEXTO_PRETO};margin-top:-8px;line-height:1.4;">
+            <strong>Qtd:</strong> {fmt_qtd(vendas_qtd)} / {fmt_qtd(meta_f)} <br/>
+            <strong>VGV:</strong> {fmt_br_milhoes(float(vgv))} / {fmt_br_milhoes(float(meta_vgv))}
+        </div>
+        """,
         unsafe_allow_html=True,
     )
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
@@ -6526,7 +6552,8 @@ def totais_funil_empreendimento(
     """Conta as 5 etapas do funil comercial para um empreendimento no período."""
     ag = _filtrar_df_emp(_filtrar_df_periodo(df_ag, ALIASES_DATA_CRIACAO, ini, fim), empreendimento)
     pas_raw = _filtrar_df_emp(_filtrar_df_periodo(df_pastas, COLUNAS_PASTAS_ALIASES + ALIASES_DATA_CRIACAO, ini, fim), empreendimento)
-    ven = _filtrar_df_emp(_filtrar_df_periodo(df_vendas, ALIASES_CONTRATO_GERADO, ini, fim), empreendimento)
+    vendas = normalizar_datas_vendas(df_vendas) if df_vendas is not None else pd.DataFrame()
+    ven = _filtrar_df_emp(_filtrar_df_periodo(vendas, ALIASES_DATA_VENDA, ini, fim), empreendimento)
 
     ag_d = deduplicar_agendamentos_funil(ag) if not ag.empty else ag
     pas_d = deduplicar_pastas_funil(pas_raw) if not pas_raw.empty else pas_raw
@@ -6763,16 +6790,16 @@ def totais_funil_digital_oportunidades(
             out["agendamentos"] = float(len(base))
             for _, row in base.iterrows():
                 etapa = _mapear_fase_funil(str(row.get(col_fase, "")))
-                if etapa and etapa != "agendamentos":
+                if etapa and etapa not in ("agendamentos", "vendas"):
                     out[etapa] += 1.0
-    df_ven_d = df_vendas.copy() if df_vendas is not None else pd.DataFrame()
+    df_ven_d = normalizar_datas_vendas(df_vendas) if df_vendas is not None else pd.DataFrame()
     if not df_ven_d.empty:
         col_orig = achar_coluna(df_ven_d, ["Origem da Conta", "Origem do lead"])
         if col_orig:
             df_ven_d = df_ven_d.loc[df_ven_d[col_orig].map(_limpar_emp).isin(ORIGENS_NUCLEO_DIGITAL)].copy()
-        ven = _filtrar_df_emp(_filtrar_df_periodo(df_ven_d, ALIASES_CONTRATO_GERADO, ini, fim), empreendimento)
+        ven = _filtrar_df_emp(_filtrar_df_periodo(df_ven_d, ALIASES_DATA_VENDA, ini, fim), empreendimento)
         ven_d = deduplicar_vendas_funil(filtrar_vendas_comerciais(ven)) if not ven.empty else ven
-        out["vendas"] = max(out["vendas"], float(len(ven_d)) if ven_d is not None and not ven_d.empty else 0.0)
+        out["vendas"] = float(len(ven_d)) if ven_d is not None and not ven_d.empty else 0.0
     return out
 
 
@@ -6793,10 +6820,10 @@ def render_aba_funil_empreendimentos(
 
     try:
         pacote = carregar_funil_empreendimento_sf()
-        df_ag = pacote.get("agendamentos") or pd.DataFrame()
-        df_pastas = pacote.get("pastas") or pd.DataFrame()
-        df_opps = pacote.get("oportunidades") or pd.DataFrame()
-        df_ven_funil = pacote.get("vendas") or pd.DataFrame()
+        df_ag = pacote.get("agendamentos", pd.DataFrame())
+        df_pastas = pacote.get("pastas", pd.DataFrame())
+        df_opps = pacote.get("oportunidades", pd.DataFrame())
+        df_ven_funil = pacote.get("vendas", pd.DataFrame())
         t_sf = float((pacote.get("timings") or {}).get("total_s", 0.0))
         st.caption(
             f"Janela SF desde {pacote.get('inicio_janela', '?')}"
@@ -6828,15 +6855,15 @@ def render_aba_funil_empreendimentos(
     gap_txt = f"{fmt_qtd(kpi['gap'])} abaixo do projetado" if kpi["gap"] > 0.01 else "no ritmo ou acima"
     st.markdown(
         f"""
-        <div class="vel-kpi-row">
-            <div class="vel-kpi"><div class="lbl">Meta mês</div><div class="val">{int(kpi['meta'])}</div></div>
-            <div class="vel-kpi"><div class="lbl">Vendas MTD</div><div class="val">{fmt_qtd(kpi['realizado'])}</div></div>
-            <div class="vel-kpi"><div class="lbl">Projetado até hoje</div><div class="val">{fmt_qtd(kpi['projetado_pace'])}</div></div>
-            <div class="vel-kpi"><div class="lbl">Gap vs projetado</div><div class="val val--red">{fmt_qtd(kpi['gap'])}</div></div>
-            <div class="vel-kpi"><div class="lbl">% da meta</div><div class="val">{kpi['pct_meta']:.1f}%</div></div>
-            <div class="vel-kpi"><div class="lbl">% do ritmo</div><div class="val">{kpi['pct_pace']:.1f}%</div></div>
-        </div>
-        """,
+        <div class="vel-kpi-row">
+            <div class="vel-kpi"><div class="lbl">Meta mês</div><div class="val">{int(kpi['meta'])}</div></div>
+            <div class="vel-kpi"><div class="lbl">Vendas MTD</div><div class="val">{fmt_qtd(kpi['realizado'])}</div></div>
+            <div class="vel-kpi"><div class="lbl">Projetado até hoje</div><div class="val">{fmt_qtd(kpi['projetado_pace'])}</div></div>
+            <div class="vel-kpi"><div class="lbl">Gap vs projetado</div><div class="val val--red">{fmt_qtd(kpi['gap'])}</div></div>
+            <div class="vel-kpi"><div class="lbl">% da meta</div><div class="val">{kpi['pct_meta']:.1f}%</div></div>
+            <div class="vel-kpi"><div class="lbl">% do ritmo</div><div class="val">{kpi['pct_pace']:.1f}%</div></div>
+        </div>
+        """,
         unsafe_allow_html=True,
     )
     st.caption(f"Indicador de ritmo: {gap_txt} (projeção linear da meta ao dia {hoje.day}).")
@@ -6971,11 +6998,11 @@ def _corpo_painel_metas(
         else ([anos_disponiveis[-1]] if anos_disponiveis else [])
     )
     regioes_disponiveis = sorted(set(str(x).strip() for x in df_metas["Regiao_Coord"].dropna().unique() if str(x).strip()))
-    
+
     todos_emps_vendas = sorted(list(set(str(x).strip() for x in df_vendas["Empreendimento"].dropna().unique() if str(x).strip())))
 
     st.markdown("<div style='margin-bottom:1rem; text-align: center;'><strong>Filtros</strong></div>", unsafe_allow_html=True)
-    
+
     col_filtros = st.columns(6) 
     with col_filtros[0]:
         canais_sel = st.multiselect("Canal da Meta", ["RIO", "DIR", "PARC", "RJ"], default=["RIO"])
@@ -7002,7 +7029,7 @@ def _corpo_painel_metas(
 
     if meses_meta_sel:
         metas_f = metas_f[metas_f["Mes_Num"].isin(meses_meta_sel)]
-    
+
     if regioes_sel:
         metas_f = metas_f[metas_f["Regiao_Coord"].isin(regioes_sel)]
         if not emps_sel:
@@ -7010,7 +7037,7 @@ def _corpo_painel_metas(
                 vendas_f = vendas_f[vendas_f["Regiao_Coord"].isin(regioes_sel) | vendas_f["Região"].isin(regioes_base)]
         else:
                 vendas_f = vendas_f[vendas_f["Regiao_Coord"].isin(regioes_sel)]
-    
+
     if emps_sel:
         metas_f = metas_f[metas_f["Empreendimento"].isin(emps_sel)]
         vendas_f = vendas_f[vendas_f["Empreendimento"].isin(emps_sel)]
@@ -7059,17 +7086,17 @@ def _corpo_painel_metas(
 
     st.markdown(
         f"""
-        <div class="vel-kpi-row" style="margin-top: 1rem;">
-                <div class="vel-kpi"><div class="lbl">Qtd Meta</div><div class="val">{int(total_meta_qtd)}</div></div>
-                <div class="vel-kpi"><div class="lbl">Qtd Realizado</div><div class="val">{fmt_qtd(total_realizado_qtd)}</div></div>
-                <div class="vel-kpi"><div class="lbl">% Qtd</div><div class="val">{pct_qtd:.1f}%</div></div>
-        </div>
-        <div class="vel-kpi-row">
-                <div class="vel-kpi"><div class="lbl">VGV Meta</div><div class="val">{fmt_br_milhoes(total_meta_vgv)}</div></div>
-                <div class="vel-kpi"><div class="lbl">VGV Realizado</div><div class="val val--red">{fmt_br_milhoes(total_vgv_realizado)}</div></div>
-                <div class="vel-kpi"><div class="lbl">% VGV</div><div class="val">{pct_vgv:.1f}%</div></div>
-        </div>
-        """,
+        <div class="vel-kpi-row" style="margin-top: 1rem;">
+                <div class="vel-kpi"><div class="lbl">Qtd Meta</div><div class="val">{int(total_meta_qtd)}</div></div>
+                <div class="vel-kpi"><div class="lbl">Qtd Realizado</div><div class="val">{fmt_qtd(total_realizado_qtd)}</div></div>
+                <div class="vel-kpi"><div class="lbl">% Qtd</div><div class="val">{pct_qtd:.1f}%</div></div>
+        </div>
+        <div class="vel-kpi-row">
+                <div class="vel-kpi"><div class="lbl">VGV Meta</div><div class="val">{fmt_br_milhoes(total_meta_vgv)}</div></div>
+                <div class="vel-kpi"><div class="lbl">VGV Realizado</div><div class="val val--red">{fmt_br_milhoes(total_vgv_realizado)}</div></div>
+                <div class="vel-kpi"><div class="lbl">% VGV</div><div class="val">{pct_vgv:.1f}%</div></div>
+        </div>
+        """,
         unsafe_allow_html=True,
     )
 
@@ -7078,11 +7105,11 @@ def _corpo_painel_metas(
     qtd_normal = float(vendas_f[vendas_f["Tipo_Venda"] == "Normal"]["_qtd_venda"].sum())
     st.markdown(
         f"""
-        <div class="vel-kpi-row">
-                <div class="vel-kpi"><div class="lbl">Vendas Facilitadas</div><div class="val">{fmt_qtd(qtd_facilitada)}</div></div>
-                <div class="vel-kpi"><div class="lbl">Vendas Normais</div><div class="val">{fmt_qtd(qtd_normal)}</div></div>
-        </div>
-        """,
+        <div class="vel-kpi-row">
+                <div class="vel-kpi"><div class="lbl">Vendas Facilitadas</div><div class="val">{fmt_qtd(qtd_facilitada)}</div></div>
+                <div class="vel-kpi"><div class="lbl">Vendas Normais</div><div class="val">{fmt_qtd(qtd_normal)}</div></div>
+        </div>
+        """,
         unsafe_allow_html=True,
     )
 
@@ -7125,14 +7152,14 @@ def _corpo_painel_metas(
     p_ideal = math.ceil(pa_ideal / 0.64) if pa_ideal > 0 else 0
     vi_ideal = math.ceil(p_ideal / 0.25) if p_ideal > 0 else 0
     a_ideal = math.ceil(vi_ideal / 0.50) if vi_ideal > 0 else 0
-    
+
     meta_global_referencia = (total_meta_qtd / fator_meta) if fator_meta > 0 else 0
     meta_dvrj_ref = meta_global_referencia * 0.5
     vd_ideal = math.ceil(meta_dvrj_ref * 0.40)
-    
+
     od_ideal = math.ceil(vd_ideal / 0.044) if vd_ideal > 0 else 0
     ld_ideal = math.ceil(od_ideal / 0.50) if od_ideal > 0 else 0
-    
+
     corretores_pessimista = math.ceil(v_meta / 0.15) if v_meta > 0 else 0
     corretores_moderado = math.ceil(v_meta / 0.20) if v_meta > 0 else 0
     corretores_otimista = math.ceil(v_meta / 0.25) if v_meta > 0 else 0
@@ -7149,7 +7176,7 @@ def _corpo_painel_metas(
 
     st.markdown("<br><hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
     st.subheader("Funil de Marketing Digital")
-    
+
     col_mkt_espaco, col_mkt_grafico, col_mkt_espaco2 = st.columns([1, 2, 1])
     with col_mkt_grafico:
         fig_mkt = _criar_fig_funil(
@@ -7164,17 +7191,17 @@ def _corpo_painel_metas(
     st.subheader("Cenários: Corretores Ativos (Necessários para bater a meta global)")
     st.markdown(
         f"""
-        <div class="vel-kpi-row" style="justify-content: center; margin-top: 1rem;">
-                <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Pessimista (15% convert.)</div><div class="val">{corretores_pessimista}</div></div>
-                <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Moderado (20% convert.)</div><div class="val">{corretores_moderado}</div></div>
-                <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Otimista (25% convert.)</div><div class="val">{corretores_otimista}</div></div>
-        </div>
-        """,
+        <div class="vel-kpi-row" style="justify-content: center; margin-top: 1rem;">
+                <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Pessimista (15% convert.)</div><div class="val">{corretores_pessimista}</div></div>
+                <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Moderado (20% convert.)</div><div class="val">{corretores_moderado}</div></div>
+                <div class="vel-kpi" style="flex: 0 1 300px;"><div class="lbl">Otimista (25% convert.)</div><div class="val">{corretores_otimista}</div></div>
+        </div>
+        """,
         unsafe_allow_html=True,
     )
 
     # -------------------------------------------------------------------------
-    # Projeção de Vendas (regressão diária — Contrato gerado em)
+    # Projeção de Vendas (regressão diária — data efetiva da venda)
     # -------------------------------------------------------------------------
     mes_corrente = datetime.now().month
     metas_mes_atual = metas_f[metas_f["Mes_Num"] == mes_corrente] if "Mes_Num" in metas_f.columns else metas_f.iloc[0:0]
@@ -7351,7 +7378,7 @@ def _corpo_painel_metas(
                     except Exception as e_sf_v:
                         st.warning(
                             f"Vendas do painel indisponíveis ({e_sf_v}). "
-                            "Usando base filtrada do painel (Contrato gerado em)."
+                            "Usando base filtrada do painel pela data efetiva da venda."
                         )
                         serie_vendas_funil = serie_diaria_contratos(base_proj, col_contrato_gerado)
 
@@ -7373,7 +7400,7 @@ def _corpo_painel_metas(
         except Exception as exc:
                 st.warning(f"Não foi possível calcular a projeção de vendas: {exc}")
     else:
-        st.warning("Coluna 'Contrato gerado em' não encontrada — seção de Projeção de Vendas indisponível.")
+        st.warning("Data da venda indisponível — seção de Projeção de Vendas indisponível.")
 
     # -------------------------------------------------------------------------
     # Comparativo de Vendas Eficiência Isolado (Janela Histórica: Dia 1 ao Dia Atual MTD)
@@ -7381,31 +7408,31 @@ def _corpo_painel_metas(
     st.markdown("<hr style='border:none;border-top:1px solid #e2e8f0;margin:1rem 0;'/>", unsafe_allow_html=True)
     dia_atual_janela = datetime.now().day
     st.subheader(f"Comparativo de Vendas (Dia 01 ao Dia {dia_atual_janela:02d} do Mês)")
-    
+
     if col_contrato_gerado:
         # Base de espelho limpa para o gráfico de eficiência temporal sem interferência de filtros de UI de competência
         df_grafico_eficiencia = df_vendas.copy()
-        df_grafico_eficiencia["Data_Contrato_DT"] = parse_data_serie(df_grafico_eficiencia[col_contrato_gerado])
-        df_grafico_eficiencia = df_grafico_eficiencia.dropna(subset=["Data_Contrato_DT"])
-    
+        df_grafico_eficiencia["Data_Venda_DT"] = serie_data_venda(df_grafico_eficiencia)
+        df_grafico_eficiencia = df_grafico_eficiencia.dropna(subset=["Data_Venda_DT"])
+
         if not df_grafico_eficiencia.empty:
                 # Trava a janela da série histórica estritamente do dia 01 ao dia atual de cada mês para medição justa de ritmo MTD
-                df_parcial_janela = df_grafico_eficiencia[df_grafico_eficiencia["Data_Contrato_DT"].dt.day <= dia_atual_janela].copy()
-        
-                df_parcial_janela["_ano_c"] = df_parcial_janela["Data_Contrato_DT"].dt.year
-                df_parcial_janela["_mes_c"] = df_parcial_janela["Data_Contrato_DT"].dt.month
-        
+                df_parcial_janela = df_grafico_eficiencia[df_grafico_eficiencia["Data_Venda_DT"].dt.day <= dia_atual_janela].copy()
+
+                df_parcial_janela["_ano_c"] = df_parcial_janela["Data_Venda_DT"].dt.year
+                df_parcial_janela["_mes_c"] = df_parcial_janela["Data_Venda_DT"].dt.month
+
                 df_comp = df_parcial_janela.groupby(["_ano_c", "_mes_c"], as_index=False).agg(
                     QTD=("_qtd_venda", "sum"),
                     VGV=("_vgv_venda", "sum")
                 ).sort_values(["_ano_c", "_mes_c"])
-        
+
                 df_comp["Periodo"] = df_comp["_mes_c"].astype(str).str.zfill(2) + "/" + df_comp["_ano_c"].astype(str)
                 df_comp["VGV_Formatado"] = df_comp["VGV"].apply(lambda x: fmt_br_milhoes(x))
                 df_comp["QTD_Formatado"] = df_comp["QTD"].apply(lambda x: fmt_qtd(x))
-        
+
                 fig_linha = make_subplots(specs=[[{"secondary_y": True}]])
-        
+
                 fig_linha.add_trace(
                     go.Scatter(
                         x=df_comp["Periodo"], 
@@ -7420,7 +7447,7 @@ def _corpo_painel_metas(
                     ),
                     secondary_y=False,
                 )
-        
+
                 fig_linha.add_trace(
                     go.Scatter(
                         x=df_comp["Periodo"], 
@@ -7435,7 +7462,7 @@ def _corpo_painel_metas(
                     ),
                     secondary_y=True,
                 )
-        
+
                 fig_linha.update_layout(
                     margin=dict(l=20, r=20, t=40, b=20),
                     paper_bgcolor="rgba(0,0,0,0)",
@@ -7471,7 +7498,7 @@ def _corpo_painel_metas(
         else:
                 st.info("Não há dados de vendas no período acumulado de eficiência para exibir.")
     else:
-        st.warning("A coluna de Contrato Gerado em não foi encontrada. Impossível renderizar a linha do tempo.")
+        st.warning("Data da venda indisponível. Impossível renderizar a linha do tempo.")
 
     st.markdown(
         f'<div class="footer" style="text-align:center;padding:1rem 0;color:{COR_TEXTO_PRETO};font-size:0.82rem;">'
@@ -7527,7 +7554,7 @@ def main() -> None:
         )
         return
 
-    df_vendas = normalizar_colunas(df_vendas_raw)
+    df_vendas = normalizar_datas_vendas(normalizar_colunas(df_vendas_raw))
     df_metas_melted = melt_metas(df_metas_raw)
 
     # -------------------------------------------------------------------------
@@ -7543,7 +7570,7 @@ def main() -> None:
     # -------------------------------------------------------------------------
     if "Coordenador" not in df_metas_melted.columns:
         df_metas_melted["Coordenador"] = "Não Informado"
-        
+
     rows_metas = []
     for _, row in df_metas_melted.iterrows():
         coords = [c.strip() for c in re.split(r'\s+e\s+', str(row.get("Coordenador", "Não Informado"))) if c.strip()]
@@ -7558,15 +7585,12 @@ def main() -> None:
             new_row["Meta_VGV"] = float(new_row["Meta_VGV"]) / n
             new_row["_peso_coord"] = 1.0 / n
             rows_metas.append(new_row)
-            
+
     df_metas = pd.DataFrame(rows_metas)
 
     # -------------------------------------------------------------------------
     # Colunas Vendas (Alinhado com o mapeamento exato enviado)
     # -------------------------------------------------------------------------
-    col_ano = achar_coluna(df_vendas, ["Ano da Venda", "Ano Venda", "Ano"])
-    col_mes_looker = achar_coluna(df_vendas, ["Mês da Venda - Looker"])
-    col_mes_venda = achar_coluna(df_vendas, ["Mês Venda"])
     col_regiao = achar_coluna(df_vendas, ["Região", "Regiao"])
     col_imobiliaria = achar_coluna(df_vendas, ["Imobiliária", "Imobiliaria"])
     col_canal = achar_coluna(df_vendas, ["Canal"])
@@ -7579,8 +7603,8 @@ def main() -> None:
     col_venda_facilitada = achar_coluna(df_vendas, ["Venda facilitada", "Venda Facilitada", "Venda Facilitada?"])
     col_proprietario = achar_coluna(df_vendas, ["Proprietário da oportunidade", "Proprietario da oportunidade", "Nome da conta", "Proprietario", "Corretor"])
     col_ranking = achar_coluna(df_vendas, ["Ranking"])
-    col_data_venda = achar_coluna(df_vendas, ["Data da venda", "Data Venda", "Data de venda", "Data"])
-    col_contrato_gerado = achar_coluna(df_vendas, ALIASES_CONTRATO_GERADO)
+    # Nome do parâmetro preservado nas funções existentes; conteúdo é a data efetiva.
+    col_contrato_gerado = COL_DATA_VENDA
 
     if col_emp and col_emp != "Empreendimento":
         df_vendas.rename(columns={col_emp: "Empreendimento"}, inplace=True)
@@ -7619,18 +7643,9 @@ def main() -> None:
         df_vendas["Tipo_Venda"] = "Normal"
 
     # -------------------------------------------------------------------------
-    # Extração de mês/ano (ISO SF + fallback Contrato gerado em / Mês-Ano Venda)
+    # Mês/ano exclusivamente da confirmação, ou DataVenda__c quando vazia.
     # -------------------------------------------------------------------------
-    cols_data_venda = [
-        c for c in [col_data_venda, col_contrato_gerado] if c and c in df_vendas.columns
-    ]
-    df_vendas["_mes"], df_vendas["_ano"] = aplicar_mes_ano_vendas(
-        df_vendas,
-        cols_data=cols_data_venda,
-        col_mes_venda=col_mes_venda,
-        col_ano_venda=col_ano,
-        col_mes_looker=col_mes_looker,
-    )
+    df_vendas["_mes"], df_vendas["_ano"] = aplicar_mes_ano_vendas(df_vendas)
 
     df_vendas["_vgv"] = (
         pd.to_numeric(df_vendas[col_valor], errors="coerce").fillna(0.0)
