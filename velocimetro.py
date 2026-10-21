@@ -1810,17 +1810,11 @@ ALIASES_VENDA_COMERCIAL = [
 
 
 def filtrar_vendas_comerciais(df: pd.DataFrame) -> pd.DataFrame:
-    """Mantém apenas vendas comerciais (Venda Comercial? = 1 / SIM / TRUE)."""
-    if df is None or df.empty:
-        return df if df is not None else pd.DataFrame()
-    col = achar_coluna(df, ALIASES_VENDA_COMERCIAL)
-    if not col:
-        return df
-    mask = (
-        (pd.to_numeric(df[col], errors="coerce") == 1)
-        | (df[col].astype(str).str.strip().str.upper().isin(["SIM", "TRUE", "1", "1.0"]))
-    )
-    return df.loc[mask].copy()
+    """Compatibilidade com scripts antigos: preserva todas as vendas.
+
+    Venda Comercial? / DirecionalVendas__c não restringe mais os registros.
+    """
+    return df.copy() if df is not None else pd.DataFrame()
 
 
 def normalizar_colunas(df: pd.DataFrame) -> pd.DataFrame:
@@ -3731,9 +3725,10 @@ def _sf_soql_pastas(sf, modo_janela: str = "producao") -> pd.DataFrame:
 
 def _sf_soql_vendas(sf, modo_janela: str = "producao") -> pd.DataFrame:
     """
-    Equivalente ao relatório 00O3Z000005ZsPmUAK sem o filtro de tempo próprio:
-    vendas comerciais Direcional/RJ. Em treino usa 36 meses; em produção, buffer.
-    """
+    Extrai vendas Direcional/RJ de Opportunity, sem exigir DirecionalVendas__c.
+    A janela usa a confirmação da venda, ou DataVenda__c quando a confirmação é nula.
+    Em treino usa 36 meses; em produção, buffer.
+    """
     desde = _sf_soql_desde(modo_janela)[:10]  # Campos de venda consultados como Date.
     soql = (
         "SELECT Id, Name, Empreendimento__r.Name, Empreendimento__r.Regional__c, "
@@ -3742,8 +3737,7 @@ def _sf_soql_vendas(sf, modo_janela: str = "producao") -> pd.DataFrame:
         "Imobiliaria__r.Name, Contato_Corretor_Proprietario1__r.Name, Gerente_regional__c, "
         "Regional__c, OrigemConta__c, LeadSource "
         "FROM Opportunity "
-        "WHERE DirecionalVendas__c = true "
-        "AND Empreendimento__r.Regional__c = 'RJ' "
+        "WHERE Empreendimento__r.Regional__c = 'RJ' "
         "AND Empreendimento__r.UnidadeDeNegocio__c = 'Direcional' "
         f"AND (DataConfirmacaoVenda2__c >= {desde} "
         f"OR (DataConfirmacaoVenda2__c = null AND DataVenda__c >= {desde}))"
@@ -3898,7 +3892,6 @@ def carregar_funil_empreendimento_sf() -> Dict[str, Any]:
     df_pas = normalizar_colunas(_sf_soql_pastas_empreendimento(sf, hoje))
     df_opps = normalizar_colunas(_sf_soql_oportunidades_empreendimento(sf, hoje))
     df_ven = normalizar_colunas(_sf_soql_vendas(sf, modo_janela="producao"))
-    df_ven = filtrar_vendas_comerciais(df_ven)
     ini = _sf_inicio_funil_empreendimento(hoje)
     if not df_ven.empty:
         df_ven = normalizar_datas_vendas(df_ven)
@@ -3963,7 +3956,7 @@ def _recortar_vendas_painel(df: pd.DataFrame) -> pd.DataFrame:
 
 @st.cache_data(ttl=3600, show_spinner="Carregando vendas Salesforce…")
 def carregar_vendas_painel_sf() -> Dict[str, Any]:
-    """Vendas comerciais por confirmação/DataVenda__c — janela curta (24m)."""
+    """Vendas por confirmação/DataVenda__c, sem filtro comercial — janela de 24m."""
     t0 = time.perf_counter()
     sf = _cliente_salesforce_cache()
     t1 = time.perf_counter()
@@ -4013,7 +4006,7 @@ def carregar_funil_painel_sf() -> Dict[str, Any]:
 
 @st.cache_data(ttl=3600, show_spinner="Carregando bases Salesforce…")
 def carregar_pacote_painel_sf() -> Dict[str, Any]:
-    """Pacote completo com vendas pela data de confirmação/DataVenda__c."""
+    """Pacote completo: confirmação/DataVenda__c, sem restringir o indicador comercial."""
     vendas = carregar_vendas_painel_sf()
     funil = carregar_funil_painel_sf()
     tv = (vendas.get("timings") or {}).get("total_s", 0.0)
@@ -4040,7 +4033,7 @@ def carregar_relatorio_salesforce(
     modo_janela: str = "producao",
 ):
     """
-    Baixa dados Salesforce sem teto de 2k:
+    Baixa dados Salesforce sem teto de 2k e sem filtro DirecionalVendas__c:
     1) SOQL query_all (Event / Avaliacao_credito) — preferencial p/ volumes grandes
     2) CSV do relatório
     3) Analytics fatiada (fallback; cota 500/h)
@@ -4272,7 +4265,7 @@ def montar_mapa_funil_diario(
       visitas ← Data da visita
       pastas ← Data Primeiro Envio Análise (relatório SF 00OU600000FEOoDMAX)
       pastas_aprovadas ← Data Aprovação SAFI
-      vendas ← DataConfirmacaoVenda2__c ou DataVenda__c, somente vendas comerciais
+      vendas ← DataConfirmacaoVenda2__c ou DataVenda__c, sem filtro comercial
 
     Deduplicação antes da contagem:
       vendas → ID da Oportunidade (data efetiva da venda mais recente)
@@ -4289,7 +4282,7 @@ def montar_mapa_funil_diario(
 
     mapa_vendas: Dict[date, float] = {}
     if df_vendas is not None and not df_vendas.empty:
-        df_ven = deduplicar_vendas_funil(filtrar_vendas_comerciais(df_vendas))
+        df_ven = deduplicar_vendas_funil(df_vendas)
         mapa_vendas = contar_eventos_por_dia(df_ven, ALIASES_DATA_VENDA)
     elif serie_vendas is not None and not serie_vendas.empty:
         for _, r in serie_vendas.iterrows():
@@ -6558,7 +6551,7 @@ def totais_funil_empreendimento(
     ag_d = deduplicar_agendamentos_funil(ag) if not ag.empty else ag
     pas_d = deduplicar_pastas_funil(pas_raw) if not pas_raw.empty else pas_raw
     pas_ap = deduplicar_pastas_aprovadas_funil(pas_raw) if not pas_raw.empty else pas_raw
-    ven_d = deduplicar_vendas_funil(filtrar_vendas_comerciais(ven)) if not ven.empty else ven
+    ven_d = deduplicar_vendas_funil(ven) if not ven.empty else ven
 
     col_envio = achar_coluna_primeiro_envio_analise(pas_d)
     col_safi = achar_coluna_aprovacao_safi(pas_ap)
@@ -6798,7 +6791,7 @@ def totais_funil_digital_oportunidades(
         if col_orig:
             df_ven_d = df_ven_d.loc[df_ven_d[col_orig].map(_limpar_emp).isin(ORIGENS_NUCLEO_DIGITAL)].copy()
         ven = _filtrar_df_emp(_filtrar_df_periodo(df_ven_d, ALIASES_DATA_VENDA, ini, fim), empreendimento)
-        ven_d = deduplicar_vendas_funil(filtrar_vendas_comerciais(ven)) if not ven.empty else ven
+        ven_d = deduplicar_vendas_funil(ven) if not ven.empty else ven
         out["vendas"] = float(len(ven_d)) if ven_d is not None and not ven_d.empty else 0.0
     return out
 
@@ -6811,7 +6804,7 @@ def render_aba_funil_empreendimentos(
     """Aba: funil MTD e 7d por empreendimento + marketing digital + gap vs projetado."""
     st.subheader("Funil por Empreendimento — Direcional · RJ")
     st.caption(
-        "Vendas comerciais · funil do mês (MTD) e últimos 7 dias · "
+        "Vendas · funil do mês (MTD) e últimos 7 dias · "
         "conversões abaixo de cada etapa · oportunidades por fase · núcleo digital"
     )
     hoje = date.today()
@@ -7219,7 +7212,7 @@ def _corpo_painel_metas(
     meta_qtd_proj = float(metas_mes_atual["Meta_Qtd"].sum()) if (not metas_mes_atual.empty and "Meta_Qtd" in metas_mes_atual.columns) else float(total_meta_qtd)
 
     if col_contrato_gerado:
-        # Base comercial; mesmos filtros de região/emp/canal do painel (RIO = todas as vendas).
+        # Base de vendas; mesmos filtros de região/emp/canal do painel (RIO = todas as vendas).
         base_proj = df_vendas_painel.copy()
         if regioes_sel:
                 if "Região" in base_proj.columns:
@@ -7232,7 +7225,7 @@ def _corpo_painel_metas(
         if emps_sel:
                 base_proj = base_proj[base_proj["Empreendimento"].isin(emps_sel)]
 
-        # Mesma regra do KPI: RIO (ou vazio) = 100% das vendas comerciais; senão, recorte por canal.
+        # Mesma regra do KPI: RIO (ou vazio) = 100% das vendas; senão, recorte por canal.
         if canais_sel and "RIO" not in canais_sel:
                 mask_p = pd.Series(False, index=base_proj.index)
                 if "DIR" in canais_sel:
@@ -7359,19 +7352,17 @@ def _corpo_painel_metas(
                             df_pastas_funil = deduplicar_pastas_funil(df_pastas_funil)
                             st.caption(f"Pastas (Sheets): {origem_pastas}")
 
-                    # 3) Vendas — reutiliza base do painel (já com VGV e filtros comerciais)
+                    # 3) Vendas — reutiliza base do painel, sem filtro de Venda Comercial?.
                     df_vendas_funil = pd.DataFrame()
                     serie_vendas_funil = None
                     try:
                         df_vendas_funil = df_vendas_raw.copy()
                         df_vendas_funil = normalizar_colunas(df_vendas_funil)
                         n_ven_bruto = len(df_vendas_funil)
-                        df_vendas_funil = filtrar_vendas_comerciais(df_vendas_funil)
-                        n_ven_comercial = len(df_vendas_funil)
                         df_vendas_funil = deduplicar_vendas_funil(df_vendas_funil)
                         st.caption(
                             f"Vendas (painel): {origem_vendas_painel} · "
-                            f"{n_ven_bruto:,} → {n_ven_comercial:,} comerciais → "
+                            f"{n_ven_bruto:,} → "
                             f"{len(df_vendas_funil):,} linhas "
                             f"(dedup ID da Oportunidade)"
                         )
@@ -7599,7 +7590,6 @@ def main() -> None:
         ["Valor Real de Venda", "Valor Real", "Valor", "Valor_Real_de_Venda__c"],
     )
     col_emp = achar_coluna(df_vendas, ["Empreendimento", "Obra", "Nome do Empreendimento"])
-    col_venda_comercial = achar_coluna(df_vendas, ALIASES_VENDA_COMERCIAL)
     col_venda_facilitada = achar_coluna(df_vendas, ["Venda facilitada", "Venda Facilitada", "Venda Facilitada?"])
     col_proprietario = achar_coluna(df_vendas, ["Proprietário da oportunidade", "Proprietario da oportunidade", "Nome da conta", "Proprietario", "Corretor"])
     col_ranking = achar_coluna(df_vendas, ["Ranking"])
@@ -7624,11 +7614,6 @@ def main() -> None:
     # Limpeza de Lixo na Base de Vendas (Mantida Conforme Pedido)
     if col_emp:
         df_vendas = df_vendas[~df_vendas[col_emp].astype(str).str.strip().str.lower().isin(["total", "geral", "nan", "none", "null", ""])]
-
-    if col_venda_comercial:
-        df_vendas = filtrar_vendas_comerciais(df_vendas)
-    else:
-        st.warning("Coluna 'Venda Comercial?' não encontrada na base.")
 
     if col_venda_facilitada:
         def check_facilitada(val: Any) -> str:
